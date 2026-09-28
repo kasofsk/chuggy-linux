@@ -81,6 +81,8 @@ function fakeEngineState() {
     calls: [],
     unreachable: false,
     logsFail: false,
+    /** What podman's `version` answers. */
+    podmanVersion: "5.8.7",
     /** What docker's `info` names its security options; rootless adds `name=rootless`. */
     securityOptions: ["name=apparmor", "name=seccomp,profile=builtin"],
     /**
@@ -226,6 +228,7 @@ function answer(state, call) {
       ? answered("sha256:1\n")
       : failed(`Error response from daemon: No such image: ${last}`);
   if (verb === "pull") return pulled(state, call);
+  if (verb === "version") return answered(`${state.podmanVersion}\n`);
   if (verb === "info")
     return answered(`${JSON.stringify(state.securityOptions)}\n`);
   if (verb === "context")

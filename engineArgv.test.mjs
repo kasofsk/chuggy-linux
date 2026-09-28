@@ -5,6 +5,7 @@ import {
   dockerContextArgv,
   dockerInfoArgv,
   imageInspectArgv,
+  podmanVersionArgv,
   inspectArgv,
   killArgv,
   listArgv,
@@ -115,6 +116,7 @@ test("docker reads a pull's credential from DOCKER_CONFIG and its endpoint from 
       environment: {
         DOCKER_CONFIG: "/run/user/1000/chuggy-linux/pull-x",
         DOCKER_HOST: "unix:///run/user/1000/docker.sock",
+        DOCKER_AUTH_CONFIG: "",
       },
     },
   );
@@ -151,6 +153,7 @@ test("every other call is handed to either engine as this argv", () => {
       networkCreateArgv("chuggy-jobs"),
       dockerInfoArgv(),
       dockerContextArgv(),
+      podmanVersionArgv(),
     ],
     [
       ["image", "inspect", "--format", "{{.Id}}", image],
@@ -171,6 +174,7 @@ test("every other call is handed to either engine as this argv", () => {
       ["network", "create", "chuggy-jobs"],
       ["info", "--format", "{{json .SecurityOptions}}"],
       ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+      ["version", "--format", "{{.Client.Version}}"],
     ],
   );
 });

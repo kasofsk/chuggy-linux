@@ -5,6 +5,9 @@
  * nothing, which the plane answers without granting or releasing a lease.
  */
 
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 
 import { poolLabelValue } from "./containerBackend.mjs";
@@ -20,7 +23,7 @@ import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *
- * @typedef {{check: string, passed: boolean, detail: string}} DoctorFinding
+ * @typedef {{check: string, passed: boolean, detail: string, warning?: true}} DoctorFinding a warning passes, and is printed as one
  *
  * @typedef {object} DoctorParts what a run would reach, built from what was read
  * @property {(config: RunnerConfig) => Engine} engine
@@ -104,6 +107,67 @@ async function planeChecks(input, credentials, findings) {
 }
 
 /**
+ * Which of podman's registries.conf files set a non-empty
+ * `credential-helpers`, each location a file or a drop-in directory of
+ * `.conf` files. One that cannot be read sets nothing.
+ *
+ * @param {readonly string[]} locations
+ */
+async function credentialHelperFiles(locations) {
+  /** @type {string[]} */
+  const files = [];
+  for (const location of locations) {
+    const entries = await readdir(location).catch(() => undefined);
+    files.push(
+      ...(entries === undefined
+        ? [location]
+        : entries
+            .filter((entry) => entry.endsWith(".conf"))
+            .sort()
+            .map((entry) => join(location, entry))),
+    );
+  }
+  /** @type {string[]} */
+  const configured = [];
+  for (const file of files)
+    if (
+      /^\s*credential-helpers\s*=\s*\[\s*[^\]\s]/mu.test(
+        await readFile(file, "utf8").catch(() => ""),
+      )
+    )
+      configured.push(file);
+  return configured;
+}
+
+/**
+ * Podman asks a credential helper registries.conf names whatever
+ * `--authfile` says, so a pull outside the pool's registry can present a
+ * login of this machine's. That is the operator's to configure, and warned of.
+ *
+ * @param {readonly string[]} locations
+ * @returns {Promise<DoctorFinding>}
+ */
+async function podmanHelpersFinding(locations) {
+  const check = "podman credential helpers";
+  const configured = await credentialHelperFiles(locations);
+  if (configured.length === 0)
+    return { check, passed: true, detail: "none set in registries.conf" };
+  return {
+    check,
+    passed: true,
+    warning: true,
+    detail: `${configured.join(", ")} sets credential-helpers, whose logins podman presents on every pull, the pool's token notwithstanding`,
+  };
+}
+
+/** @param {DoctorFinding} finding */
+export function findingLine(finding) {
+  const label =
+    finding.warning === true ? "warn" : finding.passed ? "ok  " : "FAIL";
+  return `${label}  ${finding.check}: ${finding.detail}`;
+}
+
+/**
  * @param {DoctorInput} input
  * @returns {Promise<DoctorFinding[]>}
  */
@@ -132,6 +196,8 @@ export async function doctorFindings(input) {
       if (refusal !== undefined) throw new Error(refusal);
       return [true, `${config.claudeTokenFile}, this runner's own`];
     });
+  if (config?.engine === "podman")
+    findings.push(await podmanHelpersFinding(input.paths.registriesConf));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(

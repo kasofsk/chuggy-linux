@@ -31,6 +31,7 @@ import {
   dockerInfoArgv,
   networkCreateArgv,
   networkInspectArgv,
+  podmanVersionArgv,
 } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
 import { runnerConfig, runnerPaths, runtimeScratch } from "./runnerConfig.mjs";
@@ -112,19 +113,18 @@ export function runnerEngine(config) {
 /** How `docker info` names a daemon that maps a job's uid onto another. */
 const remappedDocker = { rootless: "rootless", userns: "with userns-remap" };
 
+/** The first podman whose `--authfile` is the only login file it reads. */
+const podmanVersionMin = /** @type {const} */ ([4, 4]);
+
 /**
- * The endpoint docker's CLI context names, which a pull made under a
- * configuration directory of its own would otherwise lose; podman has none.
- * Rootless docker and userns-remap are refused, because each maps a job's uid
- * onto one that cannot read the Claude token file. Only a unix socket is
- * taken, since a remote context's certificates would not reach the pull.
+ * Refuses rootless docker and userns-remap, because each maps a job's uid onto
+ * one that cannot read the Claude token file, and any context but a unix
+ * socket, since a remote context's certificates would not reach the pull.
  *
- * @param {RunnerConfig["engine"]} name
  * @param {Engine} engine
- * @returns {Promise<string | undefined>}
+ * @returns {Promise<string>} the endpoint docker's context names
  */
-export async function engineEndpoint(name, engine) {
-  if (name === "podman") return undefined;
+async function dockerEndpoint(engine) {
   const info = await engine.exec(dockerInfoArgv());
   if (info.code !== 0)
     throw new Error(`docker could not be asked: ${engineFailureLine(info)}`);
@@ -144,6 +144,45 @@ export async function engineEndpoint(name, engine) {
       `docker's context names "${endpoint}", and only a local docker, reached by a unix socket, is supported`,
     );
   return endpoint;
+}
+
+/**
+ * Refuses a podman older than the first whose `--authfile` is the only login
+ * file it reads, since an older one presents this machine's stored logins
+ * too, and a podman whose version cannot be read.
+ *
+ * @param {Engine} engine
+ */
+async function podmanChecked(engine) {
+  const answer = await engine.exec(podmanVersionArgv());
+  if (answer.code !== 0)
+    throw new Error(`podman could not be asked: ${engineFailureLine(answer)}`);
+  const version = answer.stdout.trim();
+  const required = `podman ${podmanVersionMin.join(".")} or later is required`;
+  const parsed = /^(\d+)\.(\d+)\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/u.exec(version);
+  if (parsed === null)
+    throw new Error(`podman answered "${version}", not a version; ${required}`);
+  const [major, minor] = [Number(parsed[1]), Number(parsed[2])];
+  const [majorMin, minorMin] = podmanVersionMin;
+  if (major < majorMin || (major === majorMin && minor < minorMin))
+    throw new Error(
+      `podman ${version} reads this machine's stored logins even when told not to; ${required}`,
+    );
+}
+
+/**
+ * The endpoint a pull is told, of an engine checked to be one a job can be
+ * run by: docker's, from its context, which a pull made under a configuration
+ * directory of its own would otherwise lose. Podman has none.
+ *
+ * @param {RunnerConfig["engine"]} name
+ * @param {Engine} engine
+ * @returns {Promise<string | undefined>}
+ */
+export async function engineEndpoint(name, engine) {
+  if (name === "docker") return dockerEndpoint(engine);
+  await podmanChecked(engine);
+  return undefined;
 }
 
 /**

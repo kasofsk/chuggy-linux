@@ -20,6 +20,7 @@ import { jobUid, reservedJobVariables } from "./job.mjs";
  * @property {string} unit the systemd user unit
  * @property {string} logs where an ended job's logs are saved
  * @property {string | undefined} runtime where pull credentials, env files and the control socket live; absent without XDG_RUNTIME_DIR
+ * @property {string[]} registriesConf podman's registries.conf files and drop-in directories, the system's and then the user's
  */
 
 /** The permission bits a group or anyone else would read or write by. */
@@ -91,6 +92,12 @@ export function runnerPaths(environment, home) {
     logs: join(stateHome, "chuggy-linux", "logs"),
     runtime:
       runtimeHome === undefined ? undefined : join(runtimeHome, "chuggy-linux"),
+    registriesConf: [
+      "/etc/containers/registries.conf",
+      "/etc/containers/registries.conf.d",
+      join(configHome, "containers", "registries.conf"),
+      join(configHome, "containers", "registries.conf.d"),
+    ],
   };
 }
 

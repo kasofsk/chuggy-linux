@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { dockerCli, dockerDaemon, machineLogin } from "./docker.fixture.mjs";
+import {
+  dockerCli,
+  dockerDaemon,
+  machineAuthConfig,
+  machineLogin,
+} from "./docker.fixture.mjs";
 import { pullArgv } from "./engineArgv.mjs";
 import {
   imageRegistryHost,
@@ -92,7 +97,11 @@ test("docker's own CLI presents the pool's token to the pool's registry, and no 
         (directory) => {
           const pull = pullArgv("docker", image, directory, daemon.host);
           return docker.exec(pull.argv, {
-            environment: { ...pull.environment, PATH: daemon.path(withPass) },
+            environment: {
+              DOCKER_AUTH_CONFIG: machineAuthConfig,
+              ...pull.environment,
+              PATH: daemon.path(withPass),
+            },
           });
         },
       );

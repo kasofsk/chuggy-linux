@@ -3,8 +3,9 @@
  * registry its registration names, written for that registry into a directory
  * made for that one pull and removed after it, whatever its outcome. Every
  * other pull is made from such a directory too, holding no credential, so no
- * login stored on this machine is presented anywhere either. The engine reads
- * it from there, so the token is never in an argv.
+ * login stored on this machine is presented anywhere either, but for one a
+ * credential helper named in podman's registries.conf hands podman. The
+ * engine reads it from there, so the token is never in an argv.
  *
  * DOCKER FALLS BACK TO THE MACHINE'S CREDENTIAL HELPER for a configuration
  * holding no credential, and presents whatever login it keeps. Docker's empty

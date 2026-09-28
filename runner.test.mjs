@@ -134,7 +134,12 @@ test("a run is composed from both files, and refuses to start without a runtime 
     runner: { concurrencyMax: 3 },
   });
   const setup = await runnerSetup(poolFile, environment, home);
-  const runner = await runnerParts(setup, { uid: 1000, log: () => undefined });
+  const { engine } = fakeEngine();
+  const runner = await runnerParts(setup, {
+    uid: 1000,
+    log: () => undefined,
+    engine,
+  });
   assert.equal(runner.client.settings.concurrencyMax, 3);
   assert.deepEqual(runner.backend.inFlight(), []);
   const bare = await runnerSetup(
@@ -143,15 +148,48 @@ test("a run is composed from both files, and refuses to start without a runtime 
     home,
   );
   await assert.rejects(
-    runnerParts(bare, { uid: 1000, log: () => undefined }),
+    runnerParts(bare, { uid: 1000, log: () => undefined, engine }),
     /XDG_RUNTIME_DIR is not set/u,
   );
 });
 
-test("podman has no endpoint to resolve, and is not asked for one", async () => {
+test("podman has no endpoint, and is taken only from the first version whose --authfile is all it reads", async () => {
   const { engine, state } = fakeEngine();
-  assert.equal(await engineEndpoint("podman", engine), undefined);
-  assert.deepEqual(state.calls, []);
+  for (const version of [
+    "4.4.0",
+    "4.9.3-dev",
+    "4.10.1",
+    "5.0.0-rc1",
+    "5.8.7",
+    "10.0.0",
+  ]) {
+    state.podmanVersion = version;
+    assert.equal(await engineEndpoint("podman", engine), undefined, version);
+  }
+  for (const version of ["4.3.1", "3.9.9", "4.3.99-dev"]) {
+    state.podmanVersion = version;
+    await assert.rejects(
+      engineEndpoint("podman", engine),
+      new RegExp(
+        `^Error: podman ${version.replaceAll(".", "\\.")} reads this machine's stored logins even when told not to; podman 4\\.4 or later is required$`,
+        "u",
+      ),
+    );
+  }
+  for (const version of ["garbage", "", "4.4", "v4.4.0", "4.4.0 extra"]) {
+    state.podmanVersion = version;
+    await assert.rejects(
+      engineEndpoint("podman", engine),
+      /^Error: podman answered ".*", not a version; podman 4\.4 or later is required$/u,
+      version,
+    );
+  }
+  state.unreachable = true;
+  await assert.rejects(
+    engineEndpoint("podman", engine),
+    /^Error: podman could not be asked: /u,
+  );
+  assert.ok(state.calls.every((call) => call.argv[0] === "version"));
 });
 
 test("docker that maps a job's uid, rootless or by userns-remap, is refused before anything else is asked of it", async () => {
@@ -188,6 +226,20 @@ test("a run refuses rootless docker", async (t) => {
       engine,
     }),
     /docker is running rootless/u,
+  );
+});
+
+test("a run refuses a podman that reads this machine's stored logins", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t);
+  const { engine, state } = fakeEngine();
+  state.podmanVersion = "4.3.1";
+  await assert.rejects(
+    runnerParts(await runnerSetup(poolFile, environment, home), {
+      uid: 1000,
+      log: () => undefined,
+      engine,
+    }),
+    /^Error: podman 4\.3\.1 reads this machine's stored logins/u,
   );
 });
 

@@ -13,7 +13,7 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 
 import { controlAsked, controlServer, controlSocketPath } from "./control.mjs";
-import { doctorFindings } from "./doctor.mjs";
+import { doctorFindings, findingLine } from "./doctor.mjs";
 import {
   jobNetwork,
   passLine,
@@ -171,9 +171,9 @@ async function doctor(call) {
     parts: { engine: runnerEngine, tokens: runnerTokens, plane: runnerPlane },
   });
   for (const finding of findings)
-    (finding.passed ? call.host.out : call.host.err)(
-      `${finding.passed ? "ok  " : "FAIL"}  ${finding.check}: ${finding.detail}`,
-    );
+    (finding.passed && finding.warning !== true
+      ? call.host.out
+      : call.host.err)(findingLine(finding));
   return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 

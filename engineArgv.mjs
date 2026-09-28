@@ -49,7 +49,8 @@ export function imageInspectArgv(image) {
  * credential from `DOCKER_CONFIG`, podman from `--authfile`. A fresh
  * `DOCKER_CONFIG` holds no CLI context either, so docker is also told the
  * endpoint its context resolved to, or the pull would reach another daemon
- * than every other call.
+ * than every other call. `DOCKER_AUTH_CONFIG`, a login docker takes from the
+ * environment over any file's, is emptied, which docker reads as unset.
  *
  * @param {EngineName} engine
  * @param {string} image
@@ -65,7 +66,11 @@ export function pullArgv(engine, image, authDirectory, dockerHost) {
       );
     return {
       argv: ["pull", "--quiet", image],
-      environment: { DOCKER_CONFIG: authDirectory, DOCKER_HOST: dockerHost },
+      environment: {
+        DOCKER_CONFIG: authDirectory,
+        DOCKER_HOST: dockerHost,
+        DOCKER_AUTH_CONFIG: "",
+      },
     };
   }
   return {
@@ -78,6 +83,11 @@ export function pullArgv(engine, image, authDirectory, dockerHost) {
     ],
     environment: {},
   };
+}
+
+/** Podman's own version, which decides whether `--authfile` is all it reads. */
+export function podmanVersionArgv() {
+  return ["version", "--format", "{{.Client.Version}}"];
 }
 
 /** Docker's security options, which name a daemon running rootless. */

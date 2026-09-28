@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { doctorFindings } from "./doctor.mjs";
+import { doctorFindings, findingLine } from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import { runnerFixture } from "./runner.fixture.mjs";
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, token?: unknown, uid?: number, securityOptions?: string[]}} options
+ * @param {{runner?: Record<string, unknown> | undefined, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, registries?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own
  */
 async function doctored(t, options = {}) {
   const { home, environment, poolFile } = await runnerFixture(
@@ -17,11 +19,23 @@ async function doctored(t, options = {}) {
   );
   const { engine, state } = fakeEngine();
   state.securityOptions = options.securityOptions ?? state.securityOptions;
+  state.podmanVersion = options.podmanVersion ?? state.podmanVersion;
+  const registries = join(home, "registries");
+  for (const [file, text] of Object.entries(options.registries ?? {})) {
+    await mkdir(dirname(join(registries, file)), { recursive: true });
+    await writeFile(join(registries, file), text);
+  }
   /** @type {unknown[][]} */
   const polls = [];
   const findings = await doctorFindings({
     poolFile,
-    paths: runnerPaths(environment, home),
+    paths: {
+      ...runnerPaths(environment, home),
+      registriesConf: [
+        join(registries, "registries.conf"),
+        join(registries, "registries.conf.d"),
+      ],
+    },
     uid: options.uid ?? process.getuid?.() ?? -1,
     parts: {
       engine: () => engine,
@@ -39,7 +53,7 @@ async function doctored(t, options = {}) {
       }),
     },
   });
-  return { findings, state, polls, poolFile, home };
+  return { findings, state, polls, poolFile, registries };
 }
 
 test("a machine ready to run passes every check, and doctor changes nothing", async (t) => {
@@ -51,6 +65,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["runner configuration", true],
       ["runtime directory", true],
       ["Claude token file", true],
+      ["podman credential helpers", true],
       ["container engine", true],
       ["job network", true],
       ["pool token", true],
@@ -58,14 +73,19 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     ],
   );
   assert.equal(findings[0].detail, `${poolFile} names pool vteng/chuggy/shame`);
+  assert.deepEqual(findings[4], {
+    check: "podman credential helpers",
+    passed: true,
+    detail: "none set in registries.conf",
+  });
   assert.equal(
-    findings[5].detail,
+    findings[6].detail,
     "chuggy-jobs is missing, and a run makes it",
   );
   assert.deepEqual(polls, [["pool-token", [], 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
-    ["ps", "network"],
+    ["version", "ps", "network"],
   );
 });
 
@@ -135,4 +155,66 @@ test("under docker, a runner that is not uid 1000 fails the Claude token file ch
     finding?.detail ?? "",
     /docker runs a job as uid 1000, and this runner is uid 1234.*use rootless podman/u,
   );
+});
+
+test("a credential helper podman's registries.conf sets is warned of, and passes", async (t) => {
+  const { findings, registries } = await doctored(t, {
+    registries: {
+      "registries.conf":
+        '# credential-helpers = ["pass"]\ncredential-helpers = []\n',
+      "registries.conf.d/10-helper.conf":
+        'credential-helpers = [\n  "secretservice",\n]\n',
+      "registries.conf.d/20-search.conf":
+        'unqualified-search-registries = ["docker.io"]\n',
+      "registries.conf.d/helper.txt": 'credential-helpers = ["pass"]\n',
+    },
+  });
+  const finding = findings.find(
+    (found) => found.check === "podman credential helpers",
+  );
+  assert.deepEqual(finding, {
+    check: "podman credential helpers",
+    passed: true,
+    warning: true,
+    detail: `${join(registries, "registries.conf.d", "10-helper.conf")} sets credential-helpers, whose logins podman presents on every pull, the pool's token notwithstanding`,
+  });
+  assert.ok(findings.every((found) => found.passed));
+  assert.match(
+    findingLine(finding ?? findings[0]),
+    /^warn {2}podman credential helpers: /u,
+  );
+  assert.equal(
+    findingLine({ check: "plane", passed: false, detail: "down" }),
+    "FAIL  plane: down",
+  );
+  assert.equal(
+    findingLine({ check: "plane", passed: true, detail: "up" }),
+    "ok    plane: up",
+  );
+});
+
+test("docker has no podman credential helpers to check", async (t) => {
+  const { findings } = await doctored(t, {
+    runner: { engine: "docker" },
+    uid: 1000,
+    registries: { "registries.conf": 'credential-helpers = ["pass"]\n' },
+  });
+  assert.ok(
+    !findings.some((found) => found.check === "podman credential helpers"),
+  );
+});
+
+test("a podman that reads this machine's stored logins fails the engine check", async (t) => {
+  const { findings, state } = await doctored(t, { podmanVersion: "4.3.1" });
+  assert.deepEqual(
+    findings.find((found) => found.check === "container engine"),
+    {
+      check: "container engine",
+      passed: false,
+      detail:
+        "podman 4.3.1 reads this machine's stored logins even when told not to; podman 4.4 or later is required",
+    },
+  );
+  assert.ok(!findings.some((found) => found.check === "job network"));
+  assert.ok(state.calls.every((call) => call.argv[0] === "version"));
 });

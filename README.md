@@ -2,7 +2,7 @@
 
 Runs a chuggy worker pool's jobs on a Linux machine. Registered as a pool, the machine runs `chuggy-linux run` as a systemd user service: it polls chuggy for assignments and runs each one as a docker or podman container of the image the assignment pins.
 
-It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman.
+It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman 4.4 or later.
 
 ## Install
 
@@ -48,7 +48,7 @@ A job runs as uid 1000, the image's user, and reads the token file as that uid, 
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng-chuggy-shame.json
 ```
 
-It checks both files, the token file, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+It checks both files, the token file, podman's credential helpers, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 
@@ -85,5 +85,5 @@ This writes `~/.config/systemd/user/chuggy-linux.service`, which runs this insta
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
 - Install docker or podman, start the service, or upgrade itself.
-- Pull with your own registry logins: an image not from the pool's registry is pulled with none.
+- Pull with your own registry logins: an image not from the pool's registry is pulled with none. The exception is a credential helper you set in podman's `registries.conf`, which podman still asks; `doctor` warns of one.
 - Limit a job's workspace: its volume has no size limit.

@@ -125,6 +125,12 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
     unit: "/home/op/.config/systemd/user/chuggy-linux.service",
     logs: "/home/op/.local/state/chuggy-linux/logs",
     runtime: undefined,
+    registriesConf: [
+      "/etc/containers/registries.conf",
+      "/etc/containers/registries.conf.d",
+      "/home/op/.config/containers/registries.conf",
+      "/home/op/.config/containers/registries.conf.d",
+    ],
   });
   assert.deepEqual(
     runnerPaths(
@@ -140,6 +146,12 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
       unit: "/etc/op/systemd/user/chuggy-linux.service",
       logs: "/home/op/.local/state/chuggy-linux/logs",
       runtime: "/run/user/1000/chuggy-linux",
+      registriesConf: [
+        "/etc/containers/registries.conf",
+        "/etc/containers/registries.conf.d",
+        "/etc/op/containers/registries.conf",
+        "/etc/op/containers/registries.conf.d",
+      ],
     },
   );
 });

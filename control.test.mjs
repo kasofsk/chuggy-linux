@@ -1,16 +1,25 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 import { controlAsked, controlServer, controlSocketPath } from "./control.mjs";
 
+/**
+ * A directory for a socket, under /tmp rather than TMPDIR, which could be
+ * long enough to put the socket's path past the length one may have.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+async function socketDirectory(t) {
+  const directory = await mkdtemp("/tmp/chuggy-linux-control-");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+}
+
 /** @param {import("node:test").TestContext} t */
 async function served(t) {
-  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-control-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t);
   /** @type {string[]} */
   const stopped = [];
   const backend =
@@ -76,8 +85,7 @@ test("a line that is no request is refused", async (t) => {
 });
 
 test("nothing answers where no service is", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-control-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t);
   assert.equal(
     await controlAsked(controlSocketPath(directory), { op: "status" }),
     undefined,
@@ -91,8 +99,7 @@ test("a second service is refused where one answers, and a dead one's socket is 
     /a chuggy-linux service already answers at/u,
   );
 
-  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-control-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t);
   const stale = controlSocketPath(directory);
   await writeFile(stale, "");
   const server = await controlServer(stale, backend);

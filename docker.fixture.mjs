@@ -8,13 +8,28 @@
 import { Buffer } from "node:buffer";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { containerEngine } from "./engine.mjs";
 
 /** The login the machine's credential helpers hand docker. */
 export const machineLogin = { Username: "operator", Secret: "operator-secret" };
+
+/** The same login as `DOCKER_AUTH_CONFIG` would hand it, for any registry. */
+export const machineAuthConfig = JSON.stringify({
+  auths: Object.fromEntries(
+    ["registry.chuggy.example", "ghcr.io", "https://index.docker.io/v1/"].map(
+      (host) => [
+        host,
+        {
+          auth: Buffer.from(
+            `${machineLogin.Username}:${machineLogin.Secret}`,
+          ).toString("base64"),
+        },
+      ],
+    ),
+  ),
+});
 
 /** Docker's CLI, or nothing where it is not installed. */
 export async function dockerCli() {
@@ -47,7 +62,9 @@ async function credentialHelpers(directory, asked) {
 
 /** @param {import("node:test").TestContext} t */
 export async function dockerDaemon(t) {
-  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-docker-"));
+  // Under /tmp, since a long TMPDIR could put the socket's path past the
+  // length one may have.
+  const directory = await mkdtemp("/tmp/chuggy-linux-docker-");
   t.after(() => rm(directory, { recursive: true, force: true }));
   const asked = join(directory, "asked");
   const { helpers, pass } = await credentialHelpers(directory, asked);

@@ -292,21 +292,21 @@ test("the pool's token is presented only to the registry the pool was registered
   await backend.settled();
   const pulls = state.calls.filter((call) => call.argv[0] === "pull");
   assert.deepEqual(
-    pulls.map((call) => [call.argv.at(-1), JSON.parse(call.authFile ?? "")]),
-    [
-      [
-        image,
-        {
-          auths: {
-            "registry.chuggy.example": {
-              auth: Buffer.from("chuggy-pool:pool-token-1").toString("base64"),
-            },
+    Object.fromEntries(
+      pulls.map((call) => [call.argv.at(-1), JSON.parse(call.authFile ?? "")]),
+    ),
+    {
+      [image]: {
+        auths: {
+          "registry.chuggy.example": {
+            auth: Buffer.from("chuggy-pool:pool-token-1").toString("base64"),
           },
         },
-      ],
-      [elsewhere, { auths: {} }],
-    ],
+      },
+      [elsewhere]: { auths: {} },
+    },
   );
+  assert.equal(pulls.length, 2);
   assert.equal(minted(), 1);
   assert.deepEqual(invalidated, []);
   assert.equal(state.containers.size, 2);
