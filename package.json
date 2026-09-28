@@ -1,0 +1,48 @@
+{
+  "name": "chuggy-linux",
+  "version": "0.1.0",
+  "description": "Runs a chuggy worker pool's jobs in containers on a Linux machine",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "private": true,
+  "bin": {
+    "chuggy-linux": "cli.mjs"
+  },
+  "dependencies": {
+    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.2.0/chuggy-worker-contract-1.2.0.tgz",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#563407dd2b1e602f1b368675f73a9e461ab768e9",
+    "zod": "4.5.4"
+  },
+  "bundleDependencies": [
+    "@chuggy/worker-contract",
+    "@chuggy/worker-core",
+    "zod"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "dependency-cruiser": "^18.2.0",
+    "eslint": "^10.9.1",
+    "jscpd": "5.0.5",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0"
+  },
+  "files": [
+    "cli.mjs",
+    "commands.mjs",
+    "containerBackend.mjs",
+    "control.mjs",
+    "doctor.mjs",
+    "engine.mjs",
+    "engineArgv.mjs",
+    "engineErrors.mjs",
+    "job.mjs",
+    "registryAuth.mjs",
+    "runner.mjs",
+    "runnerConfig.mjs",
+    "systemdUnit.mjs"
+  ]
+}
