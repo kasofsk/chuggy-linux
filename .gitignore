@@ -4,3 +4,6 @@ node_modules
 node_modules/
 
 .claude/worktrees/
+
+# What `just pack` builds, which a release carries rather than the tree.
+chuggy-linux-*.tgz
