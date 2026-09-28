@@ -6,9 +6,9 @@ import test from "node:test";
 
 import {
   claudeTokenFileRefusal,
-  jobHostUid,
   runnerConfig,
   runnerPaths,
+  runtimeScratch,
 } from "./runnerConfig.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
@@ -144,36 +144,42 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
   );
 });
 
-test("docker jobs read the token as the image's uid, rootless podman ones as the runner's", () => {
-  assert.equal(jobHostUid("docker", 1234), 1000);
-  assert.equal(jobHostUid("podman", 1234), 1234);
-});
-
 test("a Claude token file a job cannot be handed is refused", async (t) => {
   const directory = await scratch(t);
   const file = join(directory, "claude-token");
-  assert.match(
-    (await claudeTokenFileRefusal(file, ownUid)) ?? "",
-    /cannot be found/u,
-  );
+  /** @param {string} path */
+  const refusal = async (path, uid = ownUid) =>
+    (await claudeTokenFileRefusal(path, "podman", uid)) ?? "";
+  assert.match(await refusal(file), /cannot be found/u);
   await writeFile(file, "", { mode: 0o600 });
-  assert.match((await claudeTokenFileRefusal(file, ownUid)) ?? "", /is empty/u);
+  assert.match(await refusal(file), /is empty/u);
   await writeFile(file, "claude-token-fixture");
-  assert.equal(await claudeTokenFileRefusal(file, ownUid), undefined);
+  assert.equal(await claudeTokenFileRefusal(file, "podman", ownUid), undefined);
   assert.match(
-    (await claudeTokenFileRefusal(file, ownUid + 1)) ?? "",
+    await refusal(file, ownUid + 1),
     new RegExp(
-      `owned by uid ${String(ownUid)}, and a job reads it as uid ${String(ownUid + 1)}`,
+      `owned by uid ${String(ownUid)}, not by this runner's uid ${String(ownUid + 1)}`,
       "u",
     ),
   );
   await chmod(file, 0o640);
+  assert.match(await refusal(file), /is mode 640/u);
+  assert.match(await refusal(directory), /is not a file/u);
+});
+
+test("under docker only a runner that is uid 1000 can hand a job its token file", async (t) => {
+  const file = join(await scratch(t), "claude-token");
   assert.match(
-    (await claudeTokenFileRefusal(file, ownUid)) ?? "",
-    /is mode 640/u,
+    (await claudeTokenFileRefusal(file, "docker", 1234)) ?? "",
+    /docker runs a job as uid 1000, and this runner is uid 1234.*use rootless podman/u,
   );
   assert.match(
-    (await claudeTokenFileRefusal(directory, ownUid)) ?? "",
-    /is not a file/u,
+    (await claudeTokenFileRefusal(file, "docker", 1000)) ?? "",
+    /cannot be found/u,
   );
+});
+
+test("a runtime directory entry names what it is for and the process that made it", () => {
+  assert.equal(runtimeScratch("pull", 4242), "pull-4242-");
+  assert.equal(runtimeScratch("job"), `job-${String(process.pid)}-`);
 });

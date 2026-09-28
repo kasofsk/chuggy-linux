@@ -5,6 +5,7 @@
  */
 
 import { readFileSync, writeSync } from "node:fs";
+import { dirname } from "node:path";
 
 /**
  * @typedef {import("./engine.mjs").EngineAnswer} EngineAnswer
@@ -21,6 +22,7 @@ import { readFileSync, writeSync } from "node:fs";
  * @property {Record<string, string>} environment
  * @property {string} [envFile] the env file's text as `run` found it
  * @property {string} [authFile] the pull credential's text as `pull` found it
+ * @property {string} [authDirectory] the directory it was found in
  *
  * @typedef {ReturnType<typeof fakeEngineState>} FakeEngineState
  */
@@ -79,6 +81,10 @@ function fakeEngineState() {
     calls: [],
     unreachable: false,
     logsFail: false,
+    /** What docker's `info` names its security options; rootless adds `name=rootless`. */
+    securityOptions: ["name=apparmor", "name=seccomp,profile=builtin"],
+    /** The endpoint docker's current context names. */
+    contextHost: "unix:///var/run/docker.sock",
     nextId: 1,
     /**
      * How a pull ends; the default finds the image.
@@ -167,7 +173,10 @@ function pulled(state, call) {
     (call.environment.DOCKER_CONFIG === undefined
       ? undefined
       : `${call.environment.DOCKER_CONFIG}/config.json`);
-  if (auth !== undefined) call.authFile = readFileSync(auth, "utf8");
+  if (auth !== undefined) {
+    call.authFile = readFileSync(auth, "utf8");
+    call.authDirectory = dirname(auth);
+  }
   return state.pull(call.argv.at(-1) ?? "", call);
 }
 
@@ -212,6 +221,9 @@ function answer(state, call) {
       ? answered("sha256:1\n")
       : failed(`Error response from daemon: No such image: ${last}`);
   if (verb === "pull") return pulled(state, call);
+  if (verb === "info")
+    return answered(`${JSON.stringify(state.securityOptions)}\n`);
+  if (verb === "context") return answered(`${state.contextHost}\n`);
   if (verb === "run") return run(state, call);
   if (verb === "ps") {
     const pool = last.replace(/^label=io\.chuggy\.pool=/u, "");

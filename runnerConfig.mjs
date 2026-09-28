@@ -135,26 +135,21 @@ export async function runnerConfig(file) {
 }
 
 /**
- * The uid on this machine a job's user reads the mounted token as. Docker runs
- * the image's user as that uid; rootless podman maps it onto the user running
- * podman, which is this process's.
- *
- * @param {"docker" | "podman"} engine
- * @param {number} ownUid
- */
-export function jobHostUid(engine, ownUid) {
-  return engine === "docker" ? jobUid : ownUid;
-}
-
-/**
- * Why the Claude token file cannot be handed to a job, or nothing. Only its
- * metadata is read: the token reaches the job by mount and never this process.
+ * Why this runner cannot hand its jobs the Claude token file, or nothing. The
+ * file is its owner's alone and a job reads it as the image's user. Docker
+ * runs that user as the same uid on this machine, so only a runner that is
+ * that uid can hand the file over; rootless podman maps it onto the runner
+ * itself. Only the file's metadata is read: the token reaches the job by mount
+ * and never this process.
  *
  * @param {string} file
- * @param {number} readerUid the uid the job reads it as, which must own it
+ * @param {"docker" | "podman"} engine
+ * @param {number} runnerUid this process's uid, which must own the file
  * @returns {Promise<string | undefined>}
  */
-export async function claudeTokenFileRefusal(file, readerUid) {
+export async function claudeTokenFileRefusal(file, engine, runnerUid) {
+  if (engine === "docker" && runnerUid !== jobUid)
+    return `docker runs a job as uid ${String(jobUid)}, and this runner is uid ${String(runnerUid)}, so no job could read a token file only this runner can; use rootless podman ("engine": "podman")`;
   let stats;
   try {
     stats = await stat(file);
@@ -165,7 +160,18 @@ export async function claudeTokenFileRefusal(file, readerUid) {
   if ((stats.mode & sharedModeBits) !== 0)
     return `the Claude token file ${file} is mode ${(stats.mode & 0o777).toString(8)}; only its owner may read or write it (chmod 600)`;
   if (stats.size === 0) return `the Claude token file ${file} is empty`;
-  if (stats.uid !== readerUid)
-    return `the Claude token file ${file} is owned by uid ${String(stats.uid)}, and a job reads it as uid ${String(readerUid)}`;
+  if (stats.uid !== runnerUid)
+    return `the Claude token file ${file} is owned by uid ${String(stats.uid)}, not by this runner's uid ${String(runnerUid)}`;
   return undefined;
+}
+
+/**
+ * How a directory this process makes under the runtime directory is named:
+ * what it is for, then the process, so a process leaving can find its own.
+ *
+ * @param {"pull" | "job"} kind
+ * @param {number} pid
+ */
+export function runtimeScratch(kind, pid = process.pid) {
+  return `${kind}-${String(pid)}-`;
 }

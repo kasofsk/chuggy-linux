@@ -39,7 +39,7 @@ import {
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
 import { jobEnvelope, jobEnvironmentFile } from "./job.mjs";
 import { imageRegistryHost, withRegistryAuth } from "./registryAuth.mjs";
-import { claudeTokenFileRefusal } from "./runnerConfig.mjs";
+import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment} WorkerPoolAssignment
@@ -56,7 +56,9 @@ import { claudeTokenFileRefusal } from "./runnerConfig.mjs";
  * @property {"docker" | "podman"} engine
  * @property {PoolIdentity} pool
  * @property {string} tokenFile
- * @property {number} tokenReaderUid the uid on this machine a job reads the token file as
+ * @property {number} runnerUid this process's uid
+ * @property {string | undefined} registryHost the one registry the pool's token is presented to
+ * @property {string | undefined} dockerHost the endpoint docker's context names; docker's alone
  * @property {number} timeoutSecsMax
  * @property {number} outputBytesMax
  * @property {Readonly<Record<string, string>>} environment
@@ -306,7 +308,8 @@ async function placementRefusal(state, assignment) {
     return `the assignment asks for ${String(assignment.memoryMib)} MiB and this machine has ${String(machine.memoryMib)}`;
   return claudeTokenFileRefusal(
     state.settings.tokenFile,
-    state.settings.tokenReaderUid,
+    state.settings.engine,
+    state.settings.runnerUid,
   );
 }
 
@@ -324,60 +327,76 @@ async function imagePresent(state, image) {
 }
 
 /**
- * One pull under a fresh credential.
+ * One pull, under the credential given or under none.
  *
  * @param {State} state
  * @param {Placement} placement
- * @param {string} token
+ * @param {import("./registryAuth.mjs").RegistryCredential | undefined} credential
  * @param {AbortSignal} signal
  */
-function pullAttempt(state, placement, token, signal) {
+function pullAttempt(state, placement, credential, signal) {
   const { settings, seams } = state;
-  return withRegistryAuth(
-    settings.runtimeDir,
-    imageRegistryHost(placement.image),
-    token,
-    (directory) => {
-      const pull = pullArgv(settings.engine, placement.image, directory);
-      return seams.engine.exec(pull.argv, {
-        environment: pull.environment,
-        signal,
-      });
-    },
-  );
+  return withRegistryAuth(settings.runtimeDir, credential, (directory) => {
+    const pull = pullArgv(
+      settings.engine,
+      placement.image,
+      directory,
+      settings.dockerHost,
+    );
+    return seams.engine.exec(pull.argv, {
+      environment: pull.environment,
+      signal,
+    });
+  });
 }
 
 /**
- * Pulls until the image is here, the registry refuses it for a reason a new
- * token will not change, or the deadline passes. A refused token is discarded
- * so the next attempt is made under a fresh one; the layers an attempt
- * finished stay with the engine.
+ * What a pull runs under: a signal a stop or the assignment's deadline aborts.
+ *
+ * @param {State} state
+ * @param {Placement} placement
+ */
+function pullSignal(state, placement) {
+  const remainingMs = placement.deadlineEpochSecs * 1000 - state.seams.nowMs();
+  if (remainingMs <= 0)
+    throw new Error("its image was not pulled by the assignment's deadline");
+  return globalThis.AbortSignal.any([
+    placement.controller.signal,
+    globalThis.AbortSignal.timeout(remainingMs),
+  ]);
+}
+
+/**
+ * An image of the pool's own registry is pulled under the pool's token until
+ * it is here, the registry refuses it for a reason a new token will not
+ * change, or the deadline passes; a refused token is discarded so the next
+ * attempt is made under a fresh one. Any other image is pulled once, under no
+ * credential, and a refusal there says nothing about the pool's token.
  *
  * @param {State} state
  * @param {Placement} placement
  */
 async function pulled(state, placement) {
   const { settings, seams } = state;
+  const host = imageRegistryHost(placement.image);
+  if (host !== settings.registryHost) {
+    const signal = pullSignal(state, placement);
+    const answer = await pullAttempt(state, placement, undefined, signal);
+    if (answer.code === 0) return;
+    throw new Error(
+      `its image could not be pulled under no credential, as every image not of the pool's registry is: ${engineFailureLine(answer)}`,
+    );
+  }
   for (;;) {
-    const remainingMs = placement.deadlineEpochSecs * 1000 - seams.nowMs();
-    if (remainingMs <= 0)
-      throw new Error("its image was not pulled by the assignment's deadline");
-    const signal = globalThis.AbortSignal.any([
-      placement.controller.signal,
-      globalThis.AbortSignal.timeout(remainingMs),
-    ]);
+    const signal = pullSignal(state, placement);
     const acquired = await seams.tokens.acquire();
     if (acquired.acquired === "Denied")
       throw new Error(
         `the pool has no token to pull with: ${acquired.evidence}`,
       );
     if (acquired.acquired === "Token") {
-      const answer = await pullAttempt(
-        state,
-        placement,
-        acquired.token,
-        signal,
-      );
+      const credential = { host, token: acquired.token };
+      const answer = await pullAttempt(state, placement, credential, signal);
       if (answer.code === 0) return;
       if (engineFailure(answer) !== "Unauthorized")
         throw new Error(
@@ -420,7 +439,9 @@ async function containerAssignment(state, name) {
 async function started(state, placement, assignment, envelope) {
   const { settings, seams } = state;
   await mkdir(settings.runtimeDir, { recursive: true, mode: 0o700 });
-  const directory = await mkdtemp(join(settings.runtimeDir, "job-"));
+  const directory = await mkdtemp(
+    join(settings.runtimeDir, runtimeScratch("job")),
+  );
   let answer;
   try {
     const envFile = join(directory, "env");

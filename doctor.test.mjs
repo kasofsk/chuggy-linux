@@ -8,7 +8,7 @@ import { runnerFixture } from "./runner.fixture.mjs";
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, token?: unknown}} options
+ * @param {{runner?: Record<string, unknown> | undefined, token?: unknown, uid?: number, securityOptions?: string[]}} options
  */
 async function doctored(t, options = {}) {
   const { home, environment, poolFile } = await runnerFixture(
@@ -16,12 +16,13 @@ async function doctored(t, options = {}) {
     "runner" in options ? { runner: options.runner } : {},
   );
   const { engine, state } = fakeEngine();
+  state.securityOptions = options.securityOptions ?? state.securityOptions;
   /** @type {unknown[][]} */
   const polls = [];
   const findings = await doctorFindings({
     poolFile,
     paths: runnerPaths(environment, home),
-    uid: process.getuid?.() ?? -1,
+    uid: options.uid ?? process.getuid?.() ?? -1,
     parts: {
       engine: () => engine,
       tokens: () => ({
@@ -89,5 +90,49 @@ test("a check that failed says why, and what depends on it is not checked", asyn
   assert.equal(
     findings[3].detail,
     "the issuer refused the pool's client credential",
+  );
+});
+
+test("under docker, doctor names the endpoint its context names, and fails rootless docker", async (t) => {
+  /** @param {string[]} securityOptions */
+  const engineFinding = async (securityOptions) => {
+    const { findings, state } = await doctored(t, {
+      runner: { engine: "docker" },
+      uid: 1000,
+      securityOptions,
+    });
+    return {
+      finding: findings.find((found) => found.check === "container engine"),
+      verbs: state.calls.map((call) => call.argv[0]),
+    };
+  };
+  assert.deepEqual(await engineFinding(["name=seccomp,profile=builtin"]), {
+    finding: {
+      check: "container engine",
+      passed: true,
+      detail:
+        "docker at unix:///var/run/docker.sock lists 0 of this pool's containers",
+    },
+    verbs: ["info", "context", "ps", "network"],
+  });
+  const rootless = await engineFinding(["name=rootless", "name=cgroupns"]);
+  assert.equal(rootless.finding?.passed, false);
+  assert.match(
+    rootless.finding?.detail ?? "",
+    /^docker is running rootless, .*; use rootful docker, or rootless podman/u,
+  );
+  assert.deepEqual(rootless.verbs, ["info"]);
+});
+
+test("under docker, a runner that is not uid 1000 fails the Claude token file check", async (t) => {
+  const { findings } = await doctored(t, {
+    runner: { engine: "docker" },
+    uid: 1234,
+  });
+  const finding = findings.find((found) => found.check === "Claude token file");
+  assert.equal(finding?.passed, false);
+  assert.match(
+    finding?.detail ?? "",
+    /docker runs a job as uid 1000, and this runner is uid 1234.*use rootless podman/u,
   );
 });

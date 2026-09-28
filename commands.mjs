@@ -25,6 +25,7 @@ import {
   runnerSetup,
   runnerTokens,
   runtimeDirectory,
+  scratchRemovedOnSignal,
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import {
@@ -67,7 +68,10 @@ async function started(call) {
     call.host.environment,
     call.host.home,
   );
-  const runner = runnerParts(setup, { uid: call.host.uid, log: call.host.out });
+  const runner = await runnerParts(setup, {
+    uid: call.host.uid,
+    log: call.host.out,
+  });
   return {
     setup,
     runner,
@@ -79,6 +83,7 @@ async function started(call) {
 async function run(call) {
   const { setup, runner, socket } = await started(call);
   await runnerDirectories(setup.paths);
+  scratchRemovedOnSignal(runtimeDirectory(setup.paths));
   if ((await jobNetwork(runner.engine, setup.config.network)) === "Created")
     call.host.out(`made the job network ${setup.config.network}`);
   const server = await controlServer(socket, runner.backend);
@@ -102,6 +107,7 @@ async function once(call) {
     return 1;
   }
   await runnerDirectories(setup.paths);
+  scratchRemovedOnSignal(runtimeDirectory(setup.paths));
   await jobNetwork(runner.engine, setup.config.network);
   const pass = await workerPoolClientPass(runner.client);
   await runner.backend.settled();

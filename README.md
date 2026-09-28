@@ -2,7 +2,7 @@
 
 Runs a chuggy worker pool's jobs on a Linux machine. Registered as a pool, the machine runs `chuggy-linux run` as a systemd user service: it polls chuggy for assignments and runs each one as a docker or podman container of the image the assignment pins.
 
-It needs Linux with a systemd user session, Node 24 or later, and docker or rootless podman.
+It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman.
 
 ## Install
 
@@ -40,7 +40,7 @@ The tarball carries its dependencies, so the install fetches nothing else. `just
 | `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's to set.   |
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 
-A job runs as uid 1000, the image's user, and reads the token file as that uid. Under docker the file must be owned by uid 1000; under rootless podman that uid is you, so the file must be yours.
+A job runs as uid 1000, the image's user, and reads the token file as that uid, so the file must be yours. Rootless podman maps that uid onto you. Docker runs it as this machine's uid 1000, so docker serves only a runner that is uid 1000, and refuses any other user: use rootless podman there. Rootless docker is refused too: use rootful docker or rootless podman.
 
 ## Check
 
@@ -69,10 +69,12 @@ This writes `~/.config/systemd/user/chuggy-linux.service`, which runs this insta
 | `doctor`            | The checks above.                                                                    |
 | `install-service`   | Writes the systemd user unit.                                                        |
 
+`once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going.
+
 ## What it does
 
 - Places an assignment only if this machine has the CPU and memory it asks for, it pins an image, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
-- Pulls a missing image under the pool's own token, written for that one pull to a directory only you can read and removed after it. A registry that refuses the token is asked again under a fresh one until the assignment's deadline.
+- Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once with no credential.
 - Runs each job as uid 1000 with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the token file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
 - Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job past its deadline is killed first.
@@ -83,4 +85,5 @@ This writes `~/.config/systemd/user/chuggy-linux.service`, which runs this insta
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
 - Install docker or podman, start the service, or upgrade itself.
-- Vet the registry an image names: the pool's token goes to whichever one it is. An image naming no registry host, such as Docker Hub's, is pulled with no credential.
+- Pull with your own registry logins: an image not from the pool's registry is pulled with none.
+- Limit a job's workspace: its volume has no size limit.

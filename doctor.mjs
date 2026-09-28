@@ -10,12 +10,8 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolLabelValue } from "./containerBackend.mjs";
 import { listArgv, networkInspectArgv } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
-import {
-  claudeTokenFileRefusal,
-  jobHostUid,
-  runnerConfig,
-} from "./runnerConfig.mjs";
-import { runtimeDirectory } from "./runner.mjs";
+import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
+import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
@@ -67,12 +63,13 @@ async function checked(findings, check, probe) {
  */
 async function engineChecks(engine, credentials, config, findings) {
   const reachable = await checked(findings, "container engine", async () => {
+    const endpoint = await engineEndpoint(config.engine, engine);
     const listed = await engine.exec(listArgv(poolLabelValue(credentials)));
     if (listed.code !== 0) throw new Error(engineFailureLine(listed));
     const count = listed.stdout.split("\n").filter((id) => id.trim()).length;
     return [
       true,
-      `${config.engine} lists ${String(count)} of this pool's containers`,
+      `${config.engine}${endpoint === undefined ? "" : ` at ${endpoint}`} lists ${String(count)} of this pool's containers`,
     ];
   });
   if (reachable === undefined) return;
@@ -127,16 +124,13 @@ export async function doctorFindings(input) {
   ]);
   if (config !== undefined)
     await checked(findings, "Claude token file", async () => {
-      const readerUid = jobHostUid(config.engine, input.uid);
       const refusal = await claudeTokenFileRefusal(
         config.claudeTokenFile,
-        readerUid,
+        config.engine,
+        input.uid,
       );
       if (refusal !== undefined) throw new Error(refusal);
-      return [
-        true,
-        `${config.claudeTokenFile}, readable by uid ${String(readerUid)}`,
-      ];
+      return [true, `${config.claudeTokenFile}, this runner's own`];
     });
   if (credentials === undefined) return findings;
   if (config !== undefined)

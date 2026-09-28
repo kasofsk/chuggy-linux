@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  dockerContextArgv,
+  dockerInfoArgv,
   imageInspectArgv,
   inspectArgv,
   killArgv,
@@ -48,8 +50,8 @@ const runHead = [
   "1000:1000",
 ];
 
-/** Everything after it. */
-const runTail = [
+/** Everything after it, up to the minted tmpfs. */
+const runLimits = [
   "--cap-drop",
   "ALL",
   "--security-opt",
@@ -63,33 +65,62 @@ const runTail = [
   "--mount",
   "type=bind,source=/home/op/.config/chuggy-linux/claude-token,target=/var/run/chuggy/credentials/claude-code,readonly",
   "--tmpfs",
-  "/var/run/chuggy/minted:rw,nosuid,nodev,noexec,size=1m,uid=1000,gid=1000,mode=0700",
-  "--volume",
-  "/workspace",
-  "--network",
-  "chuggy-jobs",
-  image,
 ];
 
+/** Everything after the minted tmpfs. */
+const runTail = ["--volume", "/workspace", "--network", "chuggy-jobs", image];
+
 test("docker runs a job as the image's user, with nothing mapped", () => {
-  assert.deepEqual(runArgv("docker", job), [...runHead, ...runTail]);
+  assert.deepEqual(runArgv("docker", job), [
+    ...runHead,
+    ...runLimits,
+    "/var/run/chuggy/minted:rw,nosuid,nodev,noexec,size=1m,uid=1000,gid=1000,mode=0700",
+    ...runTail,
+  ]);
 });
 
 test("podman runs a job as the image's user, mapped onto the one running podman", () => {
   assert.deepEqual(runArgv("podman", job), [
     ...runHead,
     "--userns=keep-id:uid=1000,gid=1000",
+    ...runLimits,
+    "/var/run/chuggy/minted:rw,nosuid,nodev,noexec,size=1m,mode=0700,U",
     ...runTail,
   ]);
 });
 
-test("docker reads a pull's credential from DOCKER_CONFIG, podman from --authfile", () => {
+test("each engine is told the minted tmpfs's owner in the words it accepts, and never the other's", () => {
+  /** @param {"docker" | "podman"} engine */
+  const options = (engine) => {
+    const argv = runArgv(engine, job);
+    return argv[argv.indexOf("--tmpfs") + 1].split(":")[1].split(",");
+  };
+  assert.ok(options("docker").includes("uid=1000"));
+  assert.ok(options("docker").includes("gid=1000"));
+  assert.ok(!options("docker").includes("U"));
+  assert.ok(options("podman").includes("U"));
+  assert.ok(!options("podman").some((option) => /^[ug]id=/u.test(option)));
+});
+
+test("docker reads a pull's credential from DOCKER_CONFIG and its endpoint from DOCKER_HOST, podman from --authfile", () => {
   assert.deepEqual(
-    pullArgv("docker", image, "/run/user/1000/chuggy-linux/pull-x"),
+    pullArgv(
+      "docker",
+      image,
+      "/run/user/1000/chuggy-linux/pull-x",
+      "unix:///run/user/1000/docker.sock",
+    ),
     {
       argv: ["pull", "--quiet", image],
-      environment: { DOCKER_CONFIG: "/run/user/1000/chuggy-linux/pull-x" },
+      environment: {
+        DOCKER_CONFIG: "/run/user/1000/chuggy-linux/pull-x",
+        DOCKER_HOST: "unix:///run/user/1000/docker.sock",
+      },
     },
+  );
+  assert.throws(
+    () => pullArgv("docker", image, "/run/user/1000/chuggy-linux/pull-x"),
+    /a docker pull needs the endpoint its context names/u,
   );
   assert.deepEqual(
     pullArgv("podman", image, "/run/user/1000/chuggy-linux/pull-x"),
@@ -118,6 +149,8 @@ test("every other call is handed to either engine as this argv", () => {
       removeArgv("chuggy-shame-0123456789abcdef0123", { force: true }),
       networkInspectArgv("chuggy-jobs"),
       networkCreateArgv("chuggy-jobs"),
+      dockerInfoArgv(),
+      dockerContextArgv(),
     ],
     [
       ["image", "inspect", "--format", "{{.Id}}", image],
@@ -136,6 +169,8 @@ test("every other call is handed to either engine as this argv", () => {
       ["rm", "-f", "-v", "chuggy-shame-0123456789abcdef0123"],
       ["network", "inspect", "chuggy-jobs"],
       ["network", "create", "chuggy-jobs"],
+      ["info", "--format", "{{json .SecurityOptions}}"],
+      ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
     ],
   );
 });

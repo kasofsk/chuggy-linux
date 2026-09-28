@@ -10,8 +10,9 @@
  * restart begins the next one from what the engine lists.
  */
 
-import { availableParallelism, totalmem } from "node:os";
+import { readdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
+import { availableParallelism, totalmem } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -25,9 +26,14 @@ import { poolClientTokens } from "@chuggy/worker-core/poolTokens.mjs";
 
 import { containerBackend } from "./containerBackend.mjs";
 import { containerEngine } from "./engine.mjs";
-import { networkCreateArgv, networkInspectArgv } from "./engineArgv.mjs";
+import {
+  dockerContextArgv,
+  dockerInfoArgv,
+  networkCreateArgv,
+  networkInspectArgv,
+} from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
-import { jobHostUid, runnerConfig, runnerPaths } from "./runnerConfig.mjs";
+import { runnerConfig, runnerPaths, runtimeScratch } from "./runnerConfig.mjs";
 import { deniedExitStatus } from "./systemdUnit.mjs";
 
 /**
@@ -104,6 +110,34 @@ export function runnerEngine(config) {
 }
 
 /**
+ * The endpoint docker's CLI context names, which a pull made under a
+ * configuration directory of its own would otherwise lose; podman has none.
+ * Rootless docker is refused, because it maps a job's uid onto one that
+ * cannot read the Claude token file.
+ *
+ * @param {RunnerConfig["engine"]} name
+ * @param {Engine} engine
+ * @returns {Promise<string | undefined>}
+ */
+export async function engineEndpoint(name, engine) {
+  if (name === "podman") return undefined;
+  const info = await engine.exec(dockerInfoArgv());
+  if (info.code !== 0)
+    throw new Error(`docker could not be asked: ${engineFailureLine(info)}`);
+  if (/\bname=rootless\b/u.test(info.stdout))
+    throw new Error(
+      'docker is running rootless, where a job cannot read the Claude token file; use rootful docker, or rootless podman ("engine": "podman")',
+    );
+  const context = await engine.exec(dockerContextArgv());
+  const endpoint = context.stdout.trim();
+  if (context.code !== 0 || endpoint === "")
+    throw new Error(
+      `docker's context names no endpoint: ${engineFailureLine(context)}`,
+    );
+  return endpoint;
+}
+
+/**
  * @param {PoolCredentials} credentials
  * @returns {WorkerPoolClient["tokens"]}
  */
@@ -128,24 +162,28 @@ export function runnerPlane(credentials) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, log: (line: string) => void}} host this process's uid, and where its log lines go
- * @returns {Runner}
+ * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"]}} host this process's uid, where its log lines go, and the engine and token source when not those the files name
+ * @returns {Promise<Runner>}
  */
-export function runnerParts(setup, host) {
+export async function runnerParts(setup, host) {
   const { credentials, config, paths } = setup;
-  const engine = runnerEngine(config);
-  const tokens = runnerTokens(credentials);
+  const runtimeDir = runtimeDirectory(paths);
+  const engine = host.engine ?? runnerEngine(config);
+  const dockerHost = await engineEndpoint(config.engine, engine);
+  const tokens = host.tokens ?? runnerTokens(credentials);
   const backend = containerBackend(
     {
       engine: config.engine,
       pool: credentials,
       tokenFile: config.claudeTokenFile,
-      tokenReaderUid: jobHostUid(config.engine, host.uid),
+      runnerUid: host.uid,
+      registryHost: credentials.registryHost,
+      dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
       outputBytesMax: config.outputBytesMax,
       environment: config.environment,
       network: config.network,
-      runtimeDir: runtimeDirectory(paths),
+      runtimeDir,
       logDir: paths.logs,
       machine: {
         cpuMillis: availableParallelism() * 1000,
@@ -241,4 +279,36 @@ export async function runnerDirectories(paths) {
   for (const entry of await readdir(runtime))
     if (/^(?:pull|job)-/u.test(entry))
       await rm(join(runtime, entry), { recursive: true, force: true });
+}
+
+/**
+ * Removes the pull credentials and env files this process made, and no other
+ * process's.
+ *
+ * @param {string} runtime
+ * @param {number} pid
+ */
+export function ownScratchRemoved(runtime, pid = process.pid) {
+  const own = [runtimeScratch("pull", pid), runtimeScratch("job", pid)];
+  for (const entry of readdirSync(runtime))
+    if (own.some((prefix) => entry.startsWith(prefix)))
+      rmSync(join(runtime, entry), { recursive: true, force: true });
+}
+
+/**
+ * Has a SIGTERM or SIGINT remove this process's own scratch, then end the
+ * process by that signal as it would have ended anyway. Its containers are
+ * left for the next run to pick up.
+ *
+ * @param {string} runtime
+ */
+export function scratchRemovedOnSignal(runtime) {
+  for (const signal of ["SIGTERM", "SIGINT"])
+    process.once(signal, () => {
+      try {
+        ownScratchRemoved(runtime);
+      } finally {
+        process.kill(process.pid, signal);
+      }
+    });
 }

@@ -19,6 +19,7 @@ import { deferred, fakeEngine } from "./engine.fixture.mjs";
 const pool = { tenant: "vteng", project: "chuggy", pool: "shame" };
 const image = "registry.chuggy.example/worker@sha256:" + "a".repeat(64);
 const startMs = 1_800_000_000_000;
+const ownUid = process.getuid?.() ?? -1;
 
 /** @param {Partial<import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment>} overrides */
 function assignment(overrides = {}) {
@@ -52,10 +53,12 @@ async function harness(t, overrides = {}) {
   const invalidated = [];
   let minted = 0;
   const settings = {
-    engine: /** @type {const} */ ("docker"),
+    engine: /** @type {"docker" | "podman"} */ ("podman"),
     pool,
     tokenFile,
-    tokenReaderUid: process.getuid?.() ?? -1,
+    runnerUid: ownUid,
+    registryHost: /** @type {string | undefined} */ ("registry.chuggy.example"),
+    dockerHost: /** @type {string | undefined} */ (undefined),
     timeoutSecsMax: 7200,
     outputBytesMax: 1024 * 1024,
     environment: { GIT_AUTHOR_NAME: "chuggy" },
@@ -81,7 +84,15 @@ async function harness(t, overrides = {}) {
     },
     log: (line) => log.push(line),
   });
-  return { backend, state, clock, log, invalidated, settings };
+  return {
+    backend,
+    state,
+    clock,
+    log,
+    invalidated,
+    settings,
+    minted: () => minted,
+  };
 }
 
 /** @param {ReturnType<typeof fakeEngine>["state"]} state */
@@ -149,6 +160,10 @@ test("a job's env file carries the envelope and the environment, and is gone onc
   await backend.settled();
 
   const run = state.calls.find((call) => call.argv[0] === "run");
+  assert.match(
+    run?.argv[run.argv.indexOf("--env-file") + 1] ?? "",
+    new RegExp(`/job-${String(process.pid)}-[^/]+/env$`, "u"),
+  );
   const [task, ...rest] = (run?.envFile ?? "").split("\n");
   assert.deepEqual(JSON.parse(task.replace(/^CHUG_WORKER_TASK=/u, "")), {
     callbackUrl: "https://chuggy.example/worker",
@@ -258,17 +273,92 @@ test("a pull's credential directory is owner-only while the pull runs", async (t
   /** @type {number[]} */
   const modes = [];
   state.pull = async (pulledImage, call) => {
-    modes.push((await stat(call.environment.DOCKER_CONFIG)).mode & 0o777);
-    modes.push(
-      (await stat(join(call.environment.DOCKER_CONFIG, "config.json"))).mode &
-        0o777,
-    );
+    const directory = call.authDirectory ?? "";
+    modes.push((await stat(directory)).mode & 0o777);
+    modes.push((await stat(join(directory, "config.json"))).mode & 0o777);
     state.images.add(pulledImage);
     return { code: 0, stdout: "", stderr: "" };
   };
   await backend.place(assignment());
   await backend.settled();
   assert.deepEqual(modes, [0o700, 0o600]);
+});
+
+test("the pool's token is presented only to the registry the pool was registered for", async (t) => {
+  const { backend, state, invalidated, minted } = await harness(t);
+  const elsewhere = `registry.example.com/x@sha256:${"b".repeat(64)}`;
+  await backend.place(assignment());
+  await backend.place(assignment({ assignment: "asg-2", image: elsewhere }));
+  await backend.settled();
+  const pulls = state.calls.filter((call) => call.argv[0] === "pull");
+  assert.deepEqual(
+    pulls.map((call) => [call.argv.at(-1), JSON.parse(call.authFile ?? "")]),
+    [
+      [
+        image,
+        {
+          auths: {
+            "registry.chuggy.example": {
+              auth: Buffer.from("chuggy-pool:pool-token-1").toString("base64"),
+            },
+          },
+        },
+      ],
+      [elsewhere, { auths: {} }],
+    ],
+  );
+  assert.equal(minted(), 1);
+  assert.deepEqual(invalidated, []);
+  assert.equal(state.containers.size, 2);
+});
+
+test("a pool whose registration names no registry never writes its token", async (t) => {
+  const { backend, state, minted } = await harness(t, {
+    registryHost: undefined,
+  });
+  await backend.place(assignment());
+  await backend.settled();
+  const [pull] = state.calls.filter((call) => call.argv[0] === "pull");
+  assert.deepEqual(JSON.parse(pull.authFile ?? ""), { auths: {} });
+  assert.equal(minted(), 0);
+  assert.ok(verbs(state).includes("run"));
+});
+
+test("a registry the pool's token was not sent to refusing a pull is not retried, and costs the token nothing", async (t) => {
+  const { backend, state, invalidated, minted, log } = await harness(t);
+  state.pull = () => ({
+    code: 1,
+    stdout: "",
+    stderr:
+      'Error response from daemon: Head "https://registry.example.com/v2/x/manifests/sha256:bbbb": unauthorized: authentication required\n',
+  });
+  await backend.place(
+    assignment({ image: `registry.example.com/x@sha256:${"b".repeat(64)}` }),
+  );
+  await backend.settled();
+  assert.equal(verbs(state).filter((verb) => verb === "pull").length, 1);
+  assert.equal(minted(), 0);
+  assert.deepEqual(invalidated, []);
+  assert.match(
+    log.at(-1) ?? "",
+    /was not started: its image could not be pulled under no credential, as every image not of the pool's registry is: .*unauthorized/u,
+  );
+  assert.deepEqual(await backend.held(), []);
+});
+
+test("under docker, a runner that is not uid 1000 refuses every assignment", async (t) => {
+  const { backend, state } = await harness(t, {
+    engine: "docker",
+    runnerUid: 1234,
+    dockerHost: "unix:///var/run/docker.sock",
+  });
+  const placed = await backend.place(assignment());
+  assert.equal(placed.placed, "Refused");
+  assert.match(
+    placed.evidence ?? "",
+    /docker runs a job as uid 1000, and this runner is uid 1234.*rootless podman/u,
+  );
+  assert.deepEqual(state.calls, []);
 });
 
 test("a repeated placement is placed once, in flight and after its container runs", async (t) => {
@@ -351,7 +441,7 @@ test("a running container inside its deadline is held", async (t) => {
 });
 
 test("a listing that failed throws rather than answering nothing held", async (t) => {
-  const { backend, state } = await harness(t);
+  const { backend, state } = await harness(t, { engine: "docker" });
   state.unreachable = true;
   await assert.rejects(
     backend.held(),

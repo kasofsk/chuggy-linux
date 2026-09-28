@@ -1,9 +1,9 @@
 /**
  * Every call the runner makes to its container engine, as the argv it hands
- * the engine's CLI. Docker and podman are told the same things in the same
- * words but two: podman names a pull's credential by flag where docker reads
- * it from a directory, and podman maps the image's user onto the invoking one.
- * Nothing here runs anything.
+ * the engine's CLI. Docker and podman are told the same things, in the same
+ * words wherever both accept them: a pull's credential, the owner of a tmpfs
+ * and the mapping of the image's user are where they differ. Nothing here
+ * runs anything.
  */
 
 import { join } from "node:path";
@@ -49,29 +49,63 @@ export function imageInspectArgv(image) {
 
 /**
  * A pull, and the variables its engine is run with: docker reads its
- * credential from `DOCKER_CONFIG`, podman from `--authfile`.
+ * credential from `DOCKER_CONFIG`, podman from `--authfile`. A fresh
+ * `DOCKER_CONFIG` holds no CLI context either, so docker is also told the
+ * endpoint its context resolved to, or the pull would reach another daemon
+ * than every other call.
  *
  * @param {EngineName} engine
  * @param {string} image
  * @param {string} authDirectory
+ * @param {string | undefined} dockerHost the endpoint `dockerContextArgv` answered; docker's alone
  * @returns {{argv: string[], environment: Record<string, string>}}
  */
-export function pullArgv(engine, image, authDirectory) {
-  return engine === "docker"
-    ? {
-        argv: ["pull", "--quiet", image],
-        environment: { DOCKER_CONFIG: authDirectory },
-      }
-    : {
-        argv: [
-          "pull",
-          "--quiet",
-          "--authfile",
-          join(authDirectory, registryAuthFile),
-          image,
-        ],
-        environment: {},
-      };
+export function pullArgv(engine, image, authDirectory, dockerHost) {
+  if (engine === "docker") {
+    if (dockerHost === undefined)
+      throw new RangeError(
+        "a docker pull needs the endpoint its context names",
+      );
+    return {
+      argv: ["pull", "--quiet", image],
+      environment: { DOCKER_CONFIG: authDirectory, DOCKER_HOST: dockerHost },
+    };
+  }
+  return {
+    argv: [
+      "pull",
+      "--quiet",
+      "--authfile",
+      join(authDirectory, registryAuthFile),
+      image,
+    ],
+    environment: {},
+  };
+}
+
+/** Docker's security options, which name a daemon running rootless. */
+export function dockerInfoArgv() {
+  return ["info", "--format", "{{json .SecurityOptions}}"];
+}
+
+/** The endpoint docker's CLI reaches, by `DOCKER_HOST` or its current context. */
+export function dockerContextArgv() {
+  return ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"];
+}
+
+/**
+ * The minted directory's tmpfs, owned by the job's user. Docker takes the
+ * owner as `uid`/`gid` and rejects `U`; rootless podman rejects `uid`/`gid`
+ * and takes `U`, which chowns the mount to the container's user.
+ *
+ * @param {EngineName} engine
+ */
+export function mintedTmpfs(engine) {
+  const owner =
+    engine === "docker"
+      ? `uid=${String(jobUid)},gid=${String(jobGid)},mode=0700`
+      : "mode=0700,U";
+  return `${mintedCredentialDirectory}:rw,nosuid,nodev,noexec,size=1m,${owner}`;
 }
 
 /**
@@ -116,7 +150,7 @@ export function runArgv(engine, job) {
     "--mount",
     `type=bind,source=${job.tokenFile},target=${jobProviderCredentialFile},readonly`,
     "--tmpfs",
-    `${mintedCredentialDirectory}:rw,nosuid,nodev,noexec,size=1m,uid=${String(jobUid)},gid=${String(jobGid)},mode=0700`,
+    mintedTmpfs(engine),
     "--volume",
     jobWorkspace,
     "--network",

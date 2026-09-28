@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
 import { fakeEngine } from "./engine.fixture.mjs";
 import {
+  engineEndpoint,
   jobNetwork,
+  ownScratchRemoved,
   runnerDirectories,
   runnerLoop,
   runnerParts,
   runnerSetup,
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
-import { runnerFixture } from "./runner.fixture.mjs";
+import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
+
+const ownUid = process.getuid?.() ?? -1;
 
 /**
  * A client whose issuer is down for its first pass and whose plane answers
@@ -128,7 +134,7 @@ test("a run is composed from both files, and refuses to start without a runtime 
     runner: { concurrencyMax: 3 },
   });
   const setup = await runnerSetup(poolFile, environment, home);
-  const runner = runnerParts(setup, { uid: 1000, log: () => undefined });
+  const runner = await runnerParts(setup, { uid: 1000, log: () => undefined });
   assert.equal(runner.client.settings.concurrencyMax, 3);
   assert.deepEqual(runner.backend.inFlight(), []);
   const bare = await runnerSetup(
@@ -136,8 +142,181 @@ test("a run is composed from both files, and refuses to start without a runtime 
     { XDG_CONFIG_HOME: environment.XDG_CONFIG_HOME },
     home,
   );
-  assert.throws(
-    () => runnerParts(bare, { uid: 1000, log: () => undefined }),
+  await assert.rejects(
+    runnerParts(bare, { uid: 1000, log: () => undefined }),
     /XDG_RUNTIME_DIR is not set/u,
   );
 });
+
+test("podman has no endpoint to resolve, and is not asked for one", async () => {
+  const { engine, state } = fakeEngine();
+  assert.equal(await engineEndpoint("podman", engine), undefined);
+  assert.deepEqual(state.calls, []);
+});
+
+test("rootless docker is refused before anything else is asked of it", async () => {
+  const { engine, state } = fakeEngine();
+  state.securityOptions = ["name=seccomp,profile=builtin", "name=rootless"];
+  await assert.rejects(
+    engineEndpoint("docker", engine),
+    /^Error: docker is running rootless, .*; use rootful docker, or rootless podman/u,
+  );
+  assert.deepEqual(
+    state.calls.map((call) => call.argv[0]),
+    ["info"],
+  );
+});
+
+test("a run refuses rootless docker", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { engine: "docker" },
+  });
+  const { engine, state } = fakeEngine();
+  state.securityOptions = ["name=rootless"];
+  await assert.rejects(
+    runnerParts(await runnerSetup(poolFile, environment, home), {
+      uid: 1000,
+      log: () => undefined,
+      engine,
+    }),
+    /docker is running rootless/u,
+  );
+});
+
+test(
+  "a docker pull is made at the endpoint the user's docker context names",
+  {
+    skip:
+      ownUid !== 1000 &&
+      "docker places a job only for a runner that is uid 1000, and this suite is not",
+  },
+  async (t) => {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: { engine: "docker" },
+    });
+    const { engine, state } = fakeEngine();
+    state.contextHost = "unix:///run/user/1000/docker.sock";
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: ownUid, log: () => undefined, engine },
+    );
+    const placed = await runner.backend.place({
+      assignment: "asg-1",
+      capabilities: ["container"],
+      image: `busybox@sha256:${"a".repeat(64)}`,
+      cpuMillis: 1000,
+      memoryMib: 512,
+      deadlineSecs: 600,
+      callbackUrl: "https://chuggy.example/worker",
+      bearer: "attempt-bearer",
+    });
+    assert.deepEqual(placed, { placed: "Placed" });
+    await runner.backend.settled();
+    const pull = state.calls.find((call) => call.argv[0] === "pull");
+    assert.equal(
+      pull?.environment.DOCKER_HOST,
+      "unix:///run/user/1000/docker.sock",
+    );
+    assert.deepEqual(
+      state.calls.map((call) => call.argv[0]),
+      ["info", "context", "image", "pull", "run"],
+    );
+  },
+);
+
+test("docker is refused when it cannot be asked, or names no endpoint", async () => {
+  const { engine, state } = fakeEngine();
+  state.contextHost = "";
+  await assert.rejects(
+    engineEndpoint("docker", engine),
+    /^Error: docker's context names no endpoint/u,
+  );
+  state.unreachable = true;
+  await assert.rejects(
+    engineEndpoint("docker", engine),
+    /^Error: docker could not be asked: Cannot connect to the Docker daemon/u,
+  );
+});
+
+test("the registry the pool file names is the one a pull presents the pool's token to", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    pool: { ...fixturePool, registryHost: "registry.chuggy.example" },
+  });
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    {
+      uid: ownUid,
+      log: () => undefined,
+      engine,
+      tokens: {
+        acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+        invalidate: () => undefined,
+      },
+    },
+  );
+  await runner.backend.place({
+    assignment: "asg-1",
+    capabilities: ["container"],
+    image: `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`,
+    cpuMillis: 1000,
+    memoryMib: 512,
+    deadlineSecs: 600,
+    callbackUrl: "https://chuggy.example/worker",
+    bearer: "attempt-bearer",
+  });
+  await runner.backend.settled();
+  const pull = state.calls.find((call) => call.argv[0] === "pull");
+  assert.deepEqual(Object.keys(JSON.parse(pull?.authFile ?? "").auths), [
+    "registry.chuggy.example",
+  ]);
+});
+
+test("a process removes only the pull credentials and env files it made", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const runtime = /** @type {string} */ (
+    runnerPaths(environment, home).runtime
+  );
+  for (const entry of ["pull-12-a", "job-12-b", "pull-123-c", "job-1-d"])
+    await mkdir(join(runtime, entry), { recursive: true });
+  await writeFile(join(runtime, "control.sock"), "");
+  ownScratchRemoved(runtime, 12);
+  assert.deepEqual((await readdir(runtime)).sort(), [
+    "control.sock",
+    "job-1-d",
+    "pull-123-c",
+  ]);
+});
+
+for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT"]))
+  test(`a ${signal} removes the process's own scratch and still ends it by that signal`, async (t) => {
+    const { home, environment } = await runnerFixture(t);
+    const runtime = /** @type {string} */ (
+      runnerPaths(environment, home).runtime
+    );
+    await mkdir(join(runtime, "pull-1-another"), { recursive: true });
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { runtimeScratch } from ${JSON.stringify(import.meta.resolve("./runnerConfig.mjs"))};
+import { scratchRemovedOnSignal } from ${JSON.stringify(import.meta.resolve("./runner.mjs"))};
+const runtime = process.argv[1];
+mkdirSync(join(runtime, runtimeScratch("pull") + "a"));
+mkdirSync(join(runtime, runtimeScratch("job") + "b"));
+scratchRemovedOnSignal(runtime);
+setInterval(() => undefined, 1000);
+process.stdout.write("ready\\n");`,
+        runtime,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    await once(child.stdout, "data");
+    assert.equal((await readdir(runtime)).length, 3);
+    child.kill(signal);
+    assert.deepEqual(await once(child, "exit"), [null, signal]);
+    assert.deepEqual(await readdir(runtime), ["pull-1-another"]);
+  });
