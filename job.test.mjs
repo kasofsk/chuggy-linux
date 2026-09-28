@@ -1,0 +1,59 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { jobEnvelope, jobEnvironmentFile } from "./job.mjs";
+
+const assignment = {
+  assignment: "asg-1",
+  capabilities: ["container"],
+  image: "registry.chuggy.example/worker:1",
+  cpuMillis: 1000,
+  memoryMib: 1024,
+  deadlineSecs: 600,
+  callbackUrl: "https://chuggy.example/worker",
+  bearer: "attempt-bearer-secret",
+};
+const bounds = { timeoutSecsMax: 3600, outputBytesMax: 65536 };
+
+test("the envelope is the assignment's callback and bearer with the runner's bounds and paths", () => {
+  assert.deepEqual(JSON.parse(jobEnvelope(assignment, bounds)), {
+    callbackUrl: "https://chuggy.example/worker",
+    bearer: "attempt-bearer-secret",
+    workspace: "/workspace",
+    timeoutSecsMax: 3600,
+    outputBytesMax: 65536,
+    providerCredentialFile: "/var/run/chuggy/credentials/claude-code",
+  });
+});
+
+test("an envelope the contract refuses names its fields and never their values", () => {
+  assert.throws(
+    () =>
+      jobEnvelope(
+        { ...assignment, callbackUrl: "attempt-bearer-secret", bearer: "" },
+        bounds,
+      ),
+    (error) =>
+      error instanceof RangeError &&
+      error.message ===
+        "the assignment makes no envelope a job can read: callbackUrl, bearer",
+  );
+});
+
+test("the env file carries the envelope first and each variable a line", () => {
+  assert.equal(
+    jobEnvironmentFile('{"a":"b c"}', {
+      GIT_AUTHOR_NAME: "chuggy bot",
+      EMPTY: "",
+    }),
+    'CHUG_WORKER_TASK={"a":"b c"}\nGIT_AUTHOR_NAME=chuggy bot\nEMPTY=\n',
+  );
+});
+
+test("a value that would break a line is refused rather than split", () => {
+  for (const value of ["a\nINJECTED=1", "a\rb"])
+    assert.throws(
+      () => jobEnvironmentFile("{}", { NAME: value }),
+      /NAME cannot be carried by an env file/u,
+    );
+});

@@ -1,0 +1,179 @@
+import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+  claudeTokenFileRefusal,
+  jobHostUid,
+  runnerConfig,
+  runnerPaths,
+} from "./runnerConfig.mjs";
+
+const ownUid = process.getuid?.() ?? -1;
+
+/** @param {import("node:test").TestContext} t */
+async function scratch(t) {
+  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-config-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+}
+
+const minimal = {
+  claudeTokenFile: "/home/op/.config/chuggy-linux/claude-token",
+  timeoutSecsMax: 3600,
+  outputBytesMax: 65536,
+};
+
+/**
+ * @param {string} directory
+ * @param {unknown} document
+ * @param {number} mode
+ */
+async function written(directory, document, mode = 0o600) {
+  const file = join(directory, "runner.json");
+  await writeFile(
+    file,
+    typeof document === "string" ? document : JSON.stringify(document),
+    { mode },
+  );
+  await chmod(file, mode);
+  return file;
+}
+
+test("a minimal file is read with every default", async (t) => {
+  const file = await written(await scratch(t), minimal);
+  assert.deepEqual(await runnerConfig(file), {
+    ...minimal,
+    engine: "docker",
+    concurrencyMax: 1,
+    environment: {},
+    network: "chuggy-jobs",
+  });
+});
+
+test("a file anyone but its owner can read or write is refused", async (t) => {
+  const directory = await scratch(t);
+  for (const mode of [0o640, 0o604, 0o620, 0o660]) {
+    const file = await written(directory, minimal, mode);
+    await assert.rejects(
+      runnerConfig(file),
+      new RegExp(
+        `is mode ${mode.toString(8)}; only its owner may read or write it`,
+        "u",
+      ),
+    );
+  }
+});
+
+test("what the file may not say is refused, naming where", async (t) => {
+  const directory = await scratch(t);
+  const refused = [
+    [{ ...minimal, enigne: "podman" }, /Unrecognized key: "enigne"/u],
+    [{ ...minimal, engine: "containerd" }, /engine /u],
+    [
+      { ...minimal, environment: { CHUG_WORKER_TASK: "{}" } },
+      /environment\.CHUG_WORKER_TASK is the runner's to set/u,
+    ],
+    [
+      { ...minimal, environment: { CLAUDE_CODE_OAUTH_TOKEN: "x" } },
+      /environment\.CLAUDE_CODE_OAUTH_TOKEN is the runner's to set/u,
+    ],
+    [
+      { ...minimal, environment: { NAME: "a\nB=c" } },
+      /environment\.NAME may not break a line/u,
+    ],
+    [{ ...minimal, environment: { "1NAME": "a" } }, /environment\.1NAME/u],
+    [{ ...minimal, network: "host" }, /network may not be the host's network/u],
+    [{ ...minimal, network: "--privileged" }, /network /u],
+    [
+      { ...minimal, claudeTokenFile: "claude-token" },
+      /claudeTokenFile must be an absolute path/u,
+    ],
+    [
+      { ...minimal, claudeTokenFile: "/a,readonly=false" },
+      /claudeTokenFile cannot be named in a bind mount/u,
+    ],
+    [{ ...minimal, concurrencyMax: 0 }, /concurrencyMax /u],
+    [
+      { claudeTokenFile: minimal.claudeTokenFile },
+      /timeoutSecsMax .*; outputBytesMax /u,
+    ],
+    ["{", /is not JSON/u],
+  ];
+  for (const [document, why] of refused)
+    await assert.rejects(
+      runnerConfig(await written(directory, document)),
+      why,
+      JSON.stringify(document),
+    );
+});
+
+test("a directory is not a runner configuration", async (t) => {
+  const directory = await scratch(t);
+  await mkdir(join(directory, "runner.json"), { mode: 0o700 });
+  await assert.rejects(
+    runnerConfig(join(directory, "runner.json")),
+    /is not a file/u,
+  );
+});
+
+test("the runner's paths follow the XDG base directories, ignoring a relative one", () => {
+  assert.deepEqual(runnerPaths({}, "/home/op"), {
+    config: "/home/op/.config/chuggy-linux/runner.json",
+    unit: "/home/op/.config/systemd/user/chuggy-linux.service",
+    logs: "/home/op/.local/state/chuggy-linux/logs",
+    runtime: undefined,
+  });
+  assert.deepEqual(
+    runnerPaths(
+      {
+        XDG_CONFIG_HOME: "/etc/op",
+        XDG_STATE_HOME: "state",
+        XDG_RUNTIME_DIR: "/run/user/1000",
+      },
+      "/home/op",
+    ),
+    {
+      config: "/etc/op/chuggy-linux/runner.json",
+      unit: "/etc/op/systemd/user/chuggy-linux.service",
+      logs: "/home/op/.local/state/chuggy-linux/logs",
+      runtime: "/run/user/1000/chuggy-linux",
+    },
+  );
+});
+
+test("docker jobs read the token as the image's uid, rootless podman ones as the runner's", () => {
+  assert.equal(jobHostUid("docker", 1234), 1000);
+  assert.equal(jobHostUid("podman", 1234), 1234);
+});
+
+test("a Claude token file a job cannot be handed is refused", async (t) => {
+  const directory = await scratch(t);
+  const file = join(directory, "claude-token");
+  assert.match(
+    (await claudeTokenFileRefusal(file, ownUid)) ?? "",
+    /cannot be found/u,
+  );
+  await writeFile(file, "", { mode: 0o600 });
+  assert.match((await claudeTokenFileRefusal(file, ownUid)) ?? "", /is empty/u);
+  await writeFile(file, "claude-token-fixture");
+  assert.equal(await claudeTokenFileRefusal(file, ownUid), undefined);
+  assert.match(
+    (await claudeTokenFileRefusal(file, ownUid + 1)) ?? "",
+    new RegExp(
+      `owned by uid ${String(ownUid)}, and a job reads it as uid ${String(ownUid + 1)}`,
+      "u",
+    ),
+  );
+  await chmod(file, 0o640);
+  assert.match(
+    (await claudeTokenFileRefusal(file, ownUid)) ?? "",
+    /is mode 640/u,
+  );
+  assert.match(
+    (await claudeTokenFileRefusal(directory, ownUid)) ?? "",
+    /is not a file/u,
+  );
+});

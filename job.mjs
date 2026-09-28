@@ -1,0 +1,89 @@
+/**
+ * What every job is given, whichever engine runs it: the envelope it is
+ * launched with in place of a task document, the user it runs as, and the
+ * paths its image reads. The envelope is checked against the contract's own
+ * schema, so no job starts with one its core would refuse.
+ */
+
+import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
+import { poolEnvelopeSchema } from "@chuggy/worker-contract/workerTask";
+
+/**
+ * @typedef {import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment} WorkerPoolAssignment
+ *
+ * @typedef {object} JobBounds
+ * @property {number} timeoutSecsMax
+ * @property {number} outputBytesMax
+ */
+
+/** The worker image's own user, which every mount a job reads is shaped for. */
+export const jobUid = 1000;
+export const jobGid = 1000;
+
+/** A bound on a job's processes, so a fork loop in agent-run code stops at its own container. */
+export const jobPidsMax = 4096;
+
+/** An anonymous volume of the job's own container. */
+export const jobWorkspace = "/workspace";
+
+/** Where the Claude token file is mounted, read-only. */
+export const jobProviderCredentialFile =
+  "/var/run/chuggy/credentials/claude-code";
+
+/**
+ * The variables a job's environment may not name: the envelope, and the one
+ * the core sets from the mounted token, which a value here would shadow.
+ */
+export const reservedJobVariables = [
+  workerTaskVariable,
+  "CLAUDE_CODE_OAUTH_TOKEN",
+];
+
+/**
+ * The envelope as the text `CHUG_WORKER_TASK` carries. A refusal names the
+ * fields that failed and never their values, because the bearer is one.
+ *
+ * @param {WorkerPoolAssignment} assignment
+ * @param {JobBounds} bounds
+ * @returns {string}
+ */
+export function jobEnvelope(assignment, bounds) {
+  const envelope = poolEnvelopeSchema.safeParse({
+    callbackUrl: assignment.callbackUrl,
+    bearer: assignment.bearer,
+    workspace: jobWorkspace,
+    timeoutSecsMax: bounds.timeoutSecsMax,
+    outputBytesMax: bounds.outputBytesMax,
+    providerCredentialFile: jobProviderCredentialFile,
+  });
+  if (!envelope.success)
+    throw new RangeError(
+      `the assignment makes no envelope a job can read: ${envelope.error.issues
+        .map((issue) => issue.path.join("."))
+        .join(", ")}`,
+    );
+  return JSON.stringify(envelope.data);
+}
+
+/**
+ * The env file a job's container is run with: the envelope, then the runner's
+ * environment. An env file carries one variable a line with its value taken
+ * verbatim, so a value that would break a line is refused rather than split.
+ *
+ * @param {string} envelope
+ * @param {Readonly<Record<string, string>>} environment
+ * @returns {string}
+ */
+export function jobEnvironmentFile(envelope, environment) {
+  const lines = [
+    [workerTaskVariable, envelope],
+    ...Object.entries(environment),
+  ];
+  return lines
+    .map(([name, value]) => {
+      if (/[\r\n]/u.test(value))
+        throw new RangeError(`${name} cannot be carried by an env file`);
+      return `${name}=${value}\n`;
+    })
+    .join("");
+}
