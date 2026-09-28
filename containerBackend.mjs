@@ -1,0 +1,598 @@
+/**
+ * `WorkerPoolBackend` over a container engine on this machine: a container
+ * per assignment, run from the image the assignment pins, whose entrypoint is
+ * the worker core. chuggy's Kubernetes pool backend is the behaviour this
+ * mirrors, with a container where it has a pod.
+ *
+ * PLACEMENT IS ASYNCHRONOUS. The plane renews a lease only while a poll names
+ * it held, and a cold pull can outlast a lease, so `place` decides only
+ * whether this machine can take the work; the pull and the run happen behind
+ * it, and `held` answers for them meanwhile. One that fails leaves `held` and
+ * is logged, and the lease it no longer renews ends its attempt.
+ *
+ * WHAT IS RUNNING IS READ FROM THE ENGINE. `held` lists this pool's containers
+ * by label and reads each one's assignment and deadline off its labels, so a
+ * restarted runner picks up what its predecessor started. A container that
+ * has ended, or has run past its deadline, has its logs saved and is removed
+ * rather than answered. A listing that failed throws, because the emptier
+ * answer is the one that loses work.
+ */
+
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { z } from "zod";
+
+import {
+  assignmentLabel,
+  deadlineLabel,
+  imageInspectArgv,
+  inspectArgv,
+  killArgv,
+  listArgv,
+  logsArgv,
+  pullArgv,
+  removeArgv,
+  runArgv,
+} from "./engineArgv.mjs";
+import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
+import { jobEnvelope, jobEnvironmentFile } from "./job.mjs";
+import { imageRegistryHost, withRegistryAuth } from "./registryAuth.mjs";
+import { claudeTokenFileRefusal } from "./runnerConfig.mjs";
+
+/**
+ * @typedef {import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment} WorkerPoolAssignment
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolTokens} WorkerPoolTokens
+ * @typedef {import("./engine.mjs").Engine} Engine
+ *
+ * @typedef {object} PoolIdentity
+ * @property {string} tenant
+ * @property {string} project
+ * @property {string} pool
+ *
+ * @typedef {object} ContainerBackendSettings
+ * @property {"docker" | "podman"} engine
+ * @property {PoolIdentity} pool
+ * @property {string} tokenFile
+ * @property {number} tokenReaderUid the uid on this machine a job reads the token file as
+ * @property {number} timeoutSecsMax
+ * @property {number} outputBytesMax
+ * @property {Readonly<Record<string, string>>} environment
+ * @property {string} network
+ * @property {string} runtimeDir
+ * @property {string} logDir
+ * @property {{cpuMillis: number, memoryMib: number}} machine
+ * @property {number} pullRetryMs the wait before a pull the registry refused is tried again
+ *
+ * @typedef {object} ContainerBackendSeams
+ * @property {Engine} engine
+ * @property {WorkerPoolTokens} tokens the pool's own, which the loop shares
+ * @property {() => number} nowMs
+ * @property {(ms: number, signal: AbortSignal) => Promise<void>} sleep
+ * @property {(line: string) => void} log
+ *
+ * @typedef {object} InFlightPlacement
+ * @property {string} assignment
+ * @property {string} name
+ * @property {string} image
+ * @property {"Placing" | "Pulling" | "Starting"} phase
+ * @property {number} deadlineEpochSecs
+ *
+ * @typedef {InFlightPlacement & {controller: AbortController, done: Promise<void>}} Placement
+ *
+ * @typedef {object} PoolContainer
+ * @property {string} id
+ * @property {string} name
+ * @property {string | undefined} assignment
+ * @property {string} status
+ * @property {number | undefined} deadlineEpochSecs
+ *
+ * @typedef {WorkerPoolBackend & {
+ *   inFlight: () => InFlightPlacement[],
+ *   containers: () => Promise<PoolContainer[]>,
+ *   settled: () => Promise<void>,
+ * }} ContainerBackend
+ *
+ * @typedef {{settings: ContainerBackendSettings, seams: ContainerBackendSeams, placements: Map<string, Placement>}} State
+ */
+
+/** How much of an assignment's digest a container's name carries. */
+const containerDigestChars = 20;
+
+/** The states a container does no more work in; podman adds two docker lacks. */
+const endedStatuses = new Set([
+  "created",
+  "exited",
+  "dead",
+  "stopped",
+  "configured",
+]);
+
+const inspectedSchema = z.array(
+  z.object({
+    Id: z.string(),
+    Name: z.string(),
+    Config: z.object({ Labels: z.record(z.string(), z.string()).nullish() }),
+    State: z.object({ Status: z.string() }),
+  }),
+);
+
+/** @param {PoolIdentity} pool */
+export function poolLabelValue(pool) {
+  return `${pool.tenant}/${pool.project}/${pool.pool}`;
+}
+
+/**
+ * The one container an assignment runs as, named so a repeated placement
+ * names it again.
+ *
+ * @param {string} pool
+ * @param {string} assignment
+ */
+export function containerName(pool, assignment) {
+  const digest = createHash("sha256").update(assignment, "utf8").digest("hex");
+  return `chuggy-${pool}-${digest.slice(0, containerDigestChars)}`;
+}
+
+/** @param {ContainerBackendSettings} settings */
+export function checkedContainerBackendSettings(settings) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(settings.pool.pool))
+    throw new RangeError(
+      `pool ${settings.pool.pool} cannot name a container; register it under a name of letters, digits, '_', '.' and '-'`,
+    );
+  return settings;
+}
+
+/**
+ * @param {z.infer<typeof inspectedSchema>[number]} inspected
+ * @returns {PoolContainer}
+ */
+function poolContainer(inspected) {
+  const labels = inspected.Config.Labels ?? {};
+  const deadline = Number(labels[deadlineLabel]);
+  return {
+    id: inspected.Id,
+    name: inspected.Name.replace(/^\//u, ""),
+    assignment: labels[assignmentLabel],
+    status: inspected.State.Status,
+    deadlineEpochSecs: Number.isSafeInteger(deadline) ? deadline : undefined,
+  };
+}
+
+/**
+ * Inspected containers, which the engine answers for even where one of them
+ * was removed between the listing and the inspection.
+ *
+ * @param {State} state
+ * @param {readonly string[]} containers
+ * @returns {Promise<PoolContainer[]>}
+ */
+async function inspectedContainers(state, containers) {
+  const answer = await state.seams.engine.exec(inspectArgv(containers));
+  if (answer.code !== 0 && engineFailure(answer) !== "NoSuchContainer")
+    throw new Error(
+      `${state.settings.engine} could not inspect this pool's containers: ${engineFailureLine(answer)}`,
+    );
+  let parsed;
+  try {
+    parsed = inspectedSchema.parse(JSON.parse(answer.stdout));
+  } catch {
+    throw new Error(
+      `${state.settings.engine} answered an inspection this runner cannot read`,
+    );
+  }
+  return parsed.map(poolContainer);
+}
+
+/**
+ * @param {State} state
+ * @returns {Promise<PoolContainer[]>}
+ */
+async function poolContainers(state) {
+  const listed = await state.seams.engine.exec(
+    listArgv(poolLabelValue(state.settings.pool)),
+  );
+  if (listed.code !== 0)
+    throw new Error(
+      `${state.settings.engine} could not list this pool's containers: ${engineFailureLine(listed)}`,
+    );
+  const ids = listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return ids.length === 0 ? [] : inspectedContainers(state, ids);
+}
+
+/**
+ * A container's logs into a file only its owner can read, since what a job
+ * printed before its core began scrubbing can hold a secret.
+ *
+ * @param {State} state
+ * @param {PoolContainer} container
+ */
+async function savedLogs(state, container) {
+  await mkdir(state.settings.logDir, { recursive: true, mode: 0o700 });
+  const file = join(state.settings.logDir, `${container.name}.log`);
+  const handle = await open(file, "w", 0o600);
+  try {
+    await handle.chmod(0o600);
+    const answer = await state.seams.engine.execToFd(
+      logsArgv(container.id),
+      handle.fd,
+    );
+    return answer.code === 0 ? file : undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Saves a container's logs and removes it. A container whose logs could not
+ * be saved is left for the next pass to try again, rather than lost with them.
+ *
+ * @param {State} state
+ * @param {PoolContainer} container
+ * @param {string} why
+ */
+async function retired(state, container, why) {
+  const file = await savedLogs(state, container);
+  if (file === undefined) {
+    state.seams.log(`${container.name} ${why}; its logs could not be saved`);
+    return;
+  }
+  const removed = await state.seams.engine.exec(
+    removeArgv(container.id, { force: false }),
+  );
+  state.seams.log(
+    removed.code === 0
+      ? `${container.name} ${why}; logs saved to ${file}, container removed`
+      : `${container.name} ${why}; logs saved to ${file}, not removed: ${engineFailureLine(removed)}`,
+  );
+}
+
+/**
+ * What this pool holds: every placement still pulling or starting, and every
+ * container still running inside its deadline. The placements are read before
+ * the listing, so one that finishes between the two is listed as a container.
+ *
+ * @param {State} state
+ * @returns {Promise<string[]>}
+ */
+async function heldAssignments(state) {
+  const placing = new Set(state.placements.keys());
+  const held = new Set(placing);
+  const nowSecs = Math.floor(state.seams.nowMs() / 1000);
+  for (const container of await poolContainers(state)) {
+    if (container.assignment === undefined || placing.has(container.assignment))
+      continue;
+    if (endedStatuses.has(container.status)) {
+      await retired(state, container, "ended");
+      continue;
+    }
+    if (container.status === "removing") continue;
+    if (
+      container.deadlineEpochSecs === undefined ||
+      nowSecs >= container.deadlineEpochSecs
+    ) {
+      const killed = await state.seams.engine.exec(killArgv(container.id));
+      if (killed.code !== 0)
+        state.seams.log(
+          `${container.name} passed its deadline and was not killed: ${engineFailureLine(killed)}`,
+        );
+      await retired(state, container, "passed its deadline");
+      continue;
+    }
+    held.add(container.assignment);
+  }
+  return [...held];
+}
+
+/**
+ * Why this machine will not take an assignment, or nothing.
+ *
+ * @param {State} state
+ * @param {WorkerPoolAssignment} assignment
+ * @returns {Promise<string | undefined>}
+ */
+async function placementRefusal(state, assignment) {
+  const { machine } = state.settings;
+  if (assignment.image === undefined)
+    return "the assignment pins no image, and this pool runs only an image its assignment pins";
+  if (assignment.cpuMillis > machine.cpuMillis)
+    return `the assignment asks for ${String(assignment.cpuMillis)} CPU millis and this machine has ${String(machine.cpuMillis)}`;
+  if (assignment.memoryMib > machine.memoryMib)
+    return `the assignment asks for ${String(assignment.memoryMib)} MiB and this machine has ${String(machine.memoryMib)}`;
+  return claudeTokenFileRefusal(
+    state.settings.tokenFile,
+    state.settings.tokenReaderUid,
+  );
+}
+
+/**
+ * @param {State} state
+ * @param {string} image
+ */
+async function imagePresent(state, image) {
+  const answer = await state.seams.engine.exec(imageInspectArgv(image));
+  if (answer.code === 0) return true;
+  if (engineFailure(answer) === "NotFound") return false;
+  throw new Error(
+    `its image could not be inspected: ${engineFailureLine(answer)}`,
+  );
+}
+
+/**
+ * One pull under a fresh credential.
+ *
+ * @param {State} state
+ * @param {Placement} placement
+ * @param {string} token
+ * @param {AbortSignal} signal
+ */
+function pullAttempt(state, placement, token, signal) {
+  const { settings, seams } = state;
+  return withRegistryAuth(
+    settings.runtimeDir,
+    imageRegistryHost(placement.image),
+    token,
+    (directory) => {
+      const pull = pullArgv(settings.engine, placement.image, directory);
+      return seams.engine.exec(pull.argv, {
+        environment: pull.environment,
+        signal,
+      });
+    },
+  );
+}
+
+/**
+ * Pulls until the image is here, the registry refuses it for a reason a new
+ * token will not change, or the deadline passes. A refused token is discarded
+ * so the next attempt is made under a fresh one; the layers an attempt
+ * finished stay with the engine.
+ *
+ * @param {State} state
+ * @param {Placement} placement
+ */
+async function pulled(state, placement) {
+  const { settings, seams } = state;
+  for (;;) {
+    const remainingMs = placement.deadlineEpochSecs * 1000 - seams.nowMs();
+    if (remainingMs <= 0)
+      throw new Error("its image was not pulled by the assignment's deadline");
+    const signal = globalThis.AbortSignal.any([
+      placement.controller.signal,
+      globalThis.AbortSignal.timeout(remainingMs),
+    ]);
+    const acquired = await seams.tokens.acquire();
+    if (acquired.acquired === "Denied")
+      throw new Error(
+        `the pool has no token to pull with: ${acquired.evidence}`,
+      );
+    if (acquired.acquired === "Token") {
+      const answer = await pullAttempt(
+        state,
+        placement,
+        acquired.token,
+        signal,
+      );
+      if (answer.code === 0) return;
+      if (engineFailure(answer) !== "Unauthorized")
+        throw new Error(
+          `its image could not be pulled: ${engineFailureLine(answer)}`,
+        );
+      seams.tokens.invalidate(acquired.token);
+      seams.log(
+        `${placement.name}: the registry refused the pool's token; pulling again under a fresh one`,
+      );
+    } else
+      seams.log(
+        `${placement.name}: no token to pull with yet: ${acquired.evidence}`,
+      );
+    await seams.sleep(settings.pullRetryMs, signal);
+  }
+}
+
+/**
+ * Which assignment an existing container of this name carries.
+ *
+ * @param {State} state
+ * @param {string} name
+ */
+async function containerAssignment(state, name) {
+  const [container] = await inspectedContainers(state, [name]);
+  return container?.assignment;
+}
+
+/**
+ * Runs the container, the envelope reaching it through an env file only its
+ * owner can read, which is removed once `run` has answered. A container of
+ * this name already carrying this assignment is a repeated placement.
+ *
+ * @param {State} state
+ * @param {Placement} placement
+ * @param {WorkerPoolAssignment} assignment
+ * @param {string} envelope
+ * @returns {Promise<"started" | "was already running">} what the log says of it
+ */
+async function started(state, placement, assignment, envelope) {
+  const { settings, seams } = state;
+  await mkdir(settings.runtimeDir, { recursive: true, mode: 0o700 });
+  const directory = await mkdtemp(join(settings.runtimeDir, "job-"));
+  let answer;
+  try {
+    const envFile = join(directory, "env");
+    await writeFile(
+      envFile,
+      jobEnvironmentFile(envelope, settings.environment),
+      {
+        mode: 0o600,
+        flag: "wx",
+      },
+    );
+    answer = await seams.engine.exec(
+      runArgv(settings.engine, {
+        name: placement.name,
+        pool: poolLabelValue(settings.pool),
+        assignment: placement.assignment,
+        deadlineEpochSecs: placement.deadlineEpochSecs,
+        envFile,
+        cpuMillis: assignment.cpuMillis,
+        memoryMib: assignment.memoryMib,
+        tokenFile: settings.tokenFile,
+        network: settings.network,
+        image: placement.image,
+      }),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  if (answer.code === 0) return "started";
+  if (
+    engineFailure(answer) === "NameConflict" &&
+    (await containerAssignment(state, placement.name)) === placement.assignment
+  )
+    return "was already running";
+  throw new Error(
+    `its container could not be run: ${engineFailureLine(answer)}`,
+  );
+}
+
+/**
+ * @param {State} state
+ * @param {Placement} placement
+ * @param {WorkerPoolAssignment} assignment
+ * @param {string} envelope
+ */
+async function placementRun(state, placement, assignment, envelope) {
+  if (!(await imagePresent(state, placement.image))) {
+    placement.phase = "Pulling";
+    await pulled(state, placement);
+  }
+  placement.controller.signal.throwIfAborted();
+  placement.phase = "Starting";
+  const outcome = await started(state, placement, assignment, envelope);
+  state.seams.log(`${placement.name} ${outcome}`);
+}
+
+/**
+ * What became of a placement that never started. Its signal aborts on a stop
+ * or at the deadline, and only a stop aborts its controller.
+ *
+ * @param {Placement} placement
+ * @param {unknown} failure
+ */
+function placementFailure(placement, failure) {
+  if (placement.controller.signal.aborted)
+    return "was stopped before it started";
+  if (failure instanceof Error && failure.name === "AbortError")
+    return "was not started: its image was not pulled by the assignment's deadline";
+  return `was not started: ${failure instanceof Error ? failure.message : String(failure)}`;
+}
+
+/**
+ * @param {State} state
+ * @param {WorkerPoolAssignment} assignment
+ */
+async function placed(state, assignment) {
+  const { settings, seams } = state;
+  if (state.placements.has(assignment.assignment)) return { placed: "Placed" };
+  const refusal = await placementRefusal(state, assignment);
+  if (refusal !== undefined) return { placed: "Refused", evidence: refusal };
+  let envelope;
+  try {
+    envelope = jobEnvelope(assignment, settings);
+  } catch (failure) {
+    return {
+      placed: "Refused",
+      evidence: /** @type {Error} */ (failure).message,
+    };
+  }
+  /** @type {Placement} */
+  const placement = {
+    assignment: assignment.assignment,
+    name: containerName(settings.pool.pool, assignment.assignment),
+    image: /** @type {string} */ (assignment.image),
+    phase: "Placing",
+    deadlineEpochSecs:
+      Math.floor(seams.nowMs() / 1000) +
+      Math.min(assignment.deadlineSecs, settings.timeoutSecsMax),
+    controller: new globalThis.AbortController(),
+    done: Promise.resolve(),
+  };
+  state.placements.set(placement.assignment, placement);
+  placement.done = placementRun(state, placement, assignment, envelope)
+    .catch((failure) =>
+      seams.log(`${placement.name} ${placementFailure(placement, failure)}`),
+    )
+    .finally(() => {
+      if (state.placements.get(placement.assignment) === placement)
+        state.placements.delete(placement.assignment);
+    });
+  return { placed: "Placed" };
+}
+
+/**
+ * A placement still in flight is cancelled and waited out first, so a `run`
+ * it was already making is removed below rather than left behind.
+ *
+ * @param {State} state
+ * @param {string} assignment
+ */
+async function stopped(state, assignment) {
+  const placement = state.placements.get(assignment);
+  if (placement !== undefined) {
+    placement.controller.abort();
+    await placement.done;
+  }
+  const answer = await state.seams.engine.exec(
+    removeArgv(containerName(state.settings.pool.pool, assignment), {
+      force: true,
+    }),
+  );
+  if (answer.code === 0) return { stopped: "Stopped" };
+  const failure = engineFailure(answer);
+  if (failure === "NoSuchContainer") return { stopped: "Stopped" };
+  return {
+    stopped: "Unavailable",
+    evidence:
+      failure === "Unreachable"
+        ? "the container engine could not be reached to stop this workload"
+        : `the container engine did not stop this workload: ${engineFailureLine(answer)}`,
+  };
+}
+
+/**
+ * @param {ContainerBackendSettings} settings
+ * @param {ContainerBackendSeams} seams
+ * @returns {ContainerBackend}
+ */
+export function containerBackend(settings, seams) {
+  /** @type {State} */
+  const state = {
+    settings: checkedContainerBackendSettings(settings),
+    seams,
+    placements: new Map(),
+  };
+  return {
+    place: (assignment) => placed(state, assignment),
+    stop: (assignment) => stopped(state, assignment),
+    held: () => heldAssignments(state),
+    inFlight: () =>
+      [...state.placements.values()].map((placement) => ({
+        assignment: placement.assignment,
+        name: placement.name,
+        image: placement.image,
+        phase: placement.phase,
+        deadlineEpochSecs: placement.deadlineEpochSecs,
+      })),
+    containers: () => poolContainers(state),
+    settled: async () => {
+      await Promise.all(
+        [...state.placements.values()].map((placement) => placement.done),
+      );
+    },
+  };
+}
