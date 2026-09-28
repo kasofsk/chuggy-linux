@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { dockerCli, dockerDaemon, machineLogin } from "./docker.fixture.mjs";
+import { pullArgv } from "./engineArgv.mjs";
 import {
   imageRegistryHost,
   registryAuthDocument,
@@ -46,24 +48,79 @@ test("an image's registry is its first component when that names a host, and Doc
 const credential = { host: "registry.chuggy.example", token: "pool-token" };
 
 test("the credential is the pool's token under the pool's user, for that host alone, and a pull without one names no host", () => {
-  const document = JSON.parse(registryAuthDocument(credential));
-  assert.deepEqual(Object.keys(document.auths), ["registry.chuggy.example"]);
-  assert.equal(
-    Buffer.from(
-      document.auths["registry.chuggy.example"].auth,
-      "base64",
-    ).toString("utf8"),
-    "chuggy-pool:pool-token",
-  );
-  assert.deepEqual(JSON.parse(registryAuthDocument(undefined)), {
+  for (const engine of /** @type {const} */ (["docker", "podman"])) {
+    const document = JSON.parse(registryAuthDocument(engine, credential));
+    assert.deepEqual(Object.keys(document), ["auths"]);
+    assert.deepEqual(Object.keys(document.auths), ["registry.chuggy.example"]);
+    assert.equal(
+      Buffer.from(
+        document.auths["registry.chuggy.example"].auth,
+        "base64",
+      ).toString("utf8"),
+      "chuggy-pool:pool-token",
+    );
+  }
+  assert.deepEqual(JSON.parse(registryAuthDocument("podman", undefined)), {
     auths: {},
   });
+  assert.deepEqual(JSON.parse(registryAuthDocument("docker", undefined)), {
+    auths: {},
+    credHelpers: { "chuggy.invalid": "" },
+  });
+});
+
+test("docker's own CLI presents the pool's token to the pool's registry, and no login of the machine's anywhere", async (t) => {
+  const docker = await dockerCli();
+  if (docker === undefined) {
+    t.skip("docker's CLI is not installed");
+    return;
+  }
+  const daemon = await dockerDaemon(t);
+  const runtime = await runtimeDir(t);
+  /** @type {Array<[string, typeof credential | undefined]>} */
+  const pulls = [
+    [`registry.chuggy.example/worker@sha256:${"a".repeat(64)}`, credential],
+    ["ghcr.io/someone/private:1", undefined],
+    ["busybox:1", undefined],
+  ];
+  for (const withPass of [false, true])
+    for (const [image, pulledWith] of pulls) {
+      const answer = await withRegistryAuth(
+        runtime,
+        "docker",
+        pulledWith,
+        (directory) => {
+          const pull = pullArgv("docker", image, directory, daemon.host);
+          return docker.exec(pull.argv, {
+            environment: { ...pull.environment, PATH: daemon.path(withPass) },
+          });
+        },
+      );
+      assert.equal(answer.code, 0, answer.stderr);
+    }
+  assert.deepEqual(await daemon.asked(), []);
+  const presented = daemon.registryAuths.map((auth) =>
+    JSON.stringify(auth ?? null),
+  );
+  assert.ok(
+    !presented.some((auth) => auth.includes(machineLogin.Secret)),
+    presented.join("\n"),
+  );
+  assert.deepEqual(
+    daemon.registryAuths.map((auth) =>
+      auth !== null && typeof auth === "object" && "password" in auth
+        ? auth.password
+        : undefined,
+    ),
+    ["pool-token", undefined, undefined, "pool-token", undefined, undefined],
+  );
 });
 
 test("a pull's directory is owner-only, holds its credential, and is gone after", async (t) => {
   const runtime = await runtimeDir(t);
   const seen = await withRegistryAuth(
     runtime,
+    "podman",
     credential,
     async (directory) => ({
       name: directory.slice(runtime.length + 1),
@@ -79,7 +136,7 @@ test("a pull's directory is owner-only, holds its credential, and is gone after"
       name: undefined,
       directory: 0o700,
       file: 0o600,
-      text: registryAuthDocument(credential),
+      text: registryAuthDocument("podman", credential),
     },
   );
   assert.equal((await stat(runtime)).mode & 0o777, 0o700);
@@ -89,7 +146,7 @@ test("a pull's directory is owner-only, holds its credential, and is gone after"
 test("a pull's directory is gone after a pull that threw", async (t) => {
   const runtime = await runtimeDir(t);
   await assert.rejects(
-    withRegistryAuth(runtime, undefined, async () => {
+    withRegistryAuth(runtime, "docker", undefined, async () => {
       throw new Error("the pull was aborted");
     }),
     /the pull was aborted/u,

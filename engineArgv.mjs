@@ -1,9 +1,6 @@
 /**
  * Every call the runner makes to its container engine, as the argv it hands
- * the engine's CLI. Docker and podman are told the same things, in the same
- * words wherever both accept them: a pull's credential, the owner of a tmpfs
- * and the mapping of the image's user are where they differ. Nothing here
- * runs anything.
+ * the engine's CLI. Nothing here runs anything.
  */
 
 import { join } from "node:path";

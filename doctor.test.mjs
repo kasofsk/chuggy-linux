@@ -119,7 +119,7 @@ test("under docker, doctor names the endpoint its context names, and fails rootl
   assert.equal(rootless.finding?.passed, false);
   assert.match(
     rootless.finding?.detail ?? "",
-    /^docker is running rootless, .*; use rootful docker, or rootless podman/u,
+    /^docker is running rootless, .*; use rootful docker without userns-remap, or rootless podman/u,
   );
   assert.deepEqual(rootless.verbs, ["info"]);
 });

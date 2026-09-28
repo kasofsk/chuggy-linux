@@ -109,11 +109,15 @@ export function runnerEngine(config) {
   return containerEngine(config.engine, engineCallTimeoutMs);
 }
 
+/** How `docker info` names a daemon that maps a job's uid onto another. */
+const remappedDocker = { rootless: "rootless", userns: "with userns-remap" };
+
 /**
  * The endpoint docker's CLI context names, which a pull made under a
  * configuration directory of its own would otherwise lose; podman has none.
- * Rootless docker is refused, because it maps a job's uid onto one that
- * cannot read the Claude token file.
+ * Rootless docker and userns-remap are refused, because each maps a job's uid
+ * onto one that cannot read the Claude token file. Only a unix socket is
+ * taken, since a remote context's certificates would not reach the pull.
  *
  * @param {RunnerConfig["engine"]} name
  * @param {Engine} engine
@@ -124,15 +128,20 @@ export async function engineEndpoint(name, engine) {
   const info = await engine.exec(dockerInfoArgv());
   if (info.code !== 0)
     throw new Error(`docker could not be asked: ${engineFailureLine(info)}`);
-  if (/\bname=rootless\b/u.test(info.stdout))
+  const remapped = /\bname=(rootless|userns)\b/u.exec(info.stdout)?.[1];
+  if (remapped !== undefined)
     throw new Error(
-      'docker is running rootless, where a job cannot read the Claude token file; use rootful docker, or rootless podman ("engine": "podman")',
+      `docker is running ${remappedDocker[remapped]}, where a job cannot read the Claude token file; use rootful docker without userns-remap, or rootless podman ("engine": "podman")`,
     );
   const context = await engine.exec(dockerContextArgv());
-  const endpoint = context.stdout.trim();
-  if (context.code !== 0 || endpoint === "")
+  if (context.code !== 0)
     throw new Error(
-      `docker's context names no endpoint: ${engineFailureLine(context)}`,
+      `docker's context could not be read: ${engineFailureLine(context)}`,
+    );
+  const endpoint = context.stdout.trim();
+  if (!endpoint.startsWith("unix://"))
+    throw new Error(
+      `docker's context names "${endpoint}", and only a local docker, reached by a unix socket, is supported`,
     );
   return endpoint;
 }

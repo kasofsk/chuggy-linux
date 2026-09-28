@@ -336,18 +336,23 @@ async function imagePresent(state, image) {
  */
 function pullAttempt(state, placement, credential, signal) {
   const { settings, seams } = state;
-  return withRegistryAuth(settings.runtimeDir, credential, (directory) => {
-    const pull = pullArgv(
-      settings.engine,
-      placement.image,
-      directory,
-      settings.dockerHost,
-    );
-    return seams.engine.exec(pull.argv, {
-      environment: pull.environment,
-      signal,
-    });
-  });
+  return withRegistryAuth(
+    settings.runtimeDir,
+    settings.engine,
+    credential,
+    (directory) => {
+      const pull = pullArgv(
+        settings.engine,
+        placement.image,
+        directory,
+        settings.dockerHost,
+      );
+      return seams.engine.exec(pull.argv, {
+        environment: pull.environment,
+        signal,
+      });
+    },
+  );
 }
 
 /**

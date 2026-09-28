@@ -5,6 +5,11 @@
  * other pull is made from such a directory too, holding no credential, so no
  * login stored on this machine is presented anywhere either. The engine reads
  * it from there, so the token is never in an argv.
+ *
+ * DOCKER FALLS BACK TO THE MACHINE'S CREDENTIAL HELPER for a configuration
+ * holding no credential, and presents whatever login it keeps. Docker's empty
+ * one therefore names a helper, the file itself, for a host that cannot exist,
+ * which is enough to stop the fallback.
  */
 
 import { Buffer } from "node:buffer";
@@ -20,6 +25,9 @@ import { runtimeScratch } from "./runnerConfig.mjs";
 
 /** The user a registry is told; the registry authorizes on the token alone. */
 const registryUser = "chuggy-pool";
+
+/** A host no image can name, given a helper entry only so docker has one. */
+const noHelperHost = "chuggy.invalid";
 
 /** Where an image whose reference names no registry is pulled from. */
 const defaultRegistryHost = "docker.io";
@@ -40,9 +48,17 @@ export function imageRegistryHost(reference) {
     : defaultRegistryHost;
 }
 
-/** @param {RegistryCredential | undefined} credential */
-export function registryAuthDocument(credential) {
-  if (credential === undefined) return JSON.stringify({ auths: {} });
+/**
+ * @param {"docker" | "podman"} engine
+ * @param {RegistryCredential | undefined} credential
+ */
+export function registryAuthDocument(engine, credential) {
+  if (credential === undefined)
+    return JSON.stringify(
+      engine === "docker"
+        ? { auths: {}, credHelpers: { [noHelperHost]: "" } }
+        : { auths: {} },
+    );
   const auth = Buffer.from(
     `${registryUser}:${credential.token}`,
     "utf8",
@@ -56,17 +72,18 @@ export function registryAuthDocument(credential) {
  *
  * @template T
  * @param {string} runtimeDir
+ * @param {"docker" | "podman"} engine
  * @param {RegistryCredential | undefined} credential
  * @param {(directory: string) => Promise<T>} pull
  * @returns {Promise<T>}
  */
-export async function withRegistryAuth(runtimeDir, credential, pull) {
+export async function withRegistryAuth(runtimeDir, engine, credential, pull) {
   await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(runtimeDir, runtimeScratch("pull")));
   try {
     await writeFile(
       join(directory, registryAuthFile),
-      registryAuthDocument(credential),
+      registryAuthDocument(engine, credential),
       { mode: 0o600, flag: "wx" },
     );
     return await pull(directory);

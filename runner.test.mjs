@@ -154,17 +154,25 @@ test("podman has no endpoint to resolve, and is not asked for one", async () => 
   assert.deepEqual(state.calls, []);
 });
 
-test("rootless docker is refused before anything else is asked of it", async () => {
-  const { engine, state } = fakeEngine();
-  state.securityOptions = ["name=seccomp,profile=builtin", "name=rootless"];
-  await assert.rejects(
-    engineEndpoint("docker", engine),
-    /^Error: docker is running rootless, .*; use rootful docker, or rootless podman/u,
-  );
-  assert.deepEqual(
-    state.calls.map((call) => call.argv[0]),
-    ["info"],
-  );
+test("docker that maps a job's uid, rootless or by userns-remap, is refused before anything else is asked of it", async () => {
+  for (const [option, running] of [
+    ["name=rootless", "rootless"],
+    ["name=userns", "with userns-remap"],
+  ]) {
+    const { engine, state } = fakeEngine();
+    state.securityOptions = ["name=seccomp,profile=builtin", option];
+    await assert.rejects(
+      engineEndpoint("docker", engine),
+      new RegExp(
+        `^Error: docker is running ${running}, .*; use rootful docker without userns-remap, or rootless podman`,
+        "u",
+      ),
+    );
+    assert.deepEqual(
+      state.calls.map((call) => call.argv[0]),
+      ["info"],
+    );
+  }
 });
 
 test("a run refuses rootless docker", async (t) => {
@@ -184,7 +192,7 @@ test("a run refuses rootless docker", async (t) => {
 });
 
 test(
-  "a docker pull is made at the endpoint the user's docker context names",
+  "a docker pull is made at the endpoint the user's docker context names, under docker's own empty credential",
   {
     skip:
       ownUid !== 1000 &&
@@ -217,6 +225,10 @@ test(
       pull?.environment.DOCKER_HOST,
       "unix:///run/user/1000/docker.sock",
     );
+    assert.deepEqual(JSON.parse(pull?.authFile ?? ""), {
+      auths: {},
+      credHelpers: { "chuggy.invalid": "" },
+    });
     assert.deepEqual(
       state.calls.map((call) => call.argv[0]),
       ["info", "context", "image", "pull", "run"],
@@ -224,12 +236,22 @@ test(
   },
 );
 
-test("docker is refused when it cannot be asked, or names no endpoint", async () => {
+test("docker is refused when it cannot be asked, or its context names no local socket", async () => {
   const { engine, state } = fakeEngine();
-  state.contextHost = "";
+  for (const host of ["tcp://192.0.2.10:2376", "ssh://op@build", ""]) {
+    state.contextHost = host;
+    await assert.rejects(
+      engineEndpoint("docker", engine),
+      new RegExp(
+        `^Error: docker's context names "${host}", and only a local docker, reached by a unix socket, is supported$`,
+        "u",
+      ),
+    );
+  }
+  state.contextHost = undefined;
   await assert.rejects(
     engineEndpoint("docker", engine),
-    /^Error: docker's context names no endpoint/u,
+    /^Error: docker's context could not be read: context "default": context not found$/u,
   );
   state.unreachable = true;
   await assert.rejects(

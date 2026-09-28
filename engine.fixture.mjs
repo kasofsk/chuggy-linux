@@ -83,7 +83,12 @@ function fakeEngineState() {
     logsFail: false,
     /** What docker's `info` names its security options; rootless adds `name=rootless`. */
     securityOptions: ["name=apparmor", "name=seccomp,profile=builtin"],
-    /** The endpoint docker's current context names. */
+    /**
+     * The endpoint docker's current context names, or none when its context
+     * cannot be read.
+     *
+     * @type {string | undefined}
+     */
     contextHost: "unix:///var/run/docker.sock",
     nextId: 1,
     /**
@@ -223,7 +228,10 @@ function answer(state, call) {
   if (verb === "pull") return pulled(state, call);
   if (verb === "info")
     return answered(`${JSON.stringify(state.securityOptions)}\n`);
-  if (verb === "context") return answered(`${state.contextHost}\n`);
+  if (verb === "context")
+    return state.contextHost === undefined
+      ? failed('context "default": context not found')
+      : answered(`${state.contextHost}\n`);
   if (verb === "run") return run(state, call);
   if (verb === "ps") {
     const pool = last.replace(/^label=io\.chuggy\.pool=/u, "");
