@@ -200,13 +200,12 @@ export function logsArgv(container) {
 
 /**
  * A removal, with the container's anonymous volumes: the workspace goes with
- * the job. Forced, it kills a running container first.
+ * the job.
  *
  * @param {string} container
- * @param {{force: boolean}} how
  */
-export function removeArgv(container, how) {
-  return how.force ? ["rm", "-f", "-v", container] : ["rm", "-v", container];
+export function removeArgv(container) {
+  return ["rm", "-v", container];
 }
 
 /** @param {string} network */

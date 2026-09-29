@@ -461,13 +461,70 @@ test("a stop of an in-flight placement cancels its pull, and nothing is run", as
   assert.match(log.join("\n"), /was stopped before it started/u);
 });
 
-test("a stop of a running container removes it with its volumes", async (t) => {
-  const { backend, state } = await harness(t);
+test("a stop of a running container kills it, saves its logs, and removes it with its volumes", async (t) => {
+  const { backend, state, settings, log } = await harness(t);
   const name = seeded(state, "asg-2", "running", startMs / 1000 + 60);
   assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
-  assert.deepEqual(state.calls.at(-1)?.argv, ["rm", "-f", "-v", name]);
+  assert.deepEqual(
+    state.calls.map((call) => call.argv),
+    [
+      ["kill", name],
+      ["container", "inspect", name],
+      ["logs", "id-asg-2"],
+      ["rm", "-v", "id-asg-2"],
+    ],
+  );
+  const saved = join(settings.logDir, `${name}.log`);
+  assert.equal(await readFile(saved, "utf8"), `the log of ${name}\n`);
+  assert.equal((await stat(saved)).mode & 0o777, 0o600);
   assert.equal(state.containers.size, 0);
+  assert.match(
+    log.at(-1) ?? "",
+    /was stopped; logs saved to .*, container removed$/u,
+  );
   assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
+});
+
+test("a stop of a job that ended on its own just before saves its logs and removes it", async (t) => {
+  const { backend, state, settings } = await harness(t);
+  const name = seeded(state, "asg-2", "exited", startMs / 1000 + 60);
+  assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
+  assert.deepEqual(verbs(state), ["kill", "container", "logs", "rm"]);
+  assert.equal(state.containers.size, 0);
+  assert.equal(
+    await readFile(join(settings.logDir, `${name}.log`), "utf8"),
+    `the log of ${name}\n`,
+  );
+});
+
+test("a stop whose logs could not be saved ends the job, and keeps its container for held to retire", async (t) => {
+  const { backend, state, settings, log } = await harness(t);
+  const name = seeded(state, "asg-2", "running", startMs / 1000 + 60);
+  state.logsFail = true;
+  assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
+  assert.equal(state.containers.get(name)?.status, "exited");
+  assert.ok(!verbs(state).includes("rm"));
+  assert.match(log.at(-1) ?? "", /was stopped; its logs could not be saved$/u);
+
+  state.logsFail = false;
+  assert.deepEqual(await backend.held(), []);
+  assert.equal(state.containers.size, 0);
+  assert.equal(
+    await readFile(join(settings.logDir, `${name}.log`), "utf8"),
+    `the log of ${name}\n`,
+  );
+});
+
+test("a job still running after its kill is not stopped, and its container is left alone", async (t) => {
+  const { backend, state } = await harness(t);
+  const name = seeded(state, "asg-2", "running", startMs / 1000 + 60);
+  state.killInterrupted = true;
+  assert.deepEqual(await backend.stop("asg-2"), {
+    stopped: "Unavailable",
+    evidence: "the container engine could not be reached to stop this workload",
+  });
+  assert.deepEqual(verbs(state), ["kill", "container"]);
+  assert.equal(state.containers.get(name)?.status, "running");
 });
 
 test("a stop the engine could not be reached for is unavailable", async (t) => {
