@@ -44,8 +44,10 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
 /**
  * @typedef {import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment} WorkerPoolAssignment
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolStopped} WorkerPoolStopped
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolTokens} WorkerPoolTokens
  * @typedef {import("./engine.mjs").Engine} Engine
+ * @typedef {import("./engine.mjs").EngineAnswer} EngineAnswer
  *
  * @typedef {object} PoolIdentity
  * @property {string} tenant
@@ -164,6 +166,25 @@ function poolContainer(inspected) {
 }
 
 /**
+ * The containers an inspection answered for.
+ *
+ * @param {State} state
+ * @param {EngineAnswer} answer
+ * @returns {PoolContainer[]}
+ */
+function inspectionContainers(state, answer) {
+  let parsed;
+  try {
+    parsed = inspectedSchema.parse(JSON.parse(answer.stdout));
+  } catch {
+    throw new Error(
+      `${state.settings.engine} answered an inspection this runner cannot read`,
+    );
+  }
+  return parsed.map(poolContainer);
+}
+
+/**
  * Inspected containers, which the engine answers for even where one of them
  * was removed between the listing and the inspection.
  *
@@ -177,15 +198,7 @@ async function inspectedContainers(state, containers) {
     throw new Error(
       `${state.settings.engine} could not inspect this pool's containers: ${engineFailureLine(answer)}`,
     );
-  let parsed;
-  try {
-    parsed = inspectedSchema.parse(JSON.parse(answer.stdout));
-  } catch {
-    throw new Error(
-      `${state.settings.engine} answered an inspection this runner cannot read`,
-    );
-  }
-  return parsed.map(poolContainer);
+  return inspectionContainers(state, answer);
 }
 
 /**
@@ -244,9 +257,7 @@ async function retired(state, container, why) {
     state.seams.log(`${container.name} ${why}; its logs could not be saved`);
     return;
   }
-  const removed = await state.seams.engine.exec(
-    removeArgv(container.id, { force: false }),
-  );
+  const removed = await state.seams.engine.exec(removeArgv(container.id));
   state.seams.log(
     removed.code === 0
       ? `${container.name} ${why}; logs saved to ${file}, container removed`
@@ -561,24 +572,13 @@ async function placed(state, assignment) {
 }
 
 /**
- * A placement still in flight is cancelled and waited out first, so a `run`
- * it was already making is removed below rather than left behind.
+ * What a stop answers of an engine call that failed: a container that is not
+ * there is one already stopped.
  *
- * @param {State} state
- * @param {string} assignment
+ * @param {EngineAnswer} answer
+ * @returns {WorkerPoolStopped}
  */
-async function stopped(state, assignment) {
-  const placement = state.placements.get(assignment);
-  if (placement !== undefined) {
-    placement.controller.abort();
-    await placement.done;
-  }
-  const answer = await state.seams.engine.exec(
-    removeArgv(containerName(state.settings.pool.pool, assignment), {
-      force: true,
-    }),
-  );
-  if (answer.code === 0) return { stopped: "Stopped" };
+function stopAnswer(answer) {
   const failure = engineFailure(answer);
   if (failure === "NoSuchContainer") return { stopped: "Stopped" };
   return {
@@ -588,6 +588,35 @@ async function stopped(state, assignment) {
         ? "the container engine could not be reached to stop this workload"
         : `the container engine did not stop this workload: ${engineFailureLine(answer)}`,
   };
+}
+
+/**
+ * Kills an assignment's job and retires its container, as `held` does one
+ * past its deadline. A placement still in flight is cancelled and waited out
+ * first, so a `run` it was already making is killed too rather than left
+ * behind. The kill is judged by the container it leaves, since a job that
+ * ended on its own just before refuses one; a job that has ended is stopped
+ * even where its container is kept for `held` to retire.
+ *
+ * @param {State} state
+ * @param {string} assignment
+ * @returns {Promise<WorkerPoolStopped>}
+ */
+async function stopped(state, assignment) {
+  const placement = state.placements.get(assignment);
+  if (placement !== undefined) {
+    placement.controller.abort();
+    await placement.done;
+  }
+  const { engine } = state.seams;
+  const name = containerName(state.settings.pool.pool, assignment);
+  const killed = await engine.exec(killArgv(name));
+  const inspected = await engine.exec(inspectArgv([name]));
+  if (inspected.code !== 0) return stopAnswer(inspected);
+  const [container] = inspectionContainers(state, inspected);
+  if (!endedStatuses.has(container.status)) return stopAnswer(killed);
+  await retired(state, container, "was stopped");
+  return { stopped: "Stopped" };
 }
 
 /**

@@ -81,6 +81,8 @@ function fakeEngineState() {
     calls: [],
     unreachable: false,
     logsFail: false,
+    /** Whether a kill runs past the engine's cap, which the engine answers as interrupted. */
+    killInterrupted: false,
     /** What podman's `version` answers. */
     podmanVersion: "5.8.7",
     /**
@@ -208,6 +210,24 @@ function changed(state, reference, change) {
 
 /**
  * @param {FakeEngineState} state
+ * @param {string} reference
+ * @returns {EngineAnswer}
+ */
+function killed(state, reference) {
+  if (state.killInterrupted)
+    return { code: -1, stdout: "", stderr: "", failed: "Interrupted" };
+  const container = found(state, reference);
+  if (container !== undefined && container.status !== "running")
+    return failed(
+      `Error response from daemon: cannot kill container: ${reference}: container ${container.id} is not running`,
+    );
+  return changed(state, reference, (running) => {
+    running.status = "exited";
+  });
+}
+
+/**
+ * @param {FakeEngineState} state
  * @param {string} network
  * @param {string} verb
  */
@@ -257,10 +277,7 @@ function answer(state, call) {
     );
   }
   if (verb === "container") return inspected(state, call.argv.slice(2));
-  if (verb === "kill")
-    return changed(state, last, (container) => {
-      container.status = "exited";
-    });
+  if (verb === "kill") return killed(state, last);
   if (verb === "rm")
     return changed(state, last, (container) => {
       state.containers.delete(container.name);
