@@ -126,7 +126,7 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   );
 });
 
-test("doctor prints a warning with the failures, on stderr, and never on stdout", async (t) => {
+test("doctor prints a warning with the failures, on stderr and never on stdout, of the user's registries.conf and one the environment names", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t, {
     pool: { tenant: "vteng" },
   });
@@ -137,15 +137,18 @@ test("doctor prints a warning with the failures, on stderr, and never on stdout"
   );
   await mkdir(dirname(registries), { recursive: true });
   await writeFile(registries, 'credential-helpers = ["secretservice"]\n');
+  const named = join(home, "named.conf");
+  await writeFile(named, 'credential-helpers = ["pass"]\n');
   const { out, err } = await called(["doctor", "--pool", poolFile], {
     home,
-    environment,
+    environment: { ...environment, CONTAINERS_REGISTRIES_CONF: named },
   });
   const warned = err
     .split("\n")
     .filter((line) => line.startsWith("warn  podman credential helpers: "));
   assert.equal(warned.length, 1, err);
   assert.ok(warned[0].includes(registries), warned[0]);
+  assert.ok(warned[0].includes(named), warned[0]);
   assert.ok(!out.includes("podman credential helpers"), out);
   assert.match(out, /^ok {4}runner configuration: /mu);
 });

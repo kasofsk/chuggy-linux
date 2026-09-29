@@ -161,7 +161,7 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
   const { findings, registries } = await doctored(t, {
     registries: {
       "registries.conf":
-        '# credential-helpers = ["pass"]\ncredential-helpers = []\n',
+        '# credential-helpers = ["pass"]\nother-credential-helpers = ["pass"]\ncredential-helpers = []\n',
       "registries.conf.d/10-helper.conf":
         'credential-helpers = [\n  "secretservice",\n]\n',
       "registries.conf.d/20-search.conf":
@@ -172,17 +172,30 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
         "\"credential-helpers\" = ['containers-auth.json', 'pass']\n",
       "registries.conf.d/50-literal.conf":
         "'credential-helpers' = [\"pass\"]\n",
+      "registries.conf.d/60-commented.conf":
+        'credential-helpers = [\n  # see [the manual]\n  "pass",\n]\n',
+      "registries.conf.d/70-comment-quoted.conf":
+        'credential-helpers = [\n  "containers-auth.json", # not "pass"\n]\n',
+      "registries.conf.d/80-hash.conf":
+        "credential-helpers = [\"pass#work\", 'pass#home']\n",
       "registries.conf.d/helper.txt": 'credential-helpers = ["pass"]\n',
     },
   });
   const finding = findings.find(
     (found) => found.check === "podman credential helpers",
   );
+  const warned = [
+    "10-helper",
+    "40-quoted",
+    "50-literal",
+    "60-commented",
+    "80-hash",
+  ].map((name) => join(registries, "registries.conf.d", `${name}.conf`));
   assert.deepEqual(finding, {
     check: "podman credential helpers",
     passed: true,
     warning: true,
-    detail: `${join(registries, "registries.conf.d", "10-helper.conf")}, ${join(registries, "registries.conf.d", "40-quoted.conf")}, ${join(registries, "registries.conf.d", "50-literal.conf")} name a credential helper, whose logins podman presents on every pull, the pool's token notwithstanding`,
+    detail: `${warned.join(", ")} name a credential helper, whose logins podman presents on every pull, the pool's token notwithstanding`,
   });
   assert.ok(findings.every((found) => found.passed));
   assert.match(

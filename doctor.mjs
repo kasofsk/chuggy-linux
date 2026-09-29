@@ -111,6 +111,17 @@ async function planeChecks(input, credentials, findings) {
 const authFileHelper = "containers-auth.json";
 
 /**
+ * The text with each `#` comment removed, a `#` inside a quoted string kept.
+ *
+ * @param {string} text
+ */
+function commentsStripped(text) {
+  return text.replace(/"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|#[^\n]*/gu, (match) =>
+    match.startsWith("#") ? "" : match,
+  );
+}
+
+/**
  * The credential helpers a registries.conf names beyond the auth file, from
  * each `credential-helpers` array it sets, its key bare or quoted.
  *
@@ -119,7 +130,7 @@ const authFileHelper = "containers-auth.json";
 function credentialHelpersNamed(text) {
   /** @type {string[]} */
   const named = [];
-  for (const [, list] of text.matchAll(
+  for (const [, list] of commentsStripped(text).matchAll(
     /^\s*(?:credential-helpers|"credential-helpers"|'credential-helpers')\s*=\s*\[([^\]]*)\]/gmu,
   ))
     for (const [, basic, literal] of list.matchAll(/"([^"]*)"|'([^']*)'/gu))

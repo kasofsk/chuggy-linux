@@ -185,12 +185,11 @@ test("a runtime directory entry names what it is for and the process that made i
   assert.equal(runtimeScratch("job"), `job-${String(process.pid)}-`);
 });
 
-test("podman's registries.conf is sought wherever a supported podman reads it, the user's under both config homes", () => {
+test("podman's registries.conf is sought wherever a supported podman reads it as this uid, the user's under both config homes", () => {
   const system = ["/usr/share/containers", "/etc/containers"].flatMap(
     (root) => [
       `${root}/registries.conf`,
       `${root}/registries.conf.d`,
-      `${root}/registries.rootful.conf.d`,
       `${root}/registries.rootless.conf.d`,
       `${root}/registries.rootless.conf.d/1234`,
     ],
@@ -210,4 +209,36 @@ test("podman's registries.conf is sought wherever a supported podman reads it, t
     "/home/op/.config/containers/registries.conf",
     "/home/op/.config/containers/registries.conf.d",
   ]);
+  assert.deepEqual(podmanRegistriesConf({}, "/root", 0), [
+    "/usr/share/containers/registries.conf",
+    "/usr/share/containers/registries.conf.d",
+    "/usr/share/containers/registries.rootful.conf.d",
+    "/etc/containers/registries.conf",
+    "/etc/containers/registries.conf.d",
+    "/etc/containers/registries.rootful.conf.d",
+    "/root/.config/containers/registries.conf",
+    "/root/.config/containers/registries.conf.d",
+  ]);
+});
+
+test("a registries.conf the environment names is sought before the rest", () => {
+  const found = podmanRegistriesConf(
+    {
+      CONTAINERS_REGISTRIES_CONF: "/tmp/r.conf",
+      REGISTRIES_CONFIG_PATH: "/tmp/old.conf",
+      CONTAINERS_REGISTRIES_CONF_OVERRIDE: "/tmp/over.conf",
+    },
+    "/home/op",
+    1234,
+  );
+  assert.deepEqual(found.slice(0, 3), [
+    "/tmp/r.conf",
+    "/tmp/old.conf",
+    "/tmp/over.conf",
+  ]);
+  assert.deepEqual(found.slice(3), podmanRegistriesConf({}, "/home/op", 1234));
+  assert.deepEqual(
+    podmanRegistriesConf({ CONTAINERS_REGISTRIES_CONF: "" }, "/home/op", 1234),
+    podmanRegistriesConf({}, "/home/op", 1234),
+  );
 });

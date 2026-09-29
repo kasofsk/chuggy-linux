@@ -115,11 +115,18 @@ export function runnerPaths(environment, home) {
 /** Where a podman package puts its registries.conf, then where this machine does. */
 const containersSystemDirs = ["/usr/share/containers", "/etc/containers"];
 
+/** What names a registries.conf in the environment, in place of or over the ones podman finds. */
+const registriesConfVariables = [
+  "CONTAINERS_REGISTRIES_CONF",
+  "REGISTRIES_CONFIG_PATH",
+  "CONTAINERS_REGISTRIES_CONF_OVERRIDE",
+];
+
 /**
  * Every registries.conf file and drop-in directory some supported podman
- * reads, rootless or rootful: the system's, and the user's under both
- * XDG_CONFIG_HOME and ~/.config, which older podman reads whatever
- * XDG_CONFIG_HOME says.
+ * reads as this uid: those the environment names, the system's, and the
+ * user's under both XDG_CONFIG_HOME and ~/.config, which older podman reads
+ * whatever XDG_CONFIG_HOME says.
  *
  * @param {Readonly<Record<string, string | undefined>>} environment
  * @param {string} home
@@ -127,12 +134,21 @@ const containersSystemDirs = ["/usr/share/containers", "/etc/containers"];
  * @returns {string[]}
  */
 export function podmanRegistriesConf(environment, home, uid) {
+  const named = registriesConfVariables.flatMap((variable) => {
+    const value = environment[variable];
+    return value === undefined || value === "" ? [] : [value];
+  });
+  const dropIns =
+    uid === 0
+      ? ["registries.rootful.conf.d"]
+      : [
+          "registries.rootless.conf.d",
+          join("registries.rootless.conf.d", String(uid)),
+        ];
   const system = containersSystemDirs.flatMap((root) => [
     join(root, "registries.conf"),
     join(root, "registries.conf.d"),
-    join(root, "registries.rootful.conf.d"),
-    join(root, "registries.rootless.conf.d"),
-    join(root, "registries.rootless.conf.d", String(uid)),
+    ...dropIns.map((dropIn) => join(root, dropIn)),
   ]);
   const users = new Set([
     join(
@@ -142,6 +158,7 @@ export function podmanRegistriesConf(environment, home, uid) {
     join(home, ".config", "containers"),
   ]);
   return [
+    ...named,
     ...system,
     ...[...users].flatMap((user) => [
       join(user, "registries.conf"),
