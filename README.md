@@ -85,5 +85,5 @@ This writes `~/.config/systemd/user/chuggy-linux.service`, which runs this insta
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
 - Install docker or podman, start the service, or upgrade itself.
-- Pull with your own registry logins: an image not from the pool's registry is pulled with none. The exception is a credential helper you set in podman's `registries.conf`, which podman still asks; `doctor` warns of one.
+- Pull with your own registry logins: an image not from the pool's registry is pulled with none. The exception is a credential helper you set in podman's `registries.conf`, which podman still asks; `doctor` warns of one. It reads the `registries.conf` your shell's environment names, while the service runs with systemd's (`systemctl --user show-environment`).
 - Limit a job's workspace: its volume has no size limit.
