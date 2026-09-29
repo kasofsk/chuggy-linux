@@ -1,0 +1,114 @@
+#!/bin/sh
+# The gates at the commit, so a violation is caught before anything is built
+# on it.
+#
+# Installed with: git config core.hooksPath .githooks   (once per clone)
+#
+# THE INVARIANT THAT GOVERNS THIS FILE: the hook may reject only what
+# `.chug/tasks/ci.sh` runs unconditionally, which here is every gate. That is
+# what guarantees it can never block a commit the full check would accept. It
+# calls the gate scripts directly rather than going through `just`, which may
+# not be installed, and leaves the shell suites to `just check`. This file
+# prints its own elapsed time on every run, so what a gate costs here is
+# measured rather than asserted.
+#
+# THE CALL IS THE ROSTER. A gate named below must exist and be executable, and
+# a named gate that is absent stops the commit: `.chug/tasks/ci.sh` fails on
+# the same tree.
+set -eu
+export LC_ALL=C
+
+# A hook inherits these from the invoking git, and they break any command that
+# resolves the repo for itself. `GIT_INDEX_FILE` stays: it is the index being
+# committed, which is what the gates should read.
+unset GIT_DIR GIT_WORK_TREE
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$root" ]; then
+	echo "pre-commit: not a git checkout — skipping" >&2
+	exit 0
+fi
+cd "$root" || exit 0
+
+# Mid-operation commits are not the author's edit, and gating them blocks a
+# conflict resolution the author cannot change.
+for marker in MERGE_HEAD REVERT_HEAD CHERRY_PICK_HEAD; do
+	if [ -e "$(git rev-parse --git-path "$marker")" ]; then
+		echo "pre-commit: ${marker} present — skipping"
+		exit 0
+	fi
+done
+
+started="$(date +%s)"
+rejected=0
+unrunnable=0
+
+run_gate() { # <label> <script> [<arg>...]
+	label="$1"
+	script="$2"
+	shift 2
+	if [ ! -x "$script" ]; then
+		# Unlike the rc=2 branch below, this one blocks: a named gate that
+		# is not there, or that this checkout cannot run, is what
+		# `just check` will find on the same tree. A gate that ran and
+		# answered could-not-run is describing the machine, which differs
+		# per developer and is what `just check` settles.
+		if [ -e "$script" ]; then why="is not executable"; else why="is missing"; fi
+		echo "pre-commit: $script $why — cannot run"
+		unrunnable=$((unrunnable + 1))
+		return 0
+	fi
+	set +e
+	out="$("$script" "$@" 2>&1)"
+	rc=$?
+	set -e
+	case "$rc" in
+	0) ;;
+	1)
+		printf '%s\n' "$out"
+		echo "pre-commit: REJECTED by $label"
+		rejected=$((rejected + 1))
+		;;
+	*)
+		# Could-not-run is a loud skip here, not a rejection: the full check
+		# treats it as a failure, and this hook must not be the stricter of
+		# the two.
+		printf '%s\n' "$out"
+		echo "pre-commit: $label could not run (rc=$rc) — not blocking; \`just check\` will"
+		;;
+	esac
+}
+
+run_gate "check-duplication" ./.chug/tasks/check-duplication.sh
+run_gate "check-boundaries" ./.chug/tasks/check-boundaries.sh
+run_gate "check-source" ./.chug/tasks/check-source.sh
+
+# check-paths is whole-tree in `just check` and staged-only here. It resolves
+# against the whole tracked set either way, so the narrowing changes what is
+# scanned and not what counts as a claim — which keeps this the weaker run.
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+if [ -n "$staged" ]; then
+	set -f
+	IFS='
+'
+	set -- $staged
+	unset IFS
+	set +f
+	run_gate "check-paths" ./.chug/tasks/check-paths.sh "$@"
+fi
+
+elapsed=$(( $(date +%s) - started ))
+# The account is both counts; the verdict is the stricter of them. Reporting
+# only the count that set the exit code sends an author to fix the missing gate
+# with the rejection still standing behind it.
+if [ "$rejected" -gt 0 ]; then
+	echo "pre-commit: ${rejected} gate(s) rejected this commit (${elapsed}s)"
+fi
+if [ "$unrunnable" -gt 0 ]; then
+	echo "pre-commit: ${unrunnable} gate(s) named but not runnable (${elapsed}s)"
+	exit 2
+fi
+if [ "$rejected" -gt 0 ]; then
+	exit 1
+fi
+echo "pre-commit: clean (${elapsed}s)"

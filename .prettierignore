@@ -1,0 +1,17 @@
+# What the formatter does not own, each with the reason it left. Everything
+# else Prettier parses, Prettier formats, and `.prettierrc.json` is empty
+# because its defaults are never argued.
+#
+#   *.md               prose here is hand-wrapped, and a reflow would touch
+#                      every line of every file for no reader's benefit.
+#   .claude/           not this tree's file to format.
+#   package-lock.json  npm writes it, in npm's format.
+
+# Both forms, for .gitignore's reason: a suite fixture links node_modules in
+# rather than installing a second copy.
+node_modules
+node_modules/
+
+*.md
+.claude/
+package-lock.json
