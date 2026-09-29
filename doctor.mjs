@@ -34,6 +34,7 @@ import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
  * @property {string} poolFile
  * @property {RunnerPaths} paths
  * @property {number} uid this process's
+ * @property {readonly string[]} registriesConf podman's registries.conf files and drop-in directories
  * @property {DoctorParts} parts
  */
 
@@ -106,14 +107,34 @@ async function planeChecks(input, credentials, findings) {
   });
 }
 
+/** The helper that is the auth file itself, podman's default. */
+const authFileHelper = "containers-auth.json";
+
 /**
- * Which of podman's registries.conf files set a non-empty
- * `credential-helpers`, each location a file or a drop-in directory of
- * `.conf` files. One that cannot be read sets nothing.
+ * The credential helpers a registries.conf names beyond the auth file, from
+ * each `credential-helpers` array it sets, its key bare or quoted.
+ *
+ * @param {string} text
+ */
+function credentialHelpersNamed(text) {
+  /** @type {string[]} */
+  const named = [];
+  for (const [, list] of text.matchAll(
+    /^\s*(?:credential-helpers|"credential-helpers"|'credential-helpers')\s*=\s*\[([^\]]*)\]/gmu,
+  ))
+    for (const [, basic, literal] of list.matchAll(/"([^"]*)"|'([^']*)'/gu))
+      named.push(basic ?? literal);
+  return named.filter((helper) => helper !== authFileHelper);
+}
+
+/**
+ * The registries.conf files at these locations, each a file or a drop-in
+ * directory of `.conf` files, and which of them name a credential helper.
+ * One that cannot be read is not counted.
  *
  * @param {readonly string[]} locations
  */
-async function credentialHelperFiles(locations) {
+async function registriesConfRead(locations) {
   /** @type {string[]} */
   const files = [];
   for (const location of locations) {
@@ -127,16 +148,16 @@ async function credentialHelperFiles(locations) {
             .map((entry) => join(location, entry))),
     );
   }
+  let read = 0;
   /** @type {string[]} */
-  const configured = [];
-  for (const file of files)
-    if (
-      /^\s*credential-helpers\s*=\s*\[\s*[^\]\s]/mu.test(
-        await readFile(file, "utf8").catch(() => ""),
-      )
-    )
-      configured.push(file);
-  return configured;
+  const helpered = [];
+  for (const file of files) {
+    const text = await readFile(file, "utf8").catch(() => undefined);
+    if (text === undefined) continue;
+    read += 1;
+    if (credentialHelpersNamed(text).length > 0) helpered.push(file);
+  }
+  return { read, helpered };
 }
 
 /**
@@ -149,14 +170,18 @@ async function credentialHelperFiles(locations) {
  */
 async function podmanHelpersFinding(locations) {
   const check = "podman credential helpers";
-  const configured = await credentialHelperFiles(locations);
-  if (configured.length === 0)
-    return { check, passed: true, detail: "none set in registries.conf" };
+  const { read, helpered } = await registriesConfRead(locations);
+  if (helpered.length === 0)
+    return {
+      check,
+      passed: true,
+      detail: `none named in the ${String(read)} registries.conf ${read === 1 ? "file" : "files"} read`,
+    };
   return {
     check,
     passed: true,
     warning: true,
-    detail: `${configured.join(", ")} sets credential-helpers, whose logins podman presents on every pull, the pool's token notwithstanding`,
+    detail: `${helpered.join(", ")} ${helpered.length === 1 ? "names" : "name"} a credential helper, whose logins podman presents on every pull, the pool's token notwithstanding`,
   };
 }
 
@@ -197,7 +222,7 @@ export async function doctorFindings(input) {
       return [true, `${config.claudeTokenFile}, this runner's own`];
     });
   if (config?.engine === "podman")
-    findings.push(await podmanHelpersFinding(input.paths.registriesConf));
+    findings.push(await podmanHelpersFinding(input.registriesConf));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(

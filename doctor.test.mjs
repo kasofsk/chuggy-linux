@@ -10,7 +10,7 @@ import { runnerFixture } from "./runner.fixture.mjs";
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, registries?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own
+ * @param {{runner?: Record<string, unknown> | undefined, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, registries?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own
  */
 async function doctored(t, options = {}) {
   const { home, environment, poolFile } = await runnerFixture(
@@ -20,6 +20,8 @@ async function doctored(t, options = {}) {
   const { engine, state } = fakeEngine();
   state.securityOptions = options.securityOptions ?? state.securityOptions;
   state.podmanVersion = options.podmanVersion ?? state.podmanVersion;
+  state.podmanServiceRemote =
+    options.podmanServiceRemote ?? state.podmanServiceRemote;
   const registries = join(home, "registries");
   for (const [file, text] of Object.entries(options.registries ?? {})) {
     await mkdir(dirname(join(registries, file)), { recursive: true });
@@ -29,13 +31,11 @@ async function doctored(t, options = {}) {
   const polls = [];
   const findings = await doctorFindings({
     poolFile,
-    paths: {
-      ...runnerPaths(environment, home),
-      registriesConf: [
-        join(registries, "registries.conf"),
-        join(registries, "registries.conf.d"),
-      ],
-    },
+    paths: runnerPaths(environment, home),
+    registriesConf: [
+      join(registries, "registries.conf"),
+      join(registries, "registries.conf.d"),
+    ],
     uid: options.uid ?? process.getuid?.() ?? -1,
     parts: {
       engine: () => engine,
@@ -76,7 +76,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(findings[4], {
     check: "podman credential helpers",
     passed: true,
-    detail: "none set in registries.conf",
+    detail: "none named in the 0 registries.conf files read",
   });
   assert.equal(
     findings[6].detail,
@@ -85,7 +85,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(polls, [["pool-token", [], 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
-    ["version", "ps", "network"],
+    ["version", "info", "ps", "network"],
   );
 });
 
@@ -166,6 +166,12 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
         'credential-helpers = [\n  "secretservice",\n]\n',
       "registries.conf.d/20-search.conf":
         'unqualified-search-registries = ["docker.io"]\n',
+      "registries.conf.d/30-default.conf":
+        'credential-helpers = ["containers-auth.json"]\n',
+      "registries.conf.d/40-quoted.conf":
+        "\"credential-helpers\" = ['containers-auth.json', 'pass']\n",
+      "registries.conf.d/50-literal.conf":
+        "'credential-helpers' = [\"pass\"]\n",
       "registries.conf.d/helper.txt": 'credential-helpers = ["pass"]\n',
     },
   });
@@ -176,7 +182,7 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
     check: "podman credential helpers",
     passed: true,
     warning: true,
-    detail: `${join(registries, "registries.conf.d", "10-helper.conf")} sets credential-helpers, whose logins podman presents on every pull, the pool's token notwithstanding`,
+    detail: `${join(registries, "registries.conf.d", "10-helper.conf")}, ${join(registries, "registries.conf.d", "40-quoted.conf")}, ${join(registries, "registries.conf.d", "50-literal.conf")} name a credential helper, whose logins podman presents on every pull, the pool's token notwithstanding`,
   });
   assert.ok(findings.every((found) => found.passed));
   assert.match(
@@ -217,4 +223,34 @@ test("a podman that reads this machine's stored logins fails the engine check", 
   );
   assert.ok(!findings.some((found) => found.check === "job network"));
   assert.ok(state.calls.every((call) => call.argv[0] === "version"));
+});
+
+test("the registries.conf files read are counted, and podman's own default helper is none", async (t) => {
+  for (const [registries, detail] of [
+    [
+      { "registries.conf": 'credential-helpers = ["containers-auth.json"]\n' },
+      "none named in the 1 registries.conf file read",
+    ],
+    [
+      {
+        "registries.conf": 'credential-helpers = ["containers-auth.json"]\n',
+        "registries.conf.d/10-search.conf":
+          'unqualified-search-registries = ["docker.io"]\n',
+      },
+      "none named in the 2 registries.conf files read",
+    ],
+  ]) {
+    const { findings } = await doctored(t, { registries });
+    assert.deepEqual(
+      findings.find((found) => found.check === "podman credential helpers"),
+      { check: "podman credential helpers", passed: true, detail },
+    );
+  }
+});
+
+test("a remote podman client fails the engine check", async (t) => {
+  const { findings } = await doctored(t, { podmanServiceRemote: "true" });
+  const finding = findings.find((found) => found.check === "container engine");
+  assert.equal(finding?.passed, false);
+  assert.match(finding?.detail ?? "", /^podman is a remote client here /u);
 });

@@ -20,7 +20,6 @@ import { jobUid, reservedJobVariables } from "./job.mjs";
  * @property {string} unit the systemd user unit
  * @property {string} logs where an ended job's logs are saved
  * @property {string | undefined} runtime where pull credentials, env files and the control socket live; absent without XDG_RUNTIME_DIR
- * @property {string[]} registriesConf podman's registries.conf files and drop-in directories, the system's and then the user's
  */
 
 /** The permission bits a group or anyone else would read or write by. */
@@ -71,34 +70,84 @@ export const runnerConfigSchema = z.strictObject({
 });
 
 /**
+ * An XDG base directory, or its default where the variable is unset or, as
+ * the specification says to ignore it, relative.
+ *
+ * @template {string | undefined} T
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @param {string} variable
+ * @param {T} fallback
+ */
+function xdgBased(environment, variable, fallback) {
+  const value = environment[variable];
+  return value !== undefined && isAbsolute(value) ? value : fallback;
+}
+
+/**
  * Where the runner reads and writes, by the XDG base directories and their
- * defaults. A relative XDG value is ignored, as the specification says.
+ * defaults.
  *
  * @param {Readonly<Record<string, string | undefined>>} environment
  * @param {string} home
  * @returns {RunnerPaths}
  */
 export function runnerPaths(environment, home) {
-  const based = (variable, fallback) => {
-    const value = environment[variable];
-    return value !== undefined && isAbsolute(value) ? value : fallback;
-  };
-  const configHome = based("XDG_CONFIG_HOME", join(home, ".config"));
-  const stateHome = based("XDG_STATE_HOME", join(home, ".local", "state"));
-  const runtimeHome = based("XDG_RUNTIME_DIR", undefined);
+  const configHome = xdgBased(
+    environment,
+    "XDG_CONFIG_HOME",
+    join(home, ".config"),
+  );
+  const stateHome = xdgBased(
+    environment,
+    "XDG_STATE_HOME",
+    join(home, ".local", "state"),
+  );
+  const runtimeHome = xdgBased(environment, "XDG_RUNTIME_DIR", undefined);
   return {
     config: join(configHome, "chuggy-linux", "runner.json"),
     unit: join(configHome, "systemd", "user", "chuggy-linux.service"),
     logs: join(stateHome, "chuggy-linux", "logs"),
     runtime:
       runtimeHome === undefined ? undefined : join(runtimeHome, "chuggy-linux"),
-    registriesConf: [
-      "/etc/containers/registries.conf",
-      "/etc/containers/registries.conf.d",
-      join(configHome, "containers", "registries.conf"),
-      join(configHome, "containers", "registries.conf.d"),
-    ],
   };
+}
+
+/** Where a podman package puts its registries.conf, then where this machine does. */
+const containersSystemDirs = ["/usr/share/containers", "/etc/containers"];
+
+/**
+ * Every registries.conf file and drop-in directory some supported podman
+ * reads, rootless or rootful: the system's, and the user's under both
+ * XDG_CONFIG_HOME and ~/.config, which older podman reads whatever
+ * XDG_CONFIG_HOME says.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @param {string} home
+ * @param {number} uid
+ * @returns {string[]}
+ */
+export function podmanRegistriesConf(environment, home, uid) {
+  const system = containersSystemDirs.flatMap((root) => [
+    join(root, "registries.conf"),
+    join(root, "registries.conf.d"),
+    join(root, "registries.rootful.conf.d"),
+    join(root, "registries.rootless.conf.d"),
+    join(root, "registries.rootless.conf.d", String(uid)),
+  ]);
+  const users = new Set([
+    join(
+      xdgBased(environment, "XDG_CONFIG_HOME", join(home, ".config")),
+      "containers",
+    ),
+    join(home, ".config", "containers"),
+  ]);
+  return [
+    ...system,
+    ...[...users].flatMap((user) => [
+      join(user, "registries.conf"),
+      join(user, "registries.conf.d"),
+    ]),
+  ];
 }
 
 /**

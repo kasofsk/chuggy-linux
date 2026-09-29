@@ -31,6 +31,7 @@ import {
   dockerInfoArgv,
   networkCreateArgv,
   networkInspectArgv,
+  podmanRemoteArgv,
   podmanVersionArgv,
 } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
@@ -153,7 +154,7 @@ async function dockerEndpoint(engine) {
  *
  * @param {Engine} engine
  */
-async function podmanChecked(engine) {
+async function podmanVersionChecked(engine) {
   const answer = await engine.exec(podmanVersionArgv());
   if (answer.code !== 0)
     throw new Error(`podman could not be asked: ${engineFailureLine(answer)}`);
@@ -171,6 +172,29 @@ async function podmanChecked(engine) {
 }
 
 /**
+ * Refuses a remote podman client: an empty `--authfile` sends its service
+ * nothing, and the service falls back on its own stored logins.
+ *
+ * @param {Engine} engine
+ */
+async function podmanLocalChecked(engine) {
+  const answer = await engine.exec(podmanRemoteArgv());
+  if (answer.code !== 0)
+    throw new Error(
+      `podman could not say whether it is a remote client: ${engineFailureLine(answer)}`,
+    );
+  const remote = answer.stdout.trim();
+  if (remote === "true")
+    throw new Error(
+      "podman is a remote client here (CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf), where its service reads its own stored logins; run the runner beside a local podman",
+    );
+  if (remote !== "false")
+    throw new Error(
+      `podman answered "${remote}" when asked whether it is a remote client`,
+    );
+}
+
+/**
  * The endpoint a pull is told, of an engine checked to be one a job can be
  * run by: docker's, from its context, which a pull made under a configuration
  * directory of its own would otherwise lose. Podman has none.
@@ -181,7 +205,8 @@ async function podmanChecked(engine) {
  */
 export async function engineEndpoint(name, engine) {
   if (name === "docker") return dockerEndpoint(engine);
-  await podmanChecked(engine);
+  await podmanVersionChecked(engine);
+  await podmanLocalChecked(engine);
   return undefined;
 }
 

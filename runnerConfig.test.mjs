@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   claudeTokenFileRefusal,
   runnerConfig,
+  podmanRegistriesConf,
   runnerPaths,
   runtimeScratch,
 } from "./runnerConfig.mjs";
@@ -125,12 +126,6 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
     unit: "/home/op/.config/systemd/user/chuggy-linux.service",
     logs: "/home/op/.local/state/chuggy-linux/logs",
     runtime: undefined,
-    registriesConf: [
-      "/etc/containers/registries.conf",
-      "/etc/containers/registries.conf.d",
-      "/home/op/.config/containers/registries.conf",
-      "/home/op/.config/containers/registries.conf.d",
-    ],
   });
   assert.deepEqual(
     runnerPaths(
@@ -146,12 +141,6 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
       unit: "/etc/op/systemd/user/chuggy-linux.service",
       logs: "/home/op/.local/state/chuggy-linux/logs",
       runtime: "/run/user/1000/chuggy-linux",
-      registriesConf: [
-        "/etc/containers/registries.conf",
-        "/etc/containers/registries.conf.d",
-        "/etc/op/containers/registries.conf",
-        "/etc/op/containers/registries.conf.d",
-      ],
     },
   );
 });
@@ -194,4 +183,31 @@ test("under docker only a runner that is uid 1000 can hand a job its token file"
 test("a runtime directory entry names what it is for and the process that made it", () => {
   assert.equal(runtimeScratch("pull", 4242), "pull-4242-");
   assert.equal(runtimeScratch("job"), `job-${String(process.pid)}-`);
+});
+
+test("podman's registries.conf is sought wherever a supported podman reads it, the user's under both config homes", () => {
+  const system = ["/usr/share/containers", "/etc/containers"].flatMap(
+    (root) => [
+      `${root}/registries.conf`,
+      `${root}/registries.conf.d`,
+      `${root}/registries.rootful.conf.d`,
+      `${root}/registries.rootless.conf.d`,
+      `${root}/registries.rootless.conf.d/1234`,
+    ],
+  );
+  assert.deepEqual(
+    podmanRegistriesConf({ XDG_CONFIG_HOME: "/etc/op" }, "/home/op", 1234),
+    [
+      ...system,
+      "/etc/op/containers/registries.conf",
+      "/etc/op/containers/registries.conf.d",
+      "/home/op/.config/containers/registries.conf",
+      "/home/op/.config/containers/registries.conf.d",
+    ],
+  );
+  assert.deepEqual(podmanRegistriesConf({}, "/home/op", 1234), [
+    ...system,
+    "/home/op/.config/containers/registries.conf",
+    "/home/op/.config/containers/registries.conf.d",
+  ]);
 });

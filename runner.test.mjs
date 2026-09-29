@@ -189,7 +189,39 @@ test("podman has no endpoint, and is taken only from the first version whose --a
     engineEndpoint("podman", engine),
     /^Error: podman could not be asked: /u,
   );
-  assert.ok(state.calls.every((call) => call.argv[0] === "version"));
+  assert.ok(
+    state.calls.every((call) => ["version", "info"].includes(call.argv[0])),
+  );
+});
+
+test("a remote podman client is refused, and so is one that cannot say whether it is one", async () => {
+  const { engine, state } = fakeEngine();
+  state.podmanServiceRemote = "true";
+  await assert.rejects(
+    engineEndpoint("podman", engine),
+    /^Error: podman is a remote client here \(CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf\), where its service reads its own stored logins; run the runner beside a local podman$/u,
+  );
+  for (const answer of ["", "True", "yes", "false true", "<no value>"]) {
+    state.podmanServiceRemote = answer;
+    await assert.rejects(
+      engineEndpoint("podman", engine),
+      new RegExp(
+        `^Error: podman answered "${answer}" when asked whether it is a remote client$`,
+        "u",
+      ),
+      answer,
+    );
+  }
+  state.podmanServiceRemote = undefined;
+  await assert.rejects(
+    engineEndpoint("podman", engine),
+    /^Error: podman could not say whether it is a remote client: Error: cannot connect to Podman$/u,
+  );
+  assert.deepEqual(state.calls.at(-1)?.argv, [
+    "info",
+    "--format",
+    "{{.Host.ServiceIsRemote}}",
+  ]);
 });
 
 test("docker that maps a job's uid, rootless or by userns-remap, is refused before anything else is asked of it", async () => {

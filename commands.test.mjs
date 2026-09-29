@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { cliMain } from "./commands.mjs";
@@ -124,4 +124,28 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
     err,
     /^FAIL {2}pool file: pool credentials .*\nFAIL {2}runner configuration: .*ENOENT/u,
   );
+});
+
+test("doctor prints a warning with the failures, on stderr, and never on stdout", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    pool: { tenant: "vteng" },
+  });
+  const registries = join(
+    environment.XDG_CONFIG_HOME,
+    "containers",
+    "registries.conf",
+  );
+  await mkdir(dirname(registries), { recursive: true });
+  await writeFile(registries, 'credential-helpers = ["secretservice"]\n');
+  const { out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  const warned = err
+    .split("\n")
+    .filter((line) => line.startsWith("warn  podman credential helpers: "));
+  assert.equal(warned.length, 1, err);
+  assert.ok(warned[0].includes(registries), warned[0]);
+  assert.ok(!out.includes("podman credential helpers"), out);
+  assert.match(out, /^ok {4}runner configuration: /mu);
 });

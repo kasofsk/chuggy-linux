@@ -2,7 +2,7 @@
 
 Runs a chuggy worker pool's jobs on a Linux machine. Registered as a pool, the machine runs `chuggy-linux run` as a systemd user service: it polls chuggy for assignments and runs each one as a docker or podman container of the image the assignment pins.
 
-It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman 4.4 or later.
+It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman 4.4 or later. Podman must be local: a remote client, set by `CONTAINER_HOST`, `CONTAINER_CONNECTION` or `remote = true` in `containers.conf`, is refused, since its service presents its own stored logins.
 
 ## Install
 

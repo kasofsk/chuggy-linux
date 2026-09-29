@@ -90,6 +90,11 @@ export function podmanVersionArgv() {
   return ["version", "--format", "{{.Client.Version}}"];
 }
 
+/** Whether podman is a remote client, whose service does the pulling. */
+export function podmanRemoteArgv() {
+  return ["info", "--format", "{{.Host.ServiceIsRemote}}"];
+}
+
 /** Docker's security options, which name a daemon running rootless. */
 export function dockerInfoArgv() {
   return ["info", "--format", "{{json .SecurityOptions}}"];

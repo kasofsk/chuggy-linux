@@ -5,6 +5,7 @@ import {
   dockerContextArgv,
   dockerInfoArgv,
   imageInspectArgv,
+  podmanRemoteArgv,
   podmanVersionArgv,
   inspectArgv,
   killArgv,
@@ -154,6 +155,7 @@ test("every other call is handed to either engine as this argv", () => {
       dockerInfoArgv(),
       dockerContextArgv(),
       podmanVersionArgv(),
+      podmanRemoteArgv(),
     ],
     [
       ["image", "inspect", "--format", "{{.Id}}", image],
@@ -175,6 +177,7 @@ test("every other call is handed to either engine as this argv", () => {
       ["info", "--format", "{{json .SecurityOptions}}"],
       ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
       ["version", "--format", "{{.Client.Version}}"],
+      ["info", "--format", "{{.Host.ServiceIsRemote}}"],
     ],
   );
 });

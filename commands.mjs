@@ -27,7 +27,7 @@ import {
   runtimeDirectory,
   scratchRemovedOnSignal,
 } from "./runner.mjs";
-import { runnerPaths } from "./runnerConfig.mjs";
+import { podmanRegistriesConf, runnerPaths } from "./runnerConfig.mjs";
 import {
   deniedExitStatus,
   serviceCommands,
@@ -168,6 +168,11 @@ async function doctor(call) {
     poolFile: call.poolFile,
     paths: runnerPaths(call.host.environment, call.host.home),
     uid: call.host.uid,
+    registriesConf: podmanRegistriesConf(
+      call.host.environment,
+      call.host.home,
+      call.host.uid,
+    ),
     parts: { engine: runnerEngine, tokens: runnerTokens, plane: runnerPlane },
   });
   for (const finding of findings)

@@ -83,6 +83,13 @@ function fakeEngineState() {
     logsFail: false,
     /** What podman's `version` answers. */
     podmanVersion: "5.8.7",
+    /**
+     * What podman's `info` answers of whether its service is remote, or
+     * nothing when that `info` fails.
+     *
+     * @type {string | undefined}
+     */
+    podmanServiceRemote: /** @type {string | undefined} */ ("false"),
     /** What docker's `info` names its security options; rootless adds `name=rootless`. */
     securityOptions: ["name=apparmor", "name=seccomp,profile=builtin"],
     /**
@@ -229,6 +236,10 @@ function answer(state, call) {
       : failed(`Error response from daemon: No such image: ${last}`);
   if (verb === "pull") return pulled(state, call);
   if (verb === "version") return answered(`${state.podmanVersion}\n`);
+  if (verb === "info" && call.argv[2] === "{{.Host.ServiceIsRemote}}")
+    return state.podmanServiceRemote === undefined
+      ? failed("Error: cannot connect to Podman")
+      : answered(`${state.podmanServiceRemote}\n`);
   if (verb === "info")
     return answered(`${JSON.stringify(state.securityOptions)}\n`);
   if (verb === "context")
