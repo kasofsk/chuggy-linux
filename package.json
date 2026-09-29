@@ -1,6 +1,6 @@
 {
   "name": "chuggy-linux",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Runs a chuggy worker pool's jobs in containers on a Linux machine",
   "license": "MIT",
   "type": "module",
