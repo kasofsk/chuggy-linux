@@ -5,7 +5,7 @@
 
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const fixturePool = {
   tenant: "vteng",
@@ -26,6 +26,18 @@ export const fixturePool = {
 async function ownerOnly(file, text) {
   await writeFile(file, text, { mode: 0o600 });
   await chmod(file, 0o600);
+}
+
+/**
+ * Writes a pool file, owner-only, making its directory.
+ *
+ * @param {string} file
+ * @param {Record<string, unknown>} pool
+ */
+export async function poolFileWritten(file, pool) {
+  await mkdir(dirname(file), { recursive: true });
+  await ownerOnly(file, JSON.stringify(pool));
+  return file;
 }
 
 /**

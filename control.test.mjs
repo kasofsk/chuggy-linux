@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import test from "node:test";
 
 import { controlAsked, controlServer, controlSocketPath } from "./control.mjs";
+import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 
 /**
  * A directory for a socket, under /tmp rather than TMPDIR, which could be
@@ -19,45 +20,14 @@ async function socketDirectory(t) {
 
 /** @param {import("node:test").TestContext} t */
 async function served(t) {
-  const directory = await socketDirectory(t);
-  /** @type {string[]} */
-  const stopped = [];
-  const backend =
-    /** @type {import("./containerBackend.mjs").ContainerBackend} */ (
-      /** @type {unknown} */ ({
-        inFlight: () => [
-          {
-            assignment: "asg-1",
-            name: "chuggy-shame-x",
-            image: "i",
-            phase: "Pulling",
-            deadlineEpochSecs: 1,
-          },
-        ],
-        stop: async (/** @type {string} */ assignment) => {
-          stopped.push(assignment);
-          return { stopped: "Stopped" };
-        },
-      })
-    );
-  const path = controlSocketPath(directory);
-  const server = await controlServer(path, backend);
-  t.after(() => server.close());
-  return { path, stopped, backend };
+  const path = controlSocketPath(await socketDirectory(t));
+  return { path, ...(await controlServed(t, path)) };
 }
 
 test("the service answers what it is placing", async (t) => {
   const { path } = await served(t);
   assert.deepEqual(await controlAsked(path, { op: "status" }), {
-    inFlight: [
-      {
-        assignment: "asg-1",
-        name: "chuggy-shame-x",
-        image: "i",
-        phase: "Pulling",
-        deadlineEpochSecs: 1,
-      },
-    ],
+    inFlight: [inFlightFixture],
   });
 });
 

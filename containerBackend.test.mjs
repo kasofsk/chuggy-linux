@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import {
   mkdtemp,
   readdir,
@@ -112,7 +113,7 @@ function seeded(
   id,
   status,
   deadlineEpochSecs,
-  name = containerName(pool.pool, id),
+  name = containerName(pool, id),
 ) {
   state.containers.set(name, {
     id: `id-${id}`,
@@ -142,7 +143,7 @@ test("a slow pull keeps the assignment held, and the container it starts is held
   pull.resolve({ code: 0, stdout: "", stderr: "" });
   await backend.settled();
 
-  const name = containerName(pool.pool, "asg-1");
+  const name = containerName(pool, "asg-1");
   assert.deepEqual(state.containers.get(name)?.labels, {
     "io.chuggy.pool": "vteng/chuggy/shame",
     "io.chuggy.assignment": "asg-1",
@@ -390,7 +391,7 @@ test("a name another assignment holds is a placement that failed", async (t) => 
     "asg-other",
     "running",
     startMs / 1000 + 60,
-    containerName(pool.pool, "asg-1"),
+    containerName(pool, "asg-1"),
   );
   await backend.place(assignment());
   await backend.settled();
@@ -434,6 +435,53 @@ test("an ended container whose logs could not be saved is kept for the next pass
   assert.match(log.join("\n"), /ended; its logs could not be saved/u);
 });
 
+test("two pools of one name in different projects name an assignment's container apart", () => {
+  const other = { tenant: "newtenant", project: "arbbot", pool: "shame" };
+  assert.match(containerName(pool, "asg-1"), /^chuggy-shame-[0-9a-f]{20}$/u);
+  assert.match(containerName(other, "asg-1"), /^chuggy-shame-[0-9a-f]{20}$/u);
+  assert.notEqual(containerName(pool, "asg-1"), containerName(other, "asg-1"));
+  assert.equal(
+    containerName(pool, "asg-1"),
+    containerName({ ...pool }, "asg-1"),
+  );
+});
+
+test("another project's pool of the same name keeps its containers: this pool neither holds nor stops them", async (t) => {
+  const { backend, state } = await harness(t);
+  const other = { tenant: "newtenant", project: "arbbot", pool: "shame" };
+  const name = containerName(other, "asg-2");
+  state.containers.set(name, {
+    id: "id-other",
+    name,
+    status: "running",
+    image,
+    labels: {
+      "io.chuggy.pool": "newtenant/arbbot/shame",
+      "io.chuggy.assignment": "asg-2",
+      "io.chuggy.deadline": String(startMs / 1000 + 60),
+    },
+  });
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
+  assert.equal(state.containers.get(name)?.status, "running");
+  assert.ok(!verbs(state).includes("kill"), verbs(state).join(" "));
+});
+
+test("a container a run named before names were scoped by project is held, and stopped, by its labels", async (t) => {
+  const { backend, state } = await harness(t);
+  const digest = createHash("sha256").update("asg-2", "utf8").digest("hex");
+  const name = seeded(
+    state,
+    "asg-2",
+    "running",
+    startMs / 1000 + 60,
+    `chuggy-shame-${digest.slice(0, 20)}`,
+  );
+  assert.deepEqual(await backend.held(), ["asg-2"]);
+  assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
+  assert.equal(state.containers.has(name), false);
+});
+
 test("a running container inside its deadline is held", async (t) => {
   const { backend, state } = await harness(t);
   seeded(state, "asg-2", "running", startMs / 1000 + 60);
@@ -468,8 +516,18 @@ test("a stop of a running container kills it, saves its logs, and removes it wit
   assert.deepEqual(
     state.calls.map((call) => call.argv),
     [
-      ["kill", name],
-      ["container", "inspect", name],
+      [
+        "ps",
+        "--all",
+        "--quiet",
+        "--no-trunc",
+        "--filter",
+        "label=io.chuggy.pool=vteng/chuggy/shame",
+        "--filter",
+        "label=io.chuggy.assignment=asg-2",
+      ],
+      ["kill", "id-asg-2"],
+      ["container", "inspect", "id-asg-2"],
       ["logs", "id-asg-2"],
       ["rm", "-v", "id-asg-2"],
     ],
@@ -489,7 +547,7 @@ test("a stop of a job that ended on its own just before saves its logs and remov
   const { backend, state, settings } = await harness(t);
   const name = seeded(state, "asg-2", "exited", startMs / 1000 + 60);
   assert.deepEqual(await backend.stop("asg-2"), { stopped: "Stopped" });
-  assert.deepEqual(verbs(state), ["kill", "container", "logs", "rm"]);
+  assert.deepEqual(verbs(state), ["ps", "kill", "container", "logs", "rm"]);
   assert.equal(state.containers.size, 0);
   assert.equal(
     await readFile(join(settings.logDir, `${name}.log`), "utf8"),
@@ -523,7 +581,7 @@ test("a job still running after its kill is not stopped, and its container is le
     stopped: "Unavailable",
     evidence: "the container engine could not be reached to stop this workload",
   });
-  assert.deepEqual(verbs(state), ["kill", "container"]);
+  assert.deepEqual(verbs(state), ["ps", "kill", "container"]);
   assert.equal(state.containers.get(name)?.status, "running");
 });
 

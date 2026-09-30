@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { cliMain } from "./commands.mjs";
@@ -11,6 +11,9 @@ process.exit(
     environment: process.env,
     home: homedir(),
     uid: process.getuid?.() ?? -1,
+    hostname: hostname(),
+    arch: process.arch,
+    fetch: globalThis.fetch,
     node: process.execPath,
     cli: fileURLToPath(import.meta.url),
     out: (line) => process.stdout.write(`${line}\n`),

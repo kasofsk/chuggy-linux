@@ -18,7 +18,6 @@
  * answer is the one that loses work.
  */
 
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -38,6 +37,7 @@ import {
 } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
 import { jobEnvelope, jobEnvironmentFile } from "./job.mjs";
+import { poolIdentityDigest, poolLabelValue } from "./poolIdentity.mjs";
 import { imageRegistryHost, withRegistryAuth } from "./registryAuth.mjs";
 import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
 
@@ -48,11 +48,7 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolTokens} WorkerPoolTokens
  * @typedef {import("./engine.mjs").Engine} Engine
  * @typedef {import("./engine.mjs").EngineAnswer} EngineAnswer
- *
- * @typedef {object} PoolIdentity
- * @property {string} tenant
- * @property {string} project
- * @property {string} pool
+ * @typedef {import("./poolIdentity.mjs").PoolIdentity} PoolIdentity
  *
  * @typedef {object} ContainerBackendSettings
  * @property {"docker" | "podman"} engine
@@ -102,9 +98,6 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
  * @typedef {{settings: ContainerBackendSettings, seams: ContainerBackendSeams, placements: Map<string, Placement>}} State
  */
 
-/** How much of an assignment's digest a container's name carries. */
-const containerDigestChars = 20;
-
 /** The states a container does no more work in; podman adds two docker lacks. */
 const endedStatuses = new Set([
   "created",
@@ -123,21 +116,16 @@ const inspectedSchema = z.array(
   }),
 );
 
-/** @param {PoolIdentity} pool */
-export function poolLabelValue(pool) {
-  return `${pool.tenant}/${pool.project}/${pool.pool}`;
-}
-
 /**
  * The one container an assignment runs as, named so a repeated placement
- * names it again.
+ * names it again. The digest is of the pool's identity with the assignment,
+ * since an assignment is named uniquely only within its pool.
  *
- * @param {string} pool
+ * @param {PoolIdentity} pool
  * @param {string} assignment
  */
 export function containerName(pool, assignment) {
-  const digest = createHash("sha256").update(assignment, "utf8").digest("hex");
-  return `chuggy-${pool}-${digest.slice(0, containerDigestChars)}`;
+  return `chuggy-${pool.pool}-${poolIdentityDigest(pool, assignment)}`;
 }
 
 /** @param {ContainerBackendSettings} settings */
@@ -202,6 +190,18 @@ async function inspectedContainers(state, containers) {
 }
 
 /**
+ * The containers a listing answered, by id.
+ *
+ * @param {EngineAnswer} listed
+ */
+function listedIds(listed) {
+  return listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
  * @param {State} state
  * @returns {Promise<PoolContainer[]>}
  */
@@ -213,10 +213,7 @@ async function poolContainers(state) {
     throw new Error(
       `${state.settings.engine} could not list this pool's containers: ${engineFailureLine(listed)}`,
     );
-  const ids = listed.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const ids = listedIds(listed);
   return ids.length === 0 ? [] : inspectedContainers(state, ids);
 }
 
@@ -550,7 +547,7 @@ async function placed(state, assignment) {
   /** @type {Placement} */
   const placement = {
     assignment: assignment.assignment,
-    name: containerName(settings.pool.pool, assignment.assignment),
+    name: containerName(settings.pool, assignment.assignment),
     image: /** @type {string} */ (assignment.image),
     phase: "Placing",
     deadlineEpochSecs:
@@ -591,12 +588,31 @@ function stopAnswer(answer) {
 }
 
 /**
- * Kills an assignment's job and retires its container, as `held` does one
- * past its deadline. A placement still in flight is cancelled and waited out
- * first, so a `run` it was already making is killed too rather than left
- * behind. The kill is judged by the container it leaves, since a job that
- * ended on its own just before refuses one; a job that has ended is stopped
- * even where its container is kept for `held` to retire.
+ * Kills one container's job and retires the container, as `held` does one
+ * past its deadline. The kill is judged by the container it leaves, since a
+ * job that ended on its own just before refuses one; a job that has ended is
+ * stopped even where its container is kept for `held` to retire.
+ *
+ * @param {State} state
+ * @param {string} id
+ * @returns {Promise<WorkerPoolStopped>}
+ */
+async function containerStopped(state, id) {
+  const { engine } = state.seams;
+  const killed = await engine.exec(killArgv(id));
+  const inspected = await engine.exec(inspectArgv([id]));
+  if (inspected.code !== 0) return stopAnswer(inspected);
+  const [container] = inspectionContainers(state, inspected);
+  if (!endedStatuses.has(container.status)) return stopAnswer(killed);
+  await retired(state, container, "was stopped");
+  return { stopped: "Stopped" };
+}
+
+/**
+ * Stops an assignment's job. A placement still in flight is cancelled and
+ * waited out first, so a `run` it was already making is killed too rather
+ * than left behind. Its container is found by its labels, as `held` finds it,
+ * so one a run under another naming started is found too.
  *
  * @param {State} state
  * @param {string} assignment
@@ -608,14 +624,14 @@ async function stopped(state, assignment) {
     placement.controller.abort();
     await placement.done;
   }
-  const { engine } = state.seams;
-  const name = containerName(state.settings.pool.pool, assignment);
-  const killed = await engine.exec(killArgv(name));
-  const inspected = await engine.exec(inspectArgv([name]));
-  if (inspected.code !== 0) return stopAnswer(inspected);
-  const [container] = inspectionContainers(state, inspected);
-  if (!endedStatuses.has(container.status)) return stopAnswer(killed);
-  await retired(state, container, "was stopped");
+  const listed = await state.seams.engine.exec(
+    listArgv(poolLabelValue(state.settings.pool), assignment),
+  );
+  if (listed.code !== 0) return stopAnswer(listed);
+  for (const id of listedIds(listed)) {
+    const answer = await containerStopped(state, id);
+    if (answer.stopped !== "Stopped") return answer;
+  }
   return { stopped: "Stopped" };
 }
 

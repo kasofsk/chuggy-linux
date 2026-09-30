@@ -171,8 +171,13 @@ export function runArgv(engine, job) {
   ];
 }
 
-/** @param {string} pool the pool label's value */
-export function listArgv(pool) {
+/**
+ * A pool's containers, or the one of them an assignment runs as.
+ *
+ * @param {string} pool the pool label's value
+ * @param {string} [assignment]
+ */
+export function listArgv(pool, assignment) {
   return [
     "ps",
     "--all",
@@ -180,6 +185,9 @@ export function listArgv(pool) {
     "--no-trunc",
     "--filter",
     `label=${poolLabel}=${pool}`,
+    ...(assignment === undefined
+      ? []
+      : ["--filter", `label=${assignmentLabel}=${assignment}`]),
   ];
 }
 

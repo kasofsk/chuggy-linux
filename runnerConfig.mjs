@@ -17,9 +17,10 @@ import { jobUid, reservedJobVariables } from "./job.mjs";
  *
  * @typedef {object} RunnerPaths
  * @property {string} config
- * @property {string} unit the systemd user unit
+ * @property {string} units where systemd reads the user's units
+ * @property {string} pools where `register` writes a pool file
  * @property {string} logs where an ended job's logs are saved
- * @property {string | undefined} runtime where pull credentials, env files and the control socket live; absent without XDG_RUNTIME_DIR
+ * @property {string | undefined} runtime where each pool's pull credentials, env files and control socket live; absent without XDG_RUNTIME_DIR
  */
 
 /** The permission bits a group or anyone else would read or write by. */
@@ -105,7 +106,8 @@ export function runnerPaths(environment, home) {
   const runtimeHome = xdgBased(environment, "XDG_RUNTIME_DIR", undefined);
   return {
     config: join(configHome, "chuggy-linux", "runner.json"),
-    unit: join(configHome, "systemd", "user", "chuggy-linux.service"),
+    units: join(configHome, "systemd", "user"),
+    pools: join(configHome, "chuggy", "pools"),
     logs: join(stateHome, "chuggy-linux", "logs"),
     runtime:
       runtimeHome === undefined ? undefined : join(runtimeHome, "chuggy-linux"),
