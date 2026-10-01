@@ -97,6 +97,7 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 - Runs each job as uid 1000 with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the token file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
 - Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job that is stopped, or past its deadline, is killed first.
+- Tells chuggy at once when a job ends without being stopped: its container exited, was killed at its deadline, or never started. chuggy is given the runner's own reason, such as `its container exited with status 1`, never the job's log, and a job that already reported keeps its report. Nothing is sent for a job stopped by chuggy or by `stop`.
 
 ## What it does not do
 

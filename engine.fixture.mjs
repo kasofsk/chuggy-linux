@@ -5,6 +5,7 @@
  */
 
 import { readFileSync, writeSync } from "node:fs";
+import { constants } from "node:os";
 import { dirname } from "node:path";
 
 /**
@@ -16,6 +17,8 @@ import { dirname } from "node:path";
  * @property {Record<string, string>} labels
  * @property {string} status
  * @property {string} image
+ * @property {string[]} [env] each `NAME=value`, as an inspection lists them
+ * @property {number} [exitCode]
  *
  * @typedef {object} FakeCall
  * @property {string[]} argv
@@ -45,6 +48,12 @@ const failed = (stderr, code = 1) => ({
  * @returns {EngineAnswer}
  */
 const answered = (stdout = "") => ({ code: 0, stdout, stderr: "" });
+
+/** The variable an image sets, which an inspection lists beside the env file's. */
+const imagePath = "PATH=/usr/local/bin:/usr/bin:/bin";
+
+/** What a container a kill ended exits with, as a shell reports a death by signal. */
+const killedExitCode = 128 + constants.signals.SIGKILL;
 
 /** @param {string} reference */
 const missing = (reference) =>
@@ -83,6 +92,8 @@ function fakeEngineState() {
     logsFail: false,
     /** Whether a kill runs past the engine's cap, which the engine answers as interrupted. */
     killInterrupted: false,
+    /** Whether a run runs past the engine's cap after its container started, which the engine answers as interrupted. */
+    runInterrupted: false,
     /** What podman's `version` answers. */
     podmanVersion: "5.8.7",
     /**
@@ -150,7 +161,21 @@ function run(state, call) {
   );
   const id = `c${String(state.nextId++).padStart(63, "0")}`;
   const image = argv.at(-1) ?? "";
-  state.containers.set(name, { id, name, labels, status: "running", image });
+  const env = [
+    imagePath,
+    ...call.envFile.split("\n").filter((line) => line.length > 0),
+  ];
+  state.containers.set(name, {
+    id,
+    name,
+    labels,
+    status: "running",
+    image,
+    env,
+    exitCode: 0,
+  });
+  if (state.runInterrupted)
+    return { code: -1, stdout: "", stderr: "", failed: "Interrupted" };
   return answered(`${id}\n`);
 }
 
@@ -168,8 +193,8 @@ function inspected(state, references) {
           {
             Id: container.id,
             Name: `/${container.name}`,
-            Config: { Labels: container.labels },
-            State: { Status: container.status },
+            Config: { Labels: container.labels, Env: container.env ?? null },
+            State: { Status: container.status, ExitCode: container.exitCode },
           },
         ],
   );
@@ -223,6 +248,7 @@ function killed(state, reference) {
     );
   return changed(state, reference, (running) => {
     running.status = "exited";
+    running.exitCode = killedExitCode;
   });
 }
 
