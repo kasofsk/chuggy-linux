@@ -11,6 +11,7 @@ import { controlServer } from "./control.mjs";
 /** @type {import("./containerBackend.mjs").InFlightPlacement} */
 export const inFlightFixture = {
   assignment: "asg-1",
+  kind: "Session",
   name: "chuggy-shame-x",
   image: "i",
   phase: "Pulling",

@@ -439,19 +439,47 @@ test("once is refused while a legacy service serving this pool runs, and not whi
   assert.match(refused.err, /^a chuggy-linux service is running this pool/u);
 });
 
-test("status and stop reach this pool's service", async (t) => {
-  const { home, environment, poolFile, paths } = await served(t);
+test("status and stop reach this pool's service, and status names each workload's kind and the runner's limits", async (t) => {
+  const { home, environment, poolFile, paths } = await served(t, {
+    runner: { concurrencyMax: 3, sessionsMax: 4 },
+  });
   const { stopped } = await controlServed(
     t,
     controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
   );
+  const { engine, state } = fakeEngine();
+  for (const [name, labels] of [
+    ["chuggy-shame-a", { "io.chuggy.assignment": "asg-2" }],
+    [
+      "chuggy-shame-b",
+      { "io.chuggy.assignment": "ses-1", "io.chuggy.kind": "Session" },
+    ],
+  ])
+    state.containers.set(name, {
+      id: `id-${name}`,
+      name,
+      status: "running",
+      image: "i",
+      labels: {
+        "io.chuggy.pool": "vteng/chuggy/shame",
+        "io.chuggy.deadline": "1800000000",
+        ...labels,
+      },
+    });
   const status = await called(["status", "--pool", poolFile], {
     home,
     environment,
+    engine,
   });
   assert.equal(
     status.out,
-    `service: running\n${inFlightFixture.name}  pulling  i  asg-1`,
+    [
+      "service: running",
+      "limits: concurrencyMax 3, sessionsMax 4",
+      `${inFlightFixture.name}  session  pulling  i  asg-1`,
+      "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
+      "chuggy-shame-b  session  running  deadline 2027-01-15T08:00:00.000Z  ses-1",
+    ].join("\n"),
   );
   const stop = await called(["stop", "asg-1", "--pool", poolFile], {
     home,

@@ -40,7 +40,11 @@ import {
   runnerTokens,
   scratchRemovedOnSignal,
 } from "./runner.mjs";
-import { podmanRegistriesConf, runnerPaths } from "./runnerConfig.mjs";
+import {
+  podmanRegistriesConf,
+  runnerConfigLimits,
+  runnerPaths,
+} from "./runnerConfig.mjs";
 import {
   deniedExitStatus,
   legacyServiceUnitName,
@@ -79,7 +83,8 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
                           pool named for this machine unless --pool names it
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
-  status                  this pool's containers, and what the service is placing
+  status                  this pool's limits and containers, and what the
+                          service is placing
   stop <assignment>       stop one assignment's container
   doctor                  check everything a run needs
   install-service         write the systemd user unit that runs \`run\`
@@ -165,7 +170,7 @@ async function once(call) {
 
 /** @param {CliCall} call */
 async function status(call) {
-  const { runner, sockets } = await started(call);
+  const { setup, runner, sockets } = await started(call);
   const containers = await runner.backend.containers();
   const answered =
     /** @type {{inFlight?: import("./containerBackend.mjs").InFlightPlacement[]} | undefined} */ (
@@ -174,13 +179,14 @@ async function status(call) {
   call.host.out(
     answered === undefined ? "service: not running" : "service: running",
   );
+  call.host.out(`limits: ${runnerConfigLimits(setup.config)}`);
   for (const placement of answered?.inFlight ?? [])
     call.host.out(
-      `${placement.name}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
+      `${placement.name}  ${placement.kind.toLowerCase()}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
     );
   for (const container of containers)
     call.host.out(
-      `${container.name}  ${container.status}  deadline ${container.deadlineEpochSecs === undefined ? "none" : new Date(container.deadlineEpochSecs * 1000).toISOString()}  ${container.assignment ?? "no assignment"}`,
+      `${container.name}  ${container.kind.toLowerCase()}  ${container.status}  deadline ${container.deadlineEpochSecs === undefined ? "none" : new Date(container.deadlineEpochSecs * 1000).toISOString()}  ${container.assignment ?? "no assignment"}`,
     );
   return 0;
 }

@@ -45,8 +45,8 @@ async function doctored(t, options = {}) {
         invalidate: () => undefined,
       }),
       plane: () => ({
-        poll: async (token, held, wanted) => {
-          polls.push([token, held, wanted]);
+        poll: async (token, held, wanted, wantedSessions) => {
+          polls.push([token, held, wanted, wantedSessions]);
           return { polled: "Reconciled", assignments: [], stop: [] };
         },
         settle: async () => "Settled",
@@ -73,6 +73,10 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     ],
   );
   assert.equal(findings[0].detail, `${poolFile} names pool vteng/chuggy/shame`);
+  assert.match(
+    findings[1].detail,
+    /\/chuggy-linux\/runner\.json: concurrencyMax 1, sessionsMax 2$/u,
+  );
   assert.deepEqual(findings[4], {
     check: "podman credential helpers",
     passed: true,
@@ -82,7 +86,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     findings[6].detail,
     "chuggy-jobs is missing, and a run makes it",
   );
-  assert.deepEqual(polls, [["pool-token", [], 0]]);
+  assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
     ["version", "info", "ps", "network"],

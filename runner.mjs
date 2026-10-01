@@ -23,6 +23,7 @@ import {
   workerPoolClientPass,
 } from "@chuggy/worker-core/poolLoop.mjs";
 import { poolPlaneClient } from "@chuggy/worker-core/poolPlane.mjs";
+import { poolSessionPlaneClient } from "@chuggy/worker-core/poolSessionPlane.mjs";
 import { poolClientTokens } from "@chuggy/worker-core/poolTokens.mjs";
 
 import { containerBackend } from "./containerBackend.mjs";
@@ -72,6 +73,7 @@ const tokenSettings = {
 };
 const planeSettings = { pollTimeoutMs: 120_000, settleTimeoutMs: 10_000 };
 const jobPlaneSettings = { timeoutMs: 10_000 };
+const sessionPlaneSettings = { timeoutMs: 10_000 };
 const outageBackoffMs = 5_000;
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
@@ -251,7 +253,7 @@ export function runnerPlane(credentials) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid, where its log lines go, the engine and token source when not those the files name, and the fetch a job's plane is reached by when not the global one
+ * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid, where its log lines go, the engine and token source when not those the files name, and the fetch a job's or a session's plane is reached by when not the global one
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -292,9 +294,11 @@ export async function runnerParts(setup, host) {
     tokens,
     plane: runnerPlane(credentials),
     jobs: poolJobPlaneClient(jobPlaneSettings, host.fetch),
+    sessions: poolSessionPlaneClient(sessionPlaneSettings, host.fetch),
     backend,
     settings: checkedWorkerPoolClientSettings({
       concurrencyMax: config.concurrencyMax,
+      sessionsMax: config.sessionsMax,
       outageBackoffMs,
       passesMax: 1,
     }),
@@ -327,7 +331,7 @@ export async function jobNetwork(engine, network) {
 }
 
 /**
- * What a pass did, as a log line, naming the jobs it ended only where it
+ * What a pass did, as a log line, naming the workloads it ended only where it
  * ended any.
  *
  * @param {{placed: number, stopped: number, refused: number, ended: number}} pass

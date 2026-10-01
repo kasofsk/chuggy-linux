@@ -40,7 +40,7 @@ test("an envelope the contract refuses names its fields and never their values",
     (error) =>
       error instanceof RangeError &&
       error.message ===
-        "the assignment makes no envelope a job can read: callbackUrl, bearer",
+        "the assignment makes no envelope its container can read: callbackUrl, bearer",
   );
 });
 
