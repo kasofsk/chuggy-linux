@@ -57,6 +57,8 @@ const environmentSchema = z
 export const runnerConfigSchema = z.strictObject({
   engine: z.enum(["docker", "podman"]).default("docker"),
   concurrencyMax: positiveSchema.default(1),
+  /** The sessions held beside the jobs, none where it is 0. */
+  sessionsMax: z.number().int().nonnegative().safe().default(2),
   /** Where `claude setup-token`'s output was saved, named in a bind mount. */
   claudeTokenFile: z
     .string()
@@ -69,6 +71,16 @@ export const runnerConfigSchema = z.strictObject({
   environment: environmentSchema.default({}),
   network: networkSchema.default("chuggy-jobs"),
 });
+
+/**
+ * How many jobs and sessions each pool's service holds at once, in the file's
+ * own terms.
+ *
+ * @param {RunnerConfig} config
+ */
+export function runnerConfigLimits(config) {
+  return `concurrencyMax ${String(config.concurrencyMax)}, sessionsMax ${String(config.sessionsMax)}`;
+}
 
 /**
  * An XDG base directory, or its default where the variable is unset or, as

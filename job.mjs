@@ -1,9 +1,11 @@
 /**
- * What every job is given, whichever engine runs it: the envelope it is
- * launched with in place of a task document, the user it runs as, and the
- * paths its image reads. The envelope is checked against the contract's own
- * schema, so no job starts with one its core would refuse, and is read back
- * from a container under the same schema.
+ * What every workload is given, a job and a session alike, whichever engine
+ * runs it: the envelope it is launched with in place of a task document, the
+ * user it runs as, and the paths its image reads. The core fetches its task
+ * through the envelope and learns there which kind it runs. The envelope is
+ * checked against the contract's own schema, so no workload starts with one
+ * its core would refuse, and is read back from a container under the same
+ * schema.
  */
 
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
@@ -13,18 +15,18 @@ import { poolEnvelopeSchema } from "@chuggy/worker-contract/workerTask";
  * @typedef {import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment} WorkerPoolAssignment
  *
  * @typedef {object} JobBounds
- * @property {number} timeoutSecsMax
+ * @property {number} timeoutSecsMax the longest this pool lets the workload run
  * @property {number} outputBytesMax
  */
 
-/** The worker image's own user, which every mount a job reads is shaped for. */
+/** The worker image's own user, which every mount a workload reads is shaped for. */
 export const jobUid = 1000;
 export const jobGid = 1000;
 
-/** A bound on a job's processes, so a fork loop in agent-run code stops at its own container. */
+/** A bound on a workload's processes, so a fork loop in agent-run code stops at its own container. */
 export const jobPidsMax = 4096;
 
-/** An anonymous volume of the job's own container. */
+/** An anonymous volume of the workload's own container. */
 export const jobWorkspace = "/workspace";
 
 /** Where the Claude token file is mounted, read-only. */
@@ -32,8 +34,8 @@ export const jobProviderCredentialFile =
   "/var/run/chuggy/credentials/claude-code";
 
 /**
- * The variables a job's environment may not name: the envelope, and the one
- * the core sets from the mounted token, which a value here would shadow.
+ * The variables a workload's environment may not name: the envelope, and the
+ * one the core sets from the mounted token, which a value here would shadow.
  */
 export const reservedJobVariables = [
   workerTaskVariable,
@@ -59,7 +61,7 @@ export function jobEnvelope(assignment, bounds) {
   });
   if (!envelope.success)
     throw new RangeError(
-      `the assignment makes no envelope a job can read: ${envelope.error.issues
+      `the assignment makes no envelope its container can read: ${envelope.error.issues
         .map((issue) => issue.path.join("."))
         .join(", ")}`,
     );
@@ -67,8 +69,8 @@ export function jobEnvelope(assignment, bounds) {
 }
 
 /**
- * The attempt a job was launched for, read back from the envelope among its
- * container's variables, or nothing where none there can be read.
+ * The attempt a workload was launched for, read back from the envelope among
+ * its container's variables, or nothing where none there can be read.
  *
  * @param {readonly string[]} variables each `NAME=value`, as an engine's inspection lists them
  * @returns {{callbackUrl: string, bearer: string} | undefined}
@@ -92,9 +94,10 @@ export function jobEnvironmentAttempt(variables) {
 }
 
 /**
- * The env file a job's container is run with: the envelope, then the runner's
- * environment. An env file carries one variable a line with its value taken
- * verbatim, so a value that would break a line is refused rather than split.
+ * The env file a workload's container is run with: the envelope, then the
+ * runner's environment. An env file carries one variable a line with its value
+ * taken verbatim, so a value that would break a line is refused rather than
+ * split.
  *
  * @param {string} envelope
  * @param {Readonly<Record<string, string>>} environment

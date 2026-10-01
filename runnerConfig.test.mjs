@@ -49,9 +49,43 @@ test("a minimal file is read with every default", async (t) => {
     ...minimal,
     engine: "docker",
     concurrencyMax: 1,
+    sessionsMax: 2,
     environment: {},
     network: "chuggy-jobs",
   });
+});
+
+test("sessionsMax is a whole number of none or more, read apart from concurrencyMax", async (t) => {
+  const directory = await scratch(t);
+  for (const sessionsMax of [0, 5])
+    assert.deepEqual(
+      await runnerConfig(
+        await written(directory, {
+          ...minimal,
+          concurrencyMax: 3,
+          sessionsMax,
+        }),
+      ),
+      {
+        ...minimal,
+        engine: "docker",
+        concurrencyMax: 3,
+        sessionsMax,
+        environment: {},
+        network: "chuggy-jobs",
+      },
+    );
+  for (const [sessionsMax, why] of [
+    [-1, "Too small: expected number to be >=0"],
+    [1.5, "Invalid input: expected int, received number"],
+    ["2", "Invalid input: expected number, received string"],
+    [null, "Invalid input: expected number, received null"],
+  ]) {
+    const file = await written(directory, { ...minimal, sessionsMax });
+    await assert.rejects(runnerConfig(file), {
+      message: `runner configuration ${file}: sessionsMax ${why}`,
+    });
+  }
 });
 
 test("a file anyone but its owner can read or write is refused", async (t) => {

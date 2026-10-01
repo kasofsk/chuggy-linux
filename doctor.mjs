@@ -13,7 +13,11 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { listArgv, networkInspectArgv } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
 import { poolLabelValue } from "./poolIdentity.mjs";
-import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
+import {
+  claudeTokenFileRefusal,
+  runnerConfig,
+  runnerConfigLimits,
+} from "./runnerConfig.mjs";
 import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
 
 /**
@@ -99,7 +103,7 @@ async function planeChecks(input, credentials, findings) {
   });
   if (token === undefined) return;
   await checked(findings, "plane", async () => {
-    const polled = await input.parts.plane(credentials).poll(token, [], 0);
+    const polled = await input.parts.plane(credentials).poll(token, [], 0, 0);
     if (polled.polled === "Stale")
       throw new Error("the plane rejected a token the issuer had just issued");
     if (polled.polled !== "Reconciled") throw new Error(polled.evidence);
@@ -214,10 +218,10 @@ export async function doctorFindings(input) {
     const read = await poolCredentials(input.poolFile);
     return [read, `${input.poolFile} names pool ${poolLabelValue(read)}`];
   });
-  const config = await checked(findings, "runner configuration", async () => [
-    await runnerConfig(input.paths.config),
-    input.paths.config,
-  ]);
+  const config = await checked(findings, "runner configuration", async () => {
+    const read = await runnerConfig(input.paths.config);
+    return [read, `${input.paths.config}: ${runnerConfigLimits(read)}`];
+  });
   await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),

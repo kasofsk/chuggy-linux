@@ -17,11 +17,13 @@ import {
 
 /**
  * @typedef {"docker" | "podman"} EngineName
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolWorkloadKind} WorkerPoolWorkloadKind
  *
- * @typedef {object} JobContainer
+ * @typedef {object} WorkloadContainer
  * @property {string} name
  * @property {string} pool the pool label's value
  * @property {string} assignment
+ * @property {WorkerPoolWorkloadKind} kind
  * @property {number} deadlineEpochSecs
  * @property {string} envFile
  * @property {number} cpuMillis
@@ -31,9 +33,10 @@ import {
  * @property {string} image
  */
 
-/** The labels a job's container carries, which is how `held` finds it again. */
+/** The labels a workload's container carries, which is how `held` finds it again. */
 export const poolLabel = "io.chuggy.pool";
 export const assignmentLabel = "io.chuggy.assignment";
+export const kindLabel = "io.chuggy.kind";
 export const deadlineLabel = "io.chuggy.deadline";
 
 /** The file a pull's credential is written to, in the directory made for it. */
@@ -106,7 +109,7 @@ export function dockerContextArgv() {
 }
 
 /**
- * The minted directory's tmpfs, owned by the job's user. Docker takes the
+ * The minted directory's tmpfs, owned by the image's user. Docker takes the
  * owner as `uid`/`gid` and rejects `U`; rootless podman rejects `uid`/`gid`
  * and takes `U`, which chowns the mount to the container's user.
  *
@@ -121,29 +124,32 @@ export function mintedTmpfs(engine) {
 }
 
 /**
- * One job's container. The mounts and the security options are the rig's
- * pod in container terms: the image's user, no capabilities, no privilege
+ * One workload's container, a job's and a session's alike but for the kind
+ * it is labelled with. The mounts and the security options are the rig's pod
+ * in container terms: the image's user, no capabilities, no privilege
  * escalation, the engine's default seccomp profile, the minted credential in
  * memory the image's user owns, and the workspace in a volume of its own.
  *
  * @param {EngineName} engine
- * @param {JobContainer} job
+ * @param {WorkloadContainer} workload
  */
-export function runArgv(engine, job) {
+export function runArgv(engine, workload) {
   return [
     "run",
     "-d",
     "--pull=never",
     "--name",
-    job.name,
+    workload.name,
     "--label",
-    `${poolLabel}=${job.pool}`,
+    `${poolLabel}=${workload.pool}`,
     "--label",
-    `${assignmentLabel}=${job.assignment}`,
+    `${assignmentLabel}=${workload.assignment}`,
     "--label",
-    `${deadlineLabel}=${String(job.deadlineEpochSecs)}`,
+    `${kindLabel}=${workload.kind}`,
+    "--label",
+    `${deadlineLabel}=${String(workload.deadlineEpochSecs)}`,
     "--env-file",
-    job.envFile,
+    workload.envFile,
     "--user",
     `${String(jobUid)}:${String(jobGid)}`,
     ...(engine === "podman"
@@ -156,18 +162,18 @@ export function runArgv(engine, job) {
     "--pids-limit",
     String(jobPidsMax),
     "--cpus",
-    String(job.cpuMillis / 1000),
+    String(workload.cpuMillis / 1000),
     "--memory",
-    `${String(job.memoryMib)}m`,
+    `${String(workload.memoryMib)}m`,
     "--mount",
-    `type=bind,source=${job.tokenFile},target=${jobProviderCredentialFile},readonly`,
+    `type=bind,source=${workload.tokenFile},target=${jobProviderCredentialFile},readonly`,
     "--tmpfs",
     mintedTmpfs(engine),
     "--volume",
     jobWorkspace,
     "--network",
-    job.network,
-    job.image,
+    workload.network,
+    workload.image,
   ];
 }
 
@@ -208,7 +214,7 @@ export function logsArgv(container) {
 
 /**
  * A removal, with the container's anonymous volumes: the workspace goes with
- * the job.
+ * the workload.
  *
  * @param {string} container
  */

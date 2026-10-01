@@ -72,9 +72,10 @@ test("a run passes until the plane denies the pool, logging each outage and each
     () => ({
       polled: "Reconciled",
       assignments: [{ assignment: "asg-1" }],
+      sessions: [],
       stop: [],
     }),
-    () => ({ polled: "Reconciled", assignments: [], stop: [] }),
+    () => ({ polled: "Reconciled", assignments: [], sessions: [], stop: [] }),
     () => ({ polled: "Denied", evidence: "the pool was revoked" }),
   ]);
   /** @type {string[]} */
@@ -98,7 +99,12 @@ test("a run passes until the plane denies the pool, logging each outage and each
 });
 
 test("a pass that ended a job is logged with how many, and one that ended none names no count", async () => {
-  const quiet = () => ({ polled: "Reconciled", assignments: [], stop: [] });
+  const quiet = () => ({
+    polled: "Reconciled",
+    assignments: [],
+    sessions: [],
+    stop: [],
+  });
   const { client } = scriptedClient(
     [
       quiet,
@@ -108,6 +114,7 @@ test("a pass that ended a job is logged with how many, and one that ended none n
     [
       [
         {
+          kind: "Job",
           job: {
             assignment: "asg-1",
             callbackUrl: "https://chuggy.example/worker",
@@ -250,6 +257,8 @@ test("a run is composed from both files, and refuses to start without a runtime 
     engine,
   });
   assert.equal(runner.client.settings.concurrencyMax, 3);
+  assert.equal(runner.client.settings.sessionsMax, 2);
+  assert.equal(typeof runner.client.sessions?.end, "function");
   assert.deepEqual(runner.backend.inFlight(), []);
   const bare = await runnerSetup(
     poolFile,
@@ -260,6 +269,19 @@ test("a run is composed from both files, and refuses to start without a runtime 
     runnerParts(bare, { uid: 1000, log: () => undefined, engine }),
     /XDG_RUNTIME_DIR is not set/u,
   );
+});
+
+test("a runner whose file sets sessionsMax to 0 is given no room for a session", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { sessionsMax: 0 },
+  });
+  const { engine } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid: 1000, log: () => undefined, engine },
+  );
+  assert.equal(runner.client.settings.concurrencyMax, 1);
+  assert.equal(runner.client.settings.sessionsMax, 0);
 });
 
 test("podman has no endpoint, and is taken only from the first version whose --authfile is all it reads", async () => {
@@ -401,16 +423,19 @@ test(
       await runnerSetup(poolFile, environment, home),
       { uid: ownUid, log: () => undefined, engine },
     );
-    const placed = await runner.backend.place({
-      assignment: "asg-1",
-      capabilities: ["container"],
-      image: `busybox@sha256:${"a".repeat(64)}`,
-      cpuMillis: 1000,
-      memoryMib: 512,
-      deadlineSecs: 600,
-      callbackUrl: "https://chuggy.example/worker",
-      bearer: "attempt-bearer",
-    });
+    const placed = await runner.backend.place(
+      {
+        assignment: "asg-1",
+        capabilities: ["container"],
+        image: `busybox@sha256:${"a".repeat(64)}`,
+        cpuMillis: 1000,
+        memoryMib: 512,
+        deadlineSecs: 600,
+        callbackUrl: "https://chuggy.example/worker",
+        bearer: "attempt-bearer",
+      },
+      "Job",
+    );
     assert.deepEqual(placed, { placed: "Placed" });
     await runner.backend.settled();
     const pull = state.calls.find((call) => call.argv[0] === "pull");
@@ -470,16 +495,19 @@ test("the registry the pool file names is the one a pull presents the pool's tok
       },
     },
   );
-  await runner.backend.place({
-    assignment: "asg-1",
-    capabilities: ["container"],
-    image: `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`,
-    cpuMillis: 1000,
-    memoryMib: 512,
-    deadlineSecs: 600,
-    callbackUrl: "https://chuggy.example/worker",
-    bearer: "attempt-bearer",
-  });
+  await runner.backend.place(
+    {
+      assignment: "asg-1",
+      capabilities: ["container"],
+      image: `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`,
+      cpuMillis: 1000,
+      memoryMib: 512,
+      deadlineSecs: 600,
+      callbackUrl: "https://chuggy.example/worker",
+      bearer: "attempt-bearer",
+    },
+    "Job",
+  );
   await runner.backend.settled();
   const pull = state.calls.find((call) => call.argv[0] === "pull");
   assert.deepEqual(Object.keys(JSON.parse(pull?.authFile ?? "").auths), [
@@ -564,8 +592,9 @@ function runnerAssignment(assignment, image) {
 }
 
 /**
- * A run over a fake engine whose jobs' plane answers every call and records
- * it, polled by a plane answering `polls` in turn.
+ * A run over a fake engine whose jobs' and sessions' planes answer every call
+ * and record it, polled by a plane answering `polls` in turn and recording
+ * what each poll asked, its held assignments sorted.
  *
  * @param {import("node:test").TestContext} t
  * @param {unknown[]} polls
@@ -597,24 +626,34 @@ async function endingRunner(t, polls) {
       },
     },
   );
-  let polled = 0;
+  /** @type {unknown[][]} */
+  const pollsAsked = [];
   const client =
     /** @type {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} */ ({
       ...runner.client,
       plane: {
-        poll: async () => polls[polled++],
+        poll: async (
+          /** @type {string} */ token,
+          /** @type {readonly string[]} */ held,
+          /** @type {unknown[]} */ ...wanted
+        ) => polls[pollsAsked.push([token, [...held].sort(), ...wanted]) - 1],
         settle: async () => "Settled",
       },
     });
-  return { runner, client, state, asked };
+  return { runner, client, state, asked, pollsAsked };
 }
 
-const quietPoll = { polled: "Reconciled", assignments: [], stop: [] };
+const quietPoll = {
+  polled: "Reconciled",
+  assignments: [],
+  sessions: [],
+  stop: [],
+};
 
 test("a pass ends the attempt of a job whose container exited unreported, at its plane under its own bearer, with the runner's reason", async (t) => {
   const { runner, client, state, asked } = await endingRunner(t, [quietPoll]);
   state.images.add(registryImage);
-  await runner.backend.place(runnerAssignment("asg-1", registryImage));
+  await runner.backend.place(runnerAssignment("asg-1", registryImage), "Job");
   await runner.backend.settled();
   const [container] = state.containers.values();
   container.status = "exited";
@@ -643,17 +682,106 @@ test("a pass ends the attempt of a job whose container exited unreported, at its
   ]);
 });
 
-test("a job stopped on the plane's word is never ended, though its container outlives the pass that stopped it", async (t) => {
-  const { runner, client, state, asked } = await endingRunner(t, [
-    { polled: "Reconciled", assignments: [], stop: ["asg-1", "asg-2"] },
+/**
+ * What a run asked of an attempt's plane under that attempt's bearer.
+ *
+ * @param {Array<{url: string, method: string | undefined, authorization: string, body: string}>} asked
+ * @param {string} assignment
+ */
+function askedUnder(asked, assignment) {
+  return asked
+    .filter(
+      ({ authorization }) => authorization === `Bearer bearer-of-${assignment}`,
+    )
+    .map(({ url, method, body }) => [method, url, body]);
+}
+
+test("a pass places a session the plane offers as a session, and its end reaches the session's plane while a job's still reaches the job's", async (t) => {
+  const { runner, client, state, asked, pollsAsked } = await endingRunner(t, [
+    {
+      polled: "Reconciled",
+      assignments: [runnerAssignment("asg-1", registryImage)],
+      sessions: [runnerAssignment("ses-1", registryImage)],
+      stop: [],
+    },
+    quietPoll,
     quietPoll,
   ]);
   state.images.add(registryImage);
-  await runner.backend.place(runnerAssignment("asg-1", registryImage));
+  const quiet = { passed: "Reconciled", stopped: 0, refused: 0 };
+  assert.deepEqual(await workerPoolClientPass(client), {
+    ...quiet,
+    placed: 2,
+    ended: 0,
+  });
+  await runner.backend.settled();
+  assert.deepEqual(
+    [...state.containers.values()]
+      .map((container) => [
+        container.labels["io.chuggy.assignment"],
+        container.labels["io.chuggy.kind"],
+      ])
+      .sort(),
+    [
+      ["asg-1", "Job"],
+      ["ses-1", "Session"],
+    ],
+  );
+  assert.deepEqual(await workerPoolClientPass(client), {
+    ...quiet,
+    placed: 0,
+    ended: 0,
+  });
+  for (const container of state.containers.values()) {
+    container.status = "exited";
+    container.exitCode =
+      container.labels["io.chuggy.kind"] === "Session" ? 0 : 1;
+  }
+  assert.deepEqual(await workerPoolClientPass(client), {
+    ...quiet,
+    placed: 0,
+    ended: 2,
+  });
+  assert.deepEqual(pollsAsked, [
+    ["pool-token", [], 1, 2],
+    ["pool-token", ["asg-1", "ses-1"], 0, 1],
+    ["pool-token", [], 1, 2],
+  ]);
+  assert.deepEqual(askedUnder(asked, "ses-1"), [
+    [
+      "POST",
+      "https://chuggy.example/v1/session/ended",
+      '{"phase":"Succeeded"}',
+    ],
+  ]);
+  assert.deepEqual(askedUnder(asked, "asg-1"), [
+    [
+      "PUT",
+      "https://chuggy.example/v1/artifacts/.chuggy/worker-error.txt",
+      "Worker exited before reporting: its container exited with status 1\n",
+    ],
+    ["POST", "https://chuggy.example/v1/run/ended", '{"evidence":"RunFailed"}'],
+  ]);
+  assert.equal(asked.length, 3);
+});
+
+test("a job stopped on the plane's word is never ended, though its container outlives the pass that stopped it", async (t) => {
+  const { runner, client, state, asked } = await endingRunner(t, [
+    {
+      polled: "Reconciled",
+      assignments: [],
+      sessions: [],
+      stop: ["asg-1", "asg-2"],
+    },
+    quietPoll,
+  ]);
+  state.images.add(registryImage);
+  await runner.backend.place(runnerAssignment("asg-1", registryImage), "Job");
   await runner.backend.settled();
   state.pull = () => new Promise(() => undefined);
   await runner.backend.place(
     runnerAssignment("asg-2", `elsewhere.example/w@sha256:${"b".repeat(64)}`),
+    "Job",
   );
   state.logsFail = true;
 
