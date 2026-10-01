@@ -602,6 +602,66 @@ test("a stop drops the end of a failed placement, whether or not held has made i
   assert.deepEqual(await backend.ended(), []);
 });
 
+test("a placement whose run failed after its container started answers through that container: held while it runs, named once it ends", async (t) => {
+  const { backend, state, log } = await harness(t);
+  state.images.add(image);
+  state.runInterrupted = true;
+  await backend.place(assignment());
+  await backend.settled();
+  assert.match(
+    log.at(-1) ?? "",
+    /was not started: its container could not be run/u,
+  );
+
+  assert.deepEqual(await backend.held(), ["asg-1"]);
+  assert.deepEqual(await backend.ended(), []);
+  const [container] = state.containers.values();
+  container.status = "exited";
+  container.exitCode = 1;
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), [
+    {
+      job: {
+        assignment: "asg-1",
+        callbackUrl: "https://chuggy.example/worker",
+        bearer: "attempt-bearer-secret",
+      },
+      why: "its container exited with status 1",
+    },
+  ]);
+  assert.deepEqual(await backend.ended(), []);
+});
+
+test("a stop that lands while held is under way keeps an in-flight placement's end unnamed", async (t) => {
+  const { backend, state } = await harness(t);
+  const pull = deferred();
+  state.pull = () => pull.promise;
+  await backend.place(assignment());
+  await setImmediate();
+  assert.deepEqual(await Promise.all([backend.held(), backend.stop("asg-1")]), [
+    ["asg-1"],
+    { stopped: "Stopped" },
+  ]);
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), []);
+});
+
+test("a stop that lands while held is under way drops a failed placement's end", async (t) => {
+  const { backend, state } = await harness(t);
+  state.pull = () => ({
+    code: 1,
+    stdout: "",
+    stderr: "Error response from daemon: manifest unknown\n",
+  });
+  await backend.place(assignment());
+  await backend.settled();
+  assert.deepEqual(await Promise.all([backend.held(), backend.stop("asg-1")]), [
+    [],
+    { stopped: "Stopped" },
+  ]);
+  assert.deepEqual(await backend.ended(), []);
+});
+
 test("two pools of one name in different projects name an assignment's container apart", () => {
   const other = { tenant: "newtenant", project: "arbbot", pool: "shame" };
   assert.match(containerName(pool, "asg-1"), /^chuggy-shame-[0-9a-f]{20}$/u);

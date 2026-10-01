@@ -92,6 +92,8 @@ function fakeEngineState() {
     logsFail: false,
     /** Whether a kill runs past the engine's cap, which the engine answers as interrupted. */
     killInterrupted: false,
+    /** Whether a run runs past the engine's cap after its container started, which the engine answers as interrupted. */
+    runInterrupted: false,
     /** What podman's `version` answers. */
     podmanVersion: "5.8.7",
     /**
@@ -172,6 +174,8 @@ function run(state, call) {
     env,
     exitCode: 0,
   });
+  if (state.runInterrupted)
+    return { code: -1, stdout: "", stderr: "", failed: "Interrupted" };
   return answered(`${id}\n`);
 }
 

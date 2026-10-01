@@ -19,9 +19,10 @@
  *
  * WHAT ENDED OF ITSELF IS NAMED ONCE. `ended` names the job of each container
  * `held` found ended or killed at its deadline, and of each placement that
- * failed, with this backend's own reason, never the job's log, which can hold
- * a secret. A failed placement's job is the one it held; a container's is read
- * back from the envelope it was run with. One this pool stopped is never named.
+ * failed and left no container, with this backend's own reason, never the
+ * job's log, which can hold a secret. A failed placement's job is the one it
+ * held; a container's is read back from the envelope it was run with. One this
+ * pool stopped is never named.
  */
 
 import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
@@ -108,7 +109,7 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
  * }} ContainerBackend
  *
  * @typedef {object} Ends what `ended` names next, and what it never will
- * @property {WorkerPoolEnded[]} pending ends a `held` under way may have named, which the next one makes ready
+ * @property {WorkerPoolEnded[]} pending failed placements' ends, which the next `held` makes ready unless it lists their containers
  * @property {WorkerPoolEnded[]} ready
  * @property {Set<string>} accounted assignments stopped or named, kept while `held` still finds them
  *
@@ -381,16 +382,20 @@ async function listedHeld(state, inspected, container, nowSecs) {
 /**
  * What this pool holds: every placement still pulling or starting, and every
  * container still running inside its deadline. The placements are read before
- * the listing, so one that finishes between the two is listed as a container,
- * and the ends of placements that failed before that read are made ready with
- * it, since this answer cannot name them.
+ * the listing, so one that finishes between the two is listed as a container.
+ *
+ * The ends of placements that failed before that read are made ready only
+ * where the listing finds no container of theirs and no stop came meanwhile:
+ * a `run` that failed can still have started one, and a listed container
+ * answers for its own job.
  *
  * @param {State} state
  * @returns {Promise<string[]>}
  */
 async function heldAssignments(state) {
   const placing = new Set(state.placements.keys());
-  state.ends.ready.push(...state.ends.pending.splice(0));
+  const failed = state.ends.pending.splice(0);
+  for (const { job } of failed) state.ends.accounted.delete(job.assignment);
   const held = new Set(placing);
   const listed = new Set(placing);
   const nowSecs = Math.floor(state.seams.nowMs() / 1000);
@@ -403,6 +408,11 @@ async function heldAssignments(state) {
       await listedHeld(state, inspected, { ...container, assignment }, nowSecs)
     )
       held.add(assignment);
+  }
+  for (const ended of failed) {
+    const { assignment } = ended.job;
+    if (!listed.has(assignment) && !state.ends.accounted.has(assignment))
+      state.ends.ready.push(ended);
   }
   for (const assignment of state.ends.accounted)
     if (!listed.has(assignment)) state.ends.accounted.delete(assignment);
@@ -688,9 +698,9 @@ function placementForgotten(state, placement) {
 }
 
 /**
- * Drops a placement that failed, logs why, and names its end with the job it
- * held, unless this pool stopped it. Dropping and naming are one step, so a
- * `held` reads the placement or its end and never both.
+ * Drops a placement that failed, logs why, and queues its end with the job it
+ * held for the next `held`, unless this pool stopped it. Dropping and queueing
+ * are one step, so a `held` reads the placement or its end and never both.
  *
  * @param {State} state
  * @param {Placement} placement
