@@ -2,7 +2,8 @@
  * What every job is given, whichever engine runs it: the envelope it is
  * launched with in place of a task document, the user it runs as, and the
  * paths its image reads. The envelope is checked against the contract's own
- * schema, so no job starts with one its core would refuse.
+ * schema, so no job starts with one its core would refuse, and is read back
+ * from a container under the same schema.
  */
 
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
@@ -63,6 +64,31 @@ export function jobEnvelope(assignment, bounds) {
         .join(", ")}`,
     );
   return JSON.stringify(envelope.data);
+}
+
+/**
+ * The attempt a job was launched for, read back from the envelope among its
+ * container's variables, or nothing where none there can be read.
+ *
+ * @param {readonly string[]} variables each `NAME=value`, as an engine's inspection lists them
+ * @returns {{callbackUrl: string, bearer: string} | undefined}
+ */
+export function jobEnvironmentAttempt(variables) {
+  const prefix = `${workerTaskVariable}=`;
+  const carried = variables.find((variable) => variable.startsWith(prefix));
+  if (carried === undefined) return undefined;
+  let document;
+  try {
+    document = JSON.parse(carried.slice(prefix.length));
+  } catch {
+    return undefined;
+  }
+  const envelope = poolEnvelopeSchema.safeParse(document);
+  if (!envelope.success) return undefined;
+  return {
+    callbackUrl: envelope.data.callbackUrl,
+    bearer: envelope.data.bearer,
+  };
 }
 
 /**

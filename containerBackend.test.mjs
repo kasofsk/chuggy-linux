@@ -16,6 +16,7 @@ import { setImmediate } from "node:timers/promises";
 
 import { containerBackend, containerName } from "./containerBackend.mjs";
 import { deferred, fakeEngine } from "./engine.fixture.mjs";
+import { jobEnvelope } from "./job.mjs";
 
 const pool = { tenant: "vteng", project: "chuggy", pool: "shame" };
 const image = "registry.chuggy.example/worker@sha256:" + "a".repeat(64);
@@ -100,7 +101,21 @@ async function harness(t, overrides = {}) {
 const verbs = (state) => state.calls.map((call) => call.argv[0]);
 
 /**
- * A container a predecessor started, as the engine lists it.
+ * The job a seeded container was run for.
+ *
+ * @param {string} id
+ */
+function seededJob(id) {
+  return {
+    assignment: id,
+    callbackUrl: "https://chuggy.example/worker",
+    bearer: `bearer-of-${id}`,
+  };
+}
+
+/**
+ * A container a predecessor started, as the engine lists it, with the
+ * envelope of its job among its variables.
  *
  * @param {ReturnType<typeof fakeEngine>["state"]} state
  * @param {string} id
@@ -115,6 +130,10 @@ function seeded(
   deadlineEpochSecs,
   name = containerName(pool, id),
 ) {
+  const envelope = jobEnvelope(assignment(seededJob(id)), {
+    timeoutSecsMax: 7200,
+    outputBytesMax: 1024 * 1024,
+  });
   state.containers.set(name, {
     id: `id-${id}`,
     name,
@@ -125,6 +144,7 @@ function seeded(
       "io.chuggy.assignment": id,
       "io.chuggy.deadline": String(deadlineEpochSecs),
     },
+    env: [`CHUG_WORKER_TASK=${envelope}`, "GIT_AUTHOR_NAME=chuggy"],
   });
   return name;
 }
@@ -411,12 +431,28 @@ test("a running container past its deadline is killed, its logs saved, and remov
   const saved = join(settings.logDir, `${name}.log`);
   assert.equal(await readFile(saved, "utf8"), `the log of ${name}\n`);
   assert.equal((await stat(saved)).mode & 0o777, 0o600);
+  assert.deepEqual(await backend.ended(), [
+    {
+      job: seededJob("asg-late"),
+      why: "its container passed its deadline and was killed",
+    },
+  ]);
 });
 
-for (const status of ["exited", "dead", "created"])
-  test(`a container left ${status} has its logs saved and is removed`, async (t) => {
+for (const [status, exitCode, why] of [
+  ["exited", 3, "its container exited with status 3"],
+  ["exited", undefined, "its container was left exited"],
+  ["dead", 3, "its container was left dead"],
+  ["created", 0, "its container was left created"],
+])
+  test(`a container left ${status}, exit status ${String(exitCode ?? "none")}, has its logs saved, is removed, and has its end named once`, async (t) => {
     const { backend, state, settings } = await harness(t);
     const name = seeded(state, "asg-done", status, startMs / 1000 + 60);
+    const container =
+      /** @type {import("./engine.fixture.mjs").FakeContainer} */ (
+        state.containers.get(name)
+      );
+    container.exitCode = exitCode;
     assert.deepEqual(await backend.held(), []);
     assert.equal(state.containers.size, 0);
     assert.ok(verbs(state).every((verb) => verb !== "kill"));
@@ -424,6 +460,10 @@ for (const status of ["exited", "dead", "created"])
       await readFile(join(settings.logDir, `${name}.log`), "utf8"),
       `the log of ${name}\n`,
     );
+    assert.deepEqual(await backend.ended(), [
+      { job: seededJob("asg-done"), why },
+    ]);
+    assert.deepEqual(await backend.ended(), []);
   });
 
 test("an ended container whose logs could not be saved is kept for the next pass", async (t) => {
@@ -433,6 +473,133 @@ test("an ended container whose logs could not be saved is kept for the next pass
   assert.deepEqual(await backend.held(), []);
   assert.equal(state.containers.size, 1);
   assert.match(log.join("\n"), /ended; its logs could not be saved/u);
+});
+
+test("a job that exited of itself is named once, with its status and the attempt read back from its container", async (t) => {
+  const { backend, state } = await harness(t);
+  state.images.add(image);
+  await backend.place(assignment());
+  await backend.settled();
+  const [container] = state.containers.values();
+  container.status = "exited";
+  container.exitCode = 1;
+
+  assert.deepEqual(await backend.ended(), []);
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), [
+    {
+      job: {
+        assignment: "asg-1",
+        callbackUrl: "https://chuggy.example/worker",
+        bearer: "attempt-bearer-secret",
+      },
+      why: "its container exited with status 1",
+    },
+  ]);
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), []);
+});
+
+test("an end is named once, though its container outlives the pass that named it", async (t) => {
+  const { backend, state, clock } = await harness(t);
+  seeded(state, "asg-late", "running", startMs / 1000 + 10);
+  clock.nowMs += 10_000;
+  state.logsFail = true;
+  assert.deepEqual(await backend.held(), []);
+  assert.equal(state.containers.size, 1);
+  assert.equal((await backend.ended()).length, 1);
+
+  state.logsFail = false;
+  assert.deepEqual(await backend.held(), []);
+  assert.equal(state.containers.size, 0);
+  assert.deepEqual(await backend.ended(), []);
+});
+
+test("an assignment's end is accounted for only while a container of it is listed", async (t) => {
+  const { backend, state } = await harness(t);
+  for (const pass of ["named", "named again after a pass that listed none"]) {
+    seeded(state, "asg-done", "exited", startMs / 1000 + 60);
+    assert.deepEqual(await backend.held(), []);
+    assert.deepEqual(
+      (await backend.ended()).map(({ job }) => job),
+      [seededJob("asg-done")],
+      pass,
+    );
+    assert.deepEqual(await backend.held(), []);
+  }
+});
+
+test("a container past its deadline that its kill did not end is not named", async (t) => {
+  const { backend, state, clock, log } = await harness(t);
+  seeded(state, "asg-late", "running", startMs / 1000 + 10);
+  clock.nowMs += 10_000;
+  state.killInterrupted = true;
+  assert.deepEqual(await backend.held(), []);
+  assert.match(log.join("\n"), /passed its deadline and was not killed/u);
+  assert.deepEqual(await backend.ended(), []);
+});
+
+test("a container whose envelope cannot be read is left to its lease, and says so", async (t) => {
+  const { backend, state, log } = await harness(t);
+  const name = seeded(state, "asg-done", "exited", startMs / 1000 + 60);
+  const container =
+    /** @type {import("./engine.fixture.mjs").FakeContainer} */ (
+      state.containers.get(name)
+    );
+  container.env = ["GIT_AUTHOR_NAME=chuggy"];
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), []);
+  assert.match(
+    log.join("\n"),
+    /its envelope could not be read, so its attempt is left to its lease$/mu,
+  );
+});
+
+test("a placement that failed is named with its failure and the job it held, once held no longer names it", async (t) => {
+  const { backend, state } = await harness(t);
+  const pull = deferred();
+  state.pull = () => pull.promise;
+  await backend.place(assignment());
+  await setImmediate();
+  assert.deepEqual(await backend.held(), ["asg-1"]);
+  pull.resolve({
+    code: 1,
+    stdout: "",
+    stderr: "Error response from daemon: manifest unknown\n",
+  });
+  await backend.settled();
+
+  assert.deepEqual(await backend.ended(), []);
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), [
+    {
+      job: {
+        assignment: "asg-1",
+        callbackUrl: "https://chuggy.example/worker",
+        bearer: "attempt-bearer-secret",
+      },
+      why: "its container was not started: its image could not be pulled: Error response from daemon: manifest unknown",
+    },
+  ]);
+  assert.deepEqual(await backend.ended(), []);
+});
+
+test("a stop drops the end of a failed placement, whether or not held has made it ready", async (t) => {
+  const { backend, state } = await harness(t);
+  state.pull = () => ({
+    code: 1,
+    stdout: "",
+    stderr: "Error response from daemon: manifest unknown\n",
+  });
+  await backend.place(assignment());
+  await backend.settled();
+  assert.deepEqual(await backend.held(), []);
+  await backend.place(assignment({ assignment: "asg-2" }));
+  await backend.settled();
+  for (const stopped of ["asg-1", "asg-2"])
+    assert.deepEqual(await backend.stop(stopped), { stopped: "Stopped" });
+  assert.deepEqual(await backend.held(), []);
+  assert.deepEqual(await backend.ended(), []);
 });
 
 test("two pools of one name in different projects name an assignment's container apart", () => {
@@ -507,6 +674,7 @@ test("a stop of an in-flight placement cancels its pull, and nothing is run", as
   assert.deepEqual(await backend.held(), []);
   assert.ok(!verbs(state).includes("run"));
   assert.match(log.join("\n"), /was stopped before it started/u);
+  assert.deepEqual(await backend.ended(), []);
 });
 
 test("a stop of a running container kills it, saves its logs, and removes it with its volumes", async (t) => {
@@ -571,6 +739,7 @@ test("a stop whose logs could not be saved ends the job, and keeps its container
     await readFile(join(settings.logDir, `${name}.log`), "utf8"),
     `the log of ${name}\n`,
   );
+  assert.deepEqual(await backend.ended(), []);
 });
 
 test("a job still running after its kill is not stopped, and its container is left alone", async (t) => {

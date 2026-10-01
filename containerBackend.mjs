@@ -8,7 +8,7 @@
  * it held, and a cold pull can outlast a lease, so `place` decides only
  * whether this machine can take the work; the pull and the run happen behind
  * it, and `held` answers for them meanwhile. One that fails leaves `held` and
- * is logged, and the lease it no longer renews ends its attempt.
+ * is logged.
  *
  * WHAT IS RUNNING IS READ FROM THE ENGINE. `held` lists this pool's containers
  * by label and reads each one's assignment and deadline off its labels, so a
@@ -16,6 +16,12 @@
  * has ended, or has run past its deadline, has its logs saved and is removed
  * rather than answered. A listing that failed throws, because the emptier
  * answer is the one that loses work.
+ *
+ * WHAT ENDED OF ITSELF IS NAMED ONCE. `ended` names the job of each container
+ * `held` found ended or killed at its deadline, and of each placement that
+ * failed, with this backend's own reason, never the job's log, which can hold
+ * a secret. A failed placement's job is the one it held; a container's is read
+ * back from the envelope it was run with. One this pool stopped is never named.
  */
 
 import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
@@ -36,7 +42,11 @@ import {
   runArgv,
 } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
-import { jobEnvelope, jobEnvironmentFile } from "./job.mjs";
+import {
+  jobEnvelope,
+  jobEnvironmentAttempt,
+  jobEnvironmentFile,
+} from "./job.mjs";
 import { poolIdentityDigest, poolLabelValue } from "./poolIdentity.mjs";
 import { imageRegistryHost, withRegistryAuth } from "./registryAuth.mjs";
 import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
@@ -44,6 +54,7 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
 /**
  * @typedef {import("@chuggy/worker-contract/workerPool").WorkerPoolAssignment} WorkerPoolAssignment
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolEnded} WorkerPoolEnded
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolStopped} WorkerPoolStopped
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolTokens} WorkerPoolTokens
  * @typedef {import("./engine.mjs").Engine} Engine
@@ -87,6 +98,7 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
  * @property {string} name
  * @property {string | undefined} assignment
  * @property {string} status
+ * @property {number | undefined} exitCode
  * @property {number | undefined} deadlineEpochSecs
  *
  * @typedef {WorkerPoolBackend & {
@@ -95,7 +107,14 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
  *   settled: () => Promise<void>,
  * }} ContainerBackend
  *
- * @typedef {{settings: ContainerBackendSettings, seams: ContainerBackendSeams, placements: Map<string, Placement>}} State
+ * @typedef {object} Ends what `ended` names next, and what it never will
+ * @property {WorkerPoolEnded[]} pending ends a `held` under way may have named, which the next one makes ready
+ * @property {WorkerPoolEnded[]} ready
+ * @property {Set<string>} accounted assignments stopped or named, kept while `held` still finds them
+ *
+ * @typedef {{settings: ContainerBackendSettings, seams: ContainerBackendSeams, placements: Map<string, Placement>, ends: Ends}} State
+ *
+ * @typedef {z.infer<typeof inspectedSchema>[number]} InspectedContainer
  */
 
 /** The states a container does no more work in; podman adds two docker lacks. */
@@ -107,12 +126,18 @@ const endedStatuses = new Set([
   "configured",
 ]);
 
+/** The ended states a container ran to an exit status in. */
+const exitedStatuses = new Set(["exited", "stopped"]);
+
 const inspectedSchema = z.array(
   z.object({
     Id: z.string(),
     Name: z.string(),
-    Config: z.object({ Labels: z.record(z.string(), z.string()).nullish() }),
-    State: z.object({ Status: z.string() }),
+    Config: z.object({
+      Labels: z.record(z.string(), z.string()).nullish(),
+      Env: z.array(z.string()).nullish(),
+    }),
+    State: z.object({ Status: z.string(), ExitCode: z.number().optional() }),
   }),
 );
 
@@ -138,7 +163,7 @@ export function checkedContainerBackendSettings(settings) {
 }
 
 /**
- * @param {z.infer<typeof inspectedSchema>[number]} inspected
+ * @param {InspectedContainer} inspected
  * @returns {PoolContainer}
  */
 function poolContainer(inspected) {
@@ -149,27 +174,27 @@ function poolContainer(inspected) {
     name: inspected.Name.replace(/^\//u, ""),
     assignment: labels[assignmentLabel],
     status: inspected.State.Status,
+    exitCode: inspected.State.ExitCode,
     deadlineEpochSecs: Number.isSafeInteger(deadline) ? deadline : undefined,
   };
 }
 
 /**
- * The containers an inspection answered for.
+ * The containers an inspection answered for, as the engine described them:
+ * their variables included, which carry the envelope and its bearer.
  *
  * @param {State} state
  * @param {EngineAnswer} answer
- * @returns {PoolContainer[]}
+ * @returns {InspectedContainer[]}
  */
 function inspectionContainers(state, answer) {
-  let parsed;
   try {
-    parsed = inspectedSchema.parse(JSON.parse(answer.stdout));
+    return inspectedSchema.parse(JSON.parse(answer.stdout));
   } catch {
     throw new Error(
       `${state.settings.engine} answered an inspection this runner cannot read`,
     );
   }
-  return parsed.map(poolContainer);
 }
 
 /**
@@ -178,7 +203,7 @@ function inspectionContainers(state, answer) {
  *
  * @param {State} state
  * @param {readonly string[]} containers
- * @returns {Promise<PoolContainer[]>}
+ * @returns {Promise<InspectedContainer[]>}
  */
 async function inspectedContainers(state, containers) {
   const answer = await state.seams.engine.exec(inspectArgv(containers));
@@ -203,7 +228,7 @@ function listedIds(listed) {
 
 /**
  * @param {State} state
- * @returns {Promise<PoolContainer[]>}
+ * @returns {Promise<InspectedContainer[]>}
  */
 async function poolContainers(state) {
   const listed = await state.seams.engine.exec(
@@ -263,39 +288,124 @@ async function retired(state, container, why) {
 }
 
 /**
+ * Accounts for the end of an assignment, answering whether it was not already:
+ * one this pool stopped, or whose end it has named, is not named again.
+ *
+ * @param {State} state
+ * @param {string} assignment
+ */
+function endAccounted(state, assignment) {
+  if (state.ends.accounted.has(assignment)) return false;
+  state.ends.accounted.add(assignment);
+  return true;
+}
+
+/**
+ * What ended a container, in this backend's words rather than its log's.
+ *
+ * @param {PoolContainer} container
+ */
+function containerEndedWhy(container) {
+  return exitedStatuses.has(container.status) &&
+    container.exitCode !== undefined
+    ? `its container exited with status ${String(container.exitCode)}`
+    : `its container was left ${container.status}`;
+}
+
+/**
+ * Names the end of a listed container's job, read back from the envelope it
+ * was run with. One whose envelope cannot be read is left to its lease.
+ *
+ * @param {State} state
+ * @param {InspectedContainer} inspected
+ * @param {PoolContainer & {assignment: string}} container
+ * @param {string} why
+ */
+function containerEndNamed(state, inspected, container, why) {
+  if (!endAccounted(state, container.assignment)) return;
+  const attempt = jobEnvironmentAttempt(inspected.Config.Env ?? []);
+  if (attempt === undefined) {
+    state.seams.log(
+      `${container.name}: its envelope could not be read, so its attempt is left to its lease`,
+    );
+    return;
+  }
+  state.ends.ready.push({
+    job: { assignment: container.assignment, ...attempt },
+    why,
+  });
+}
+
+/**
+ * Whether a listed container is held. One that has ended, or that a kill at
+ * its deadline ends, is retired instead, and its end named.
+ *
+ * @param {State} state
+ * @param {InspectedContainer} inspected
+ * @param {PoolContainer & {assignment: string}} container
+ * @param {number} nowSecs
+ */
+async function listedHeld(state, inspected, container, nowSecs) {
+  if (endedStatuses.has(container.status)) {
+    await retired(state, container, "ended");
+    containerEndNamed(
+      state,
+      inspected,
+      container,
+      containerEndedWhy(container),
+    );
+    return false;
+  }
+  if (container.status === "removing") return false;
+  if (
+    container.deadlineEpochSecs !== undefined &&
+    nowSecs < container.deadlineEpochSecs
+  )
+    return true;
+  const killed = await state.seams.engine.exec(killArgv(container.id));
+  if (killed.code !== 0)
+    state.seams.log(
+      `${container.name} passed its deadline and was not killed: ${engineFailureLine(killed)}`,
+    );
+  await retired(state, container, "passed its deadline");
+  if (killed.code === 0)
+    containerEndNamed(
+      state,
+      inspected,
+      container,
+      "its container passed its deadline and was killed",
+    );
+  return false;
+}
+
+/**
  * What this pool holds: every placement still pulling or starting, and every
  * container still running inside its deadline. The placements are read before
- * the listing, so one that finishes between the two is listed as a container.
+ * the listing, so one that finishes between the two is listed as a container,
+ * and the ends of placements that failed before that read are made ready with
+ * it, since this answer cannot name them.
  *
  * @param {State} state
  * @returns {Promise<string[]>}
  */
 async function heldAssignments(state) {
   const placing = new Set(state.placements.keys());
+  state.ends.ready.push(...state.ends.pending.splice(0));
   const held = new Set(placing);
+  const listed = new Set(placing);
   const nowSecs = Math.floor(state.seams.nowMs() / 1000);
-  for (const container of await poolContainers(state)) {
-    if (container.assignment === undefined || placing.has(container.assignment))
-      continue;
-    if (endedStatuses.has(container.status)) {
-      await retired(state, container, "ended");
-      continue;
-    }
-    if (container.status === "removing") continue;
+  for (const inspected of await poolContainers(state)) {
+    const container = poolContainer(inspected);
+    const { assignment } = container;
+    if (assignment === undefined || placing.has(assignment)) continue;
+    listed.add(assignment);
     if (
-      container.deadlineEpochSecs === undefined ||
-      nowSecs >= container.deadlineEpochSecs
-    ) {
-      const killed = await state.seams.engine.exec(killArgv(container.id));
-      if (killed.code !== 0)
-        state.seams.log(
-          `${container.name} passed its deadline and was not killed: ${engineFailureLine(killed)}`,
-        );
-      await retired(state, container, "passed its deadline");
-      continue;
-    }
-    held.add(container.assignment);
+      await listedHeld(state, inspected, { ...container, assignment }, nowSecs)
+    )
+      held.add(assignment);
   }
+  for (const assignment of state.ends.accounted)
+    if (!listed.has(assignment)) state.ends.accounted.delete(assignment);
   return [...held];
 }
 
@@ -434,8 +544,10 @@ async function pulled(state, placement) {
  * @param {string} name
  */
 async function containerAssignment(state, name) {
-  const [container] = await inspectedContainers(state, [name]);
-  return container?.assignment;
+  const [inspected] = await inspectedContainers(state, [name]);
+  return inspected === undefined
+    ? undefined
+    : poolContainer(inspected).assignment;
 }
 
 /**
@@ -557,15 +669,47 @@ async function placed(state, assignment) {
     done: Promise.resolve(),
   };
   state.placements.set(placement.assignment, placement);
-  placement.done = placementRun(state, placement, assignment, envelope)
-    .catch((failure) =>
-      seams.log(`${placement.name} ${placementFailure(placement, failure)}`),
-    )
-    .finally(() => {
-      if (state.placements.get(placement.assignment) === placement)
-        state.placements.delete(placement.assignment);
-    });
+  placement.done = placementRun(state, placement, assignment, envelope).then(
+    () => placementForgotten(state, placement),
+    (failure) => placementFailed(state, placement, assignment, failure),
+  );
   return { placed: "Placed" };
+}
+
+/**
+ * Drops a placement that has run its course from those `held` names.
+ *
+ * @param {State} state
+ * @param {Placement} placement
+ */
+function placementForgotten(state, placement) {
+  if (state.placements.get(placement.assignment) === placement)
+    state.placements.delete(placement.assignment);
+}
+
+/**
+ * Drops a placement that failed, logs why, and names its end with the job it
+ * held, unless this pool stopped it. Dropping and naming are one step, so a
+ * `held` reads the placement or its end and never both.
+ *
+ * @param {State} state
+ * @param {Placement} placement
+ * @param {WorkerPoolAssignment} assignment
+ * @param {unknown} failure
+ */
+function placementFailed(state, placement, assignment, failure) {
+  placementForgotten(state, placement);
+  const why = placementFailure(placement, failure);
+  state.seams.log(`${placement.name} ${why}`);
+  if (endAccounted(state, placement.assignment))
+    state.ends.pending.push({
+      job: {
+        assignment: assignment.assignment,
+        callbackUrl: assignment.callbackUrl,
+        bearer: assignment.bearer,
+      },
+      why: `its container ${why}`,
+    });
 }
 
 /**
@@ -602,7 +746,7 @@ async function containerStopped(state, id) {
   const killed = await engine.exec(killArgv(id));
   const inspected = await engine.exec(inspectArgv([id]));
   if (inspected.code !== 0) return stopAnswer(inspected);
-  const [container] = inspectionContainers(state, inspected);
+  const [container] = inspectionContainers(state, inspected).map(poolContainer);
   if (!endedStatuses.has(container.status)) return stopAnswer(killed);
   await retired(state, container, "was stopped");
   return { stopped: "Stopped" };
@@ -612,13 +756,19 @@ async function containerStopped(state, id) {
  * Stops an assignment's job. A placement still in flight is cancelled and
  * waited out first, so a `run` it was already making is killed too rather
  * than left behind. Its container is found by its labels, as `held` finds it,
- * so one a run under another naming started is found too.
+ * so one a run under another naming started is found too. Its end is never
+ * named, and one already waiting to be is dropped.
  *
  * @param {State} state
  * @param {string} assignment
  * @returns {Promise<WorkerPoolStopped>}
  */
 async function stopped(state, assignment) {
+  state.ends.accounted.add(assignment);
+  /** @param {WorkerPoolEnded} ended */
+  const kept = (ended) => ended.job.assignment !== assignment;
+  state.ends.pending = state.ends.pending.filter(kept);
+  state.ends.ready = state.ends.ready.filter(kept);
   const placement = state.placements.get(assignment);
   if (placement !== undefined) {
     placement.controller.abort();
@@ -646,11 +796,13 @@ export function containerBackend(settings, seams) {
     settings: checkedContainerBackendSettings(settings),
     seams,
     placements: new Map(),
+    ends: { pending: [], ready: [], accounted: new Set() },
   };
   return {
     place: (assignment) => placed(state, assignment),
     stop: (assignment) => stopped(state, assignment),
     held: () => heldAssignments(state),
+    ended: async () => state.ends.ready.splice(0),
     inFlight: () =>
       [...state.placements.values()].map((placement) => ({
         assignment: placement.assignment,
@@ -659,7 +811,7 @@ export function containerBackend(settings, seams) {
         phase: placement.phase,
         deadlineEpochSecs: placement.deadlineEpochSecs,
       })),
-    containers: () => poolContainers(state),
+    containers: async () => (await poolContainers(state)).map(poolContainer),
     settled: async () => {
       await Promise.all(
         [...state.placements.values()].map((placement) => placement.done),

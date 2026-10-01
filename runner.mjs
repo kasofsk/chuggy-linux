@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
+import { poolJobPlaneClient } from "@chuggy/worker-core/poolJobPlane.mjs";
 import {
   checkedWorkerPoolClientSettings,
   workerPoolClientPass,
@@ -70,6 +71,7 @@ const tokenSettings = {
   mintCooldownMs: 1_000,
 };
 const planeSettings = { pollTimeoutMs: 120_000, settleTimeoutMs: 10_000 };
+const jobPlaneSettings = { timeoutMs: 10_000 };
 const outageBackoffMs = 5_000;
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
@@ -249,7 +251,7 @@ export function runnerPlane(credentials) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"]}} host this process's uid, where its log lines go, and the engine and token source when not those the files name
+ * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid, where its log lines go, the engine and token source when not those the files name, and the fetch a job's plane is reached by when not the global one
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -289,6 +291,7 @@ export async function runnerParts(setup, host) {
   const client = {
     tokens,
     plane: runnerPlane(credentials),
+    jobs: poolJobPlaneClient(jobPlaneSettings, host.fetch),
     backend,
     settings: checkedWorkerPoolClientSettings({
       concurrencyMax: config.concurrencyMax,
@@ -324,12 +327,14 @@ export async function jobNetwork(engine, network) {
 }
 
 /**
- * What a pass did, as a log line.
+ * What a pass did, as a log line, naming the jobs it ended only where it
+ * ended any.
  *
- * @param {{placed: number, stopped: number, refused: number}} pass
+ * @param {{placed: number, stopped: number, refused: number, ended: number}} pass
  */
 export function passLine(pass) {
-  return `placed ${String(pass.placed)}, stopped ${String(pass.stopped)}, refused ${String(pass.refused)}`;
+  const line = `placed ${String(pass.placed)}, stopped ${String(pass.stopped)}, refused ${String(pass.refused)}`;
+  return pass.ended === 0 ? line : `${line}, ended ${String(pass.ended)}`;
 }
 
 /**
@@ -349,7 +354,7 @@ export async function runnerLoop(client, seams) {
     if (pass.passed === "Unavailable") {
       seams.log(`outage: ${pass.evidence}`);
       await seams.sleep(client.settings.outageBackoffMs);
-    } else if (pass.placed + pass.stopped + pass.refused > 0)
+    } else if (pass.placed + pass.stopped + pass.refused + pass.ended > 0)
       seams.log(passLine(pass));
   }
 }

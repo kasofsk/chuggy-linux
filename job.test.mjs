@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { jobEnvelope, jobEnvironmentFile } from "./job.mjs";
+import {
+  jobEnvelope,
+  jobEnvironmentAttempt,
+  jobEnvironmentFile,
+} from "./job.mjs";
 
 const assignment = {
   assignment: "asg-1",
@@ -55,5 +59,39 @@ test("a value that would break a line is refused rather than split", () => {
     assert.throws(
       () => jobEnvironmentFile("{}", { NAME: value }),
       /NAME cannot be carried by an env file/u,
+    );
+});
+
+test("the attempt is read back from the envelope among a container's variables", () => {
+  const variables = jobEnvironmentFile(jobEnvelope(assignment, bounds), {
+    GIT_AUTHOR_NAME: "chuggy bot",
+  })
+    .split("\n")
+    .filter((line) => line.length > 0);
+  assert.deepEqual(
+    jobEnvironmentAttempt([
+      "PATH=/usr/bin",
+      "CHUG_WORKER_TASK_OTHER={}",
+      ...variables,
+    ]),
+    {
+      callbackUrl: "https://chuggy.example/worker",
+      bearer: "attempt-bearer-secret",
+    },
+  );
+});
+
+test("variables carrying no envelope the contract reads hold no attempt", () => {
+  const envelope = JSON.parse(jobEnvelope(assignment, bounds));
+  for (const variables of [
+    [],
+    ["CHUG_WORKER_TASK_OTHER={}"],
+    ["CHUG_WORKER_TASK={not json"],
+    [`CHUG_WORKER_TASK=${JSON.stringify({ ...envelope, bearer: "" })}`],
+  ])
+    assert.equal(
+      jobEnvironmentAttempt(variables),
+      undefined,
+      String(variables),
     );
 });
