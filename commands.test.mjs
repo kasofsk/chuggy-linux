@@ -716,6 +716,17 @@ test("registering a pool its service here runs says the service stops until rest
   );
 });
 
+test("a legacy unit whose pool file cannot be read refuses no run while nothing answers at the root socket", async (t) => {
+  const { home, environment, poolFile, paths } = await served(t);
+  await legacyUnitWritten(paths.units, join(home, "moved.json"));
+  const { status, err } = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(status, 3, err);
+  assert.equal(err, "");
+});
+
 test("a run is refused while a legacy service whose pool file cannot be read runs, and not while one serving another pool does", async (t) => {
   const { home, environment, poolFile, paths } = await served(t);
   await controlServed(t, controlSocketPath(runtimeDirectory(paths)));

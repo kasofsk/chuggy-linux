@@ -26,7 +26,7 @@ This spends the token, declaring the machine's platform, `Platform:Linux:Amd64` 
 
 The pool takes the hostname's first label unless `--pool <name>` names it; a name is lowercase letters, digits and hyphens. A pool is one per name in a project, so a second machine of the same name registering in the same project displaces the first: give one a `--pool`.
 
-Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file; `register` prints the restart for a service installed here. Registering another pool adds a file beside the first.
+Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. `register` prints the restart for a unit here that serves exactly the file it wrote; a 0.1 unit serving the pool from a file of another name, such as `vteng-chuggy-shame.json`, is handed over by `install-service` instead. Registering another pool adds a file beside the first.
 
 ## Configure
 
@@ -78,15 +78,15 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 
 ## Commands
 
-| Command             | What it does                                                                             |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| `register`          | Redeems a registration token for a pool file.                                            |
-| `run`               | The service: polls until the plane denies the pool.                                      |
-| `once`              | One poll, then waits for what it placed to start. Refused while the pool's service runs. |
-| `status`            | This pool's containers, and what the service is still pulling or starting.               |
-| `stop <assignment>` | Stops one assignment's container, through the service when it is running.                |
-| `doctor`            | The checks above.                                                                        |
-| `install-service`   | Writes the pool's systemd user unit.                                                     |
+| Command             | What it does                                                                                                                            |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `register`          | Redeems a registration token for a pool file.                                                                                           |
+| `run`               | The service: polls until the plane denies the pool.                                                                                     |
+| `once`              | One poll, then waits for what it placed to start. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
+| `status`            | This pool's containers, and what the service is still pulling or starting.                                                              |
+| `stop <assignment>` | Stops one assignment's container, through the service when it is running.                                                               |
+| `doctor`            | The checks above.                                                                                                                       |
+| `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
 
 `once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going.
 
