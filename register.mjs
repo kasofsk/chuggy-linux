@@ -99,17 +99,28 @@ export function registerEndpointRefusal(url) {
     : "must be https, or http to this machine's loopback";
 }
 
-/** @param {string} text */
+/**
+ * Whether a URL the pool file names is one the worker core will use: https,
+ * or http on loopback, and carrying no credentials.
+ *
+ * @param {string} text
+ */
 function registerUrlAllowed(text) {
   try {
-    return registerEndpointRefusal(new URL(text)) === undefined;
+    const url = new URL(text);
+    return (
+      registerEndpointRefusal(url) === undefined &&
+      url.username === "" &&
+      url.password === ""
+    );
   } catch {
     return false;
   }
 }
 
 const registerUrlSchema = z.string().refine(registerUrlAllowed, {
-  error: "is not an https URL, or an http URL on this machine's loopback",
+  error:
+    "is not an https URL, or an http URL on this machine's loopback, carrying no credentials",
 });
 const registerNameSchema = z.string().min(1).max(workerPoolIdentityCharsMax);
 const registerTextSchema = z.string().min(1);

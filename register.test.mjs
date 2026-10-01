@@ -119,6 +119,24 @@ test("a 201 whose body is no pool file for the pool asked for is refused, naming
       /tokenUrl is not an https URL/u,
     ],
     [{ ...registered, planeUrl: "not a url" }, /planeUrl is not an https URL/u],
+    [
+      {
+        ...registered,
+        tokenUrl: "https://op:pw-fixture@auth.chuggy.example/t",
+      },
+      /tokenUrl is not an https URL.*carrying no credentials/u,
+    ],
+    [
+      { ...registered, planeUrl: "https://op@chuggy-pool.chuggy.example/" },
+      /planeUrl is not an https URL.*carrying no credentials/u,
+    ],
+    [
+      {
+        ...registered,
+        planeUrl: "https://:pw-fixture@chuggy-pool.chuggy.example/",
+      },
+      /planeUrl is not an https URL.*carrying no credentials/u,
+    ],
     [{ ...registered, registryHost: "Registry/x" }, /registryHost /u],
     [{ ...registered, tenant: "" }, /tenant /u],
     [{ ...registered, pool: "other" }, /for another pool or capability/u],
@@ -140,6 +158,7 @@ test("a 201 whose body is no pool file for the pool asked for is refused, naming
         assert.match(message, why, message);
         assert.match(message, /the token is spent, so mint another$/u);
         assert.ok(!message.includes("pool-client-secret-fixture"), message);
+        assert.ok(!message.includes("pw-fixture"), message);
         return true;
       },
       JSON.stringify(body),
