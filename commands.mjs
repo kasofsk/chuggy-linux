@@ -168,6 +168,16 @@ async function once(call) {
   return pass.passed === "Denied" ? deniedExitStatus : 1;
 }
 
+/**
+ * The kind a status line names. A service from before sessions answers its
+ * placements with none, and everything it placed is a job.
+ *
+ * @param {{kind?: string}} workload
+ */
+function statusKind(workload) {
+  return workload.kind === "Session" ? "session" : "job";
+}
+
 /** @param {CliCall} call */
 async function status(call) {
   const { setup, runner, sockets } = await started(call);
@@ -182,11 +192,11 @@ async function status(call) {
   call.host.out(`limits: ${runnerConfigLimits(setup.config)}`);
   for (const placement of answered?.inFlight ?? [])
     call.host.out(
-      `${placement.name}  ${placement.kind.toLowerCase()}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
+      `${placement.name}  ${statusKind(placement)}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
     );
   for (const container of containers)
     call.host.out(
-      `${container.name}  ${container.kind.toLowerCase()}  ${container.status}  deadline ${container.deadlineEpochSecs === undefined ? "none" : new Date(container.deadlineEpochSecs * 1000).toISOString()}  ${container.assignment ?? "no assignment"}`,
+      `${container.name}  ${statusKind(container)}  ${container.status}  deadline ${container.deadlineEpochSecs === undefined ? "none" : new Date(container.deadlineEpochSecs * 1000).toISOString()}  ${container.assignment ?? "no assignment"}`,
     );
   return 0;
 }

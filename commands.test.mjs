@@ -490,6 +490,29 @@ test("status and stop reach this pool's service, and status names each workload'
   assert.deepEqual(stopped, ["asg-1"]);
 });
 
+test("status names a job what a service from before sessions answers it is placing, which carries no kind", async (t) => {
+  const { home, environment, poolFile, paths } = await served(t);
+  const { assignment, name, image, phase, deadlineEpochSecs } = inFlightFixture;
+  await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+    [{ assignment, name, image, phase, deadlineEpochSecs }],
+  );
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(status.status, 0);
+  assert.equal(
+    status.out,
+    [
+      "service: running",
+      "limits: concurrencyMax 1, sessionsMax 2",
+      `${inFlightFixture.name}  job  pulling  i  asg-1`,
+    ].join("\n"),
+  );
+});
+
 test("a run is refused while a legacy service serving its pool runs", async (t) => {
   const { home, environment, poolFile, paths } = await served(t);
   await controlServed(t, controlSocketPath(runtimeDirectory(paths)));

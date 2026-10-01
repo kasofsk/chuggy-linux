@@ -58,6 +58,8 @@ Registering a pool again, from here or any machine, replaces its registration. c
 | `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's to set.   |
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 
+Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
+
 A session is a project's chat or lead, run on this machine's Claude login, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same token file, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
 A job runs as uid 1000, the image's user, and reads the token file as that uid, so the file must be yours. Rootless podman maps that uid onto you. Docker runs it as this machine's uid 1000, so docker serves only a runner that is uid 1000, and refuses any other user: use rootless podman there. Rootless docker and docker with userns-remap are refused too, for the same reason: use rootful docker without userns-remap, or rootless podman. Docker must be local, reached through a unix socket by your current docker context.
@@ -96,7 +98,7 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 
 ## What it does
 
-- Places an assignment only if this machine has the CPU and memory it asks for, it pins an image, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
+- Places an assignment only if this machine has the CPU and memory it asks for, counted for that assignment alone, it pins an image, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
 - Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once with no credential.
 - Runs each job as uid 1000 with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the token file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
