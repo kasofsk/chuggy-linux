@@ -8,7 +8,8 @@
 
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, open, rename, rm, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { URL } from "node:url";
 import { TextDecoder } from "node:util";
@@ -251,7 +252,9 @@ function registerRefusal(status, body, request) {
   }
   if (status === 503)
     return "chuggy could not answer the registration; run register again";
-  return `chuggy answered the registration with HTTP ${String(status)}`;
+  return status >= 500
+    ? `chuggy failed the registration with HTTP ${String(status)}; run register again`
+    : `chuggy answered the registration with HTTP ${String(status)}`;
 }
 
 /** @param {unknown} failure */
@@ -374,15 +377,24 @@ export function registerPoolFileName(identity) {
 }
 
 /**
- * The directory pool files are written to, made owner-only before a token is
- * spent, so a directory that cannot be written costs none.
+ * The directory pool files are written to, made owner-only and checked
+ * writable before a token is spent, so a directory that cannot be written
+ * costs none.
  *
  * @param {string} directory
  */
 export async function registerPoolDirectory(directory) {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  if (((await stat(directory)).mode & 0o077) !== 0)
-    await chmod(directory, 0o700);
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (((await stat(directory)).mode & 0o777) !== 0o700)
+      await chmod(directory, 0o700);
+    await access(directory, constants.W_OK | constants.X_OK);
+  } catch (failure) {
+    throw new Error(
+      `${directory} cannot be made a directory only you can write, so no token was spent: ${failure instanceof Error ? failure.message : String(failure)}`,
+      { cause: failure },
+    );
+  }
 }
 
 /**

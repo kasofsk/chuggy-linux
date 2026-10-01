@@ -6,7 +6,8 @@ import test from "node:test";
 import { controlSocketPath } from "./control.mjs";
 import { controlServed } from "./control.fixture.mjs";
 import {
-  legacyServiceUnit,
+  legacyService,
+  poolFileServiceUnits,
   poolServiceAsked,
   poolServiceSockets,
 } from "./poolService.mjs";
@@ -33,25 +34,64 @@ async function machine(t) {
 
 const other = { ...fixturePool, tenant: "newtenant", project: "arbbot" };
 
-test("the legacy unit is this pool's where the file it serves names this pool, whatever the file", async (t) => {
+test("the legacy unit is this pool's where the file it serves names this pool, whatever the file, and may be where it cannot be read", async (t) => {
   const { home, paths } = await machine(t);
-  const legacy = join(paths.units, "chuggy-linux.service");
-  const written = async (/** @type {string} */ unit) => writeFile(legacy, unit);
-  assert.equal(await legacyServiceUnit(paths, fixturePool), undefined);
+  const unit = join(paths.units, "chuggy-linux.service");
+  const written = async (/** @type {string} */ text) => writeFile(unit, text);
+  assert.equal(await legacyService(paths, fixturePool), undefined);
 
-  const same = await poolFileWritten(
+  const file = await poolFileWritten(
     join(home, "vteng-chuggy-shame.json"),
     fixturePool,
   );
-  await written(serviceUnit({ node: "/n", cli: "/c", poolFile: same }));
-  assert.equal(await legacyServiceUnit(paths, fixturePool), legacy);
-  assert.equal(await legacyServiceUnit(paths, other), undefined);
+  await written(serviceUnit({ node: "/n", cli: "/c", poolFile: file }));
+  assert.deepEqual(await legacyService(paths, fixturePool), {
+    unit,
+    file,
+    serves: "ThisPool",
+  });
+  assert.equal(await legacyService(paths, other), undefined);
 
-  await chmod(same, 0o644);
-  assert.equal(await legacyServiceUnit(paths, fixturePool), undefined);
+  await chmod(file, 0o644);
+  assert.deepEqual(await legacyService(paths, fixturePool), {
+    unit,
+    file,
+    serves: "Unread",
+  });
+  await rm(file);
+  assert.deepEqual(await legacyService(paths, other), {
+    unit,
+    file,
+    serves: "Unread",
+  });
 
   await written("[Service]\nExecStart=/usr/bin/true\n");
-  assert.equal(await legacyServiceUnit(paths, fixturePool), undefined);
+  assert.equal(await legacyService(paths, fixturePool), undefined);
+});
+
+test("the units serving a pool file are its own and the legacy one, where each names exactly that file", async (t) => {
+  const { home, paths } = await machine(t);
+  const file = join(home, "vteng.chuggy.shame.json");
+  assert.deepEqual(await poolFileServiceUnits(paths, file), []);
+  const own = join(paths.units, "chuggy-linux-vteng.chuggy.shame.service");
+  const legacy = join(paths.units, "chuggy-linux.service");
+  await writeFile(
+    legacy,
+    serviceUnit({ node: "/n", cli: "/c", poolFile: `${file}.old` }),
+  );
+  assert.deepEqual(await poolFileServiceUnits(paths, file), []);
+  await writeFile(own, serviceUnit({ node: "/n", cli: "/c", poolFile: file }));
+  assert.deepEqual(await poolFileServiceUnits(paths, file), [
+    "chuggy-linux-vteng.chuggy.shame.service",
+  ]);
+  await writeFile(
+    legacy,
+    serviceUnit({ node: "/n", cli: "/c", poolFile: file }),
+  );
+  assert.deepEqual(await poolFileServiceUnits(paths, file), [
+    "chuggy-linux-vteng.chuggy.shame.service",
+    "chuggy-linux.service",
+  ]);
 });
 
 test("a pool's service is asked at its own socket, then at the legacy one only where the legacy unit serves the pool", async (t) => {
@@ -65,6 +105,7 @@ test("a pool's service is asked at its own socket, then at the legacy one only w
   });
   assert.equal(await poolServiceAsked(own, stop), undefined);
 
+  const root = controlSocketPath(runtimeDirectory(paths));
   const legacy = await controlServed(
     t,
     controlSocketPath(runtimeDirectory(paths)),
@@ -76,12 +117,19 @@ test("a pool's service is asked at its own socket, then at the legacy one only w
     serviceUnit({ node: "/n", cli: "/c", poolFile: file }),
   );
   const sockets = await poolServiceSockets(paths, fixturePool);
-  assert.equal(sockets.legacy, controlSocketPath(runtimeDirectory(paths)));
+  assert.deepEqual(sockets.legacy, { socket: root, serves: "ThisPool" });
   assert.deepEqual(await poolServiceAsked(sockets, stop), {
     stopped: "Stopped",
   });
   assert.deepEqual(legacy.stopped, ["asg-1"]);
   assert.equal((await poolServiceSockets(paths, other)).legacy, undefined);
+
+  await chmod(file, 0o644);
+  const unread = await poolServiceSockets(paths, other);
+  assert.deepEqual(unread.legacy, { socket: root, serves: "Unread" });
+  assert.equal(await poolServiceAsked(unread, stop), undefined);
+  assert.deepEqual(legacy.stopped, ["asg-1"]);
+  await chmod(file, 0o600);
 
   const served = await controlServed(t, sockets.own);
   await poolServiceAsked(sockets, stop);

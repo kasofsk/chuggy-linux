@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -312,7 +314,7 @@ test("install-service refuses a unit of the pool file's name that serves another
   assert.equal(status, 1);
   assert.equal(
     err,
-    `${unit} serves ${poolFile}, not ${elsewhere}; rename the pool file`,
+    `${unit} serves ${poolFile}, not ${elsewhere}; remove that unit if it is stale, or rename the pool file`,
   );
   assert.equal(await readFile(unit, "utf8"), written);
   assert.equal(
@@ -357,7 +359,7 @@ test("where the legacy unit serves the same pool, install-service leaves it and 
   assert.equal(await readFile(legacy, "utf8"), before);
 });
 
-test("where the legacy unit serves another pool, install-service leaves it to run beside the pool's own", async (t) => {
+test("where the legacy unit serves another pool, or a file it cannot read, install-service leaves it to run beside the pool's own", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t);
   const units = join(environment.XDG_CONFIG_HOME, "systemd", "user");
   const legacyFile = await poolFileWritten(join(home, "other.json"), {
@@ -378,6 +380,13 @@ test("where the legacy unit serves another pool, install-service leaves it to ru
   assert.match(out, /^wrote .*chuggy-linux-pool\.service; start it with:$/mu);
   assert.doesNotMatch(out, /disable|rm /u);
   assert.equal(await readFile(legacy, "utf8"), before);
+  await rm(legacyFile);
+  const unread = await called(["install-service", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(unread.status, 0, unread.err);
+  assert.doesNotMatch(unread.out, /disable|rm /u);
 });
 
 test("once is refused while this pool's service runs, and not while another pool's does", async (t) => {
@@ -489,8 +498,7 @@ const registerArgv = [
   "register",
   "--api",
   "https://chuggy.example",
-  "--token",
-  "registration-token-fixture",
+  "--token=registration-token-fixture",
 ];
 
 test("register writes the pool file it redeems the token for, prints what to run next, and prints no secret", async (t) => {
@@ -590,8 +598,31 @@ test("register spends no token where it could not write the pool file", async (t
     fetch,
   });
   assert.equal(status, 1);
-  assert.match(err, /^E(NOTDIR|EXIST)/u);
+  assert.match(
+    err,
+    /cannot be made a directory only you can write, so no token was spent: E(NOTDIR|EXIST)/u,
+  );
   assert.deepEqual(requests, []);
+});
+
+test("register makes a pools directory you cannot write yours to write before spending the token, and spends none where it cannot", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const pools = join(environment.XDG_CONFIG_HOME, "chuggy", "pools");
+  await mkdir(pools, { recursive: true });
+  await chmod(pools, 0o500);
+  const { fetch, requests } = answeringFetch(201, registeredFixture);
+  const written = await called(registerArgv, { home, environment, fetch });
+  assert.equal(written.status, 0, written.err);
+  assert.equal((await stat(pools)).mode & 0o777, 0o700);
+  await rm(pools, { recursive: true });
+  await symlink("/proc/self/fd", pools);
+  const refused = await called(registerArgv, { home, environment, fetch });
+  assert.equal(refused.status, 1);
+  assert.equal(
+    refused.err.split(": ")[0],
+    `${pools} cannot be made a directory only you can write, so no token was spent`,
+  );
+  assert.equal(requests.length, 1);
 });
 
 test("register says the token is spent where chuggy answered but the pool file could not be written", async (t) => {
@@ -612,4 +643,100 @@ test("register says the token is spent where chuggy answered but the pool file c
     /^the pool file could not be written, and the token is spent, so mint another: E/u,
   );
   assert.ok(!err.includes(registeredFixture.clientSecret));
+});
+
+test("a token beginning with a dash is taken as --token=<token>, as usage says, and the space form keeps working for one that does not", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const dashed = `-${"a".repeat(42)}`;
+  for (const [argv, token] of [
+    [
+      ["register", "--api", "https://chuggy.example", `--token=${dashed}`],
+      dashed,
+    ],
+    [["register", "--api", "https://chuggy.example", "--token", "t-1"], "t-1"],
+  ]) {
+    const { fetch, requests } = answeringFetch(201, registeredFixture);
+    const { status, err } = await called(argv, { home, environment, fetch });
+    assert.equal(status, 0, err);
+    assert.equal(JSON.parse(String(requests[0].init.body)).token, token);
+  }
+  const { fetch, requests } = answeringFetch(201, registeredFixture);
+  const spaced = await called(
+    ["register", "--api", "https://chuggy.example", "--token", dashed],
+    { home, environment, fetch },
+  );
+  assert.equal(spaced.status, 2);
+  assert.match(spaced.err, /--token=-XYZ/u);
+  assert.deepEqual(requests, []);
+  assert.match(
+    (await called(["help"])).out,
+    /^ {7}chuggy-linux register --api <origin> --token=<token> \[--pool <name>\]$/mu,
+  );
+});
+
+test("registering a pool its service here runs says the service stops until restarted, and how", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const units = join(environment.XDG_CONFIG_HOME, "systemd", "user");
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    "newtenant.arbbot.shame.json",
+  );
+  const fetch = answeringFetch(201, registeredFixture).fetch;
+  assert.equal(
+    (await called(registerArgv, { home, environment, fetch })).status,
+    0,
+  );
+  const notInstalled = await called(registerArgv, { home, environment, fetch });
+  assert.equal(
+    notInstalled.out,
+    [
+      `replaced ${file}; next:`,
+      `  chuggy-linux doctor --pool ${file}`,
+      `  chuggy-linux install-service --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.equal(
+    (await called(["install-service", "--pool", file], { home, environment }))
+      .status,
+    0,
+  );
+  await legacyUnitWritten(units, file);
+  const installed = await called(registerArgv, { home, environment, fetch });
+  assert.equal(installed.status, 0, installed.err);
+  assert.equal(
+    installed.out,
+    [
+      `replaced ${file}; chuggy denies the pool's earlier registration, so its service stops until it is restarted:`,
+      `  chuggy-linux doctor --pool ${file}`,
+      "  systemctl --user restart chuggy-linux-newtenant.arbbot.shame.service",
+      "  systemctl --user restart chuggy-linux.service",
+    ].join("\n"),
+  );
+});
+
+test("a run is refused while a legacy service whose pool file cannot be read runs, and not while one serving another pool does", async (t) => {
+  const { home, environment, poolFile, paths } = await served(t);
+  await controlServed(t, controlSocketPath(runtimeDirectory(paths)));
+  const legacyFile = await poolFileWritten(join(home, "legacy.json"), {
+    ...fixturePool,
+    project: "arbbot",
+  });
+  await legacyUnitWritten(paths.units, legacyFile);
+  const beside = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(beside.status, 3, beside.err);
+  await rm(legacyFile);
+  const { status, err } = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(status, 1);
+  assert.equal(
+    err,
+    "chuggy-linux.service is running a pool file this runner cannot read, which may be this pool's; stop it before starting another service of this pool",
+  );
 });

@@ -7,6 +7,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,7 +93,12 @@ test("each refusal chuggy answers is one line, naming nothing it was sent", asyn
       { error: { code: "AuthorityUnavailable", message: "later" } },
       "chuggy could not answer the registration; run register again",
     ],
-    [500, "", "chuggy answered the registration with HTTP 500"],
+    [
+      500,
+      "",
+      "chuggy failed the registration with HTTP 500; run register again",
+    ],
+    [415, "", "chuggy answered the registration with HTTP 415"],
   ];
   for (const [status, body, line] of answers)
     await assert.rejects(
@@ -323,7 +329,7 @@ test("names too long for the unit a pool file names make a digest instead, whose
   );
 });
 
-test("the pool file is written owner-only from its creation, whole, and read back by the core", async (t) => {
+test("the pool file is written owner-only and whole, and read back by the core", async (t) => {
   const directory = join(await scratch(t), "chuggy", "pools");
   await registerPoolDirectory(directory);
   assert.equal((await stat(directory)).mode & 0o777, 0o700);
@@ -357,11 +363,25 @@ test("registering a pool again replaces its file, and no other pool's", async (t
   ]);
 });
 
-test("a pools directory anyone else can enter is made owner-only", async (t) => {
-  const directory = await scratch(t);
-  await chmod(directory, 0o755);
-  await registerPoolDirectory(directory);
-  assert.equal((await stat(directory)).mode & 0o777, 0o700);
+test("a pools directory anyone else can enter, or you cannot write, is made owner-only and writable", async (t) => {
+  for (const mode of [0o755, 0o500]) {
+    const directory = await scratch(t);
+    await chmod(directory, mode);
+    await registerPoolDirectory(directory);
+    assert.equal((await stat(directory)).mode & 0o777, 0o700, mode.toString(8));
+  }
+});
+
+test("a pools directory that cannot be made yours to write is refused, saying no token was spent", async (t) => {
+  const directory = join(await scratch(t), "pools");
+  await symlink("/proc/self/fd", directory);
+  await assert.rejects(
+    registerPoolDirectory(directory),
+    new RegExp(
+      `^Error: ${directory} cannot be made a directory only you can write, so no token was spent: E`,
+      "u",
+    ),
+  );
 });
 
 test("a pool file that cannot be renamed into place leaves no temporary file behind", async (t) => {

@@ -15,7 +15,8 @@ import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import { controlAsked, controlServer } from "./control.mjs";
 import { doctorFindings, findingLine } from "./doctor.mjs";
 import {
-  legacyServiceUnit,
+  legacyService,
+  poolFileServiceUnits,
   poolServiceAsked,
   poolServiceSockets,
   serviceUnitText,
@@ -72,7 +73,7 @@ import {
 export const poolFileVariable = "CHUGGY_LINUX_POOL";
 
 const usage = `usage: chuggy-linux <command> [--pool <file>]
-       chuggy-linux register --api <origin> --token <token> [--pool <name>]
+       chuggy-linux register --api <origin> --token=<token> [--pool <name>]
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it
@@ -116,10 +117,12 @@ async function run(call) {
   const { setup, runner, sockets } = await started(call);
   if (
     sockets.legacy !== undefined &&
-    (await controlAsked(sockets.legacy, { op: "status" })) !== undefined
+    (await controlAsked(sockets.legacy.socket, { op: "status" })) !== undefined
   )
     throw new Error(
-      `${legacyServiceUnitName} is running this pool; stop it before starting another service of it`,
+      sockets.legacy.serves === "ThisPool"
+        ? `${legacyServiceUnitName} is running this pool; stop it before starting another service of it`
+        : `${legacyServiceUnitName} is running a pool file this runner cannot read, which may be this pool's; stop it before starting another service of this pool`,
     );
   await runnerDirectories(setup.paths, runner.runtime);
   const server = await controlServer(sockets.own, runner.backend);
@@ -240,7 +243,7 @@ async function installService(call) {
   const served = existing === undefined ? undefined : unitPoolFile(existing);
   if (existing !== undefined && served !== call.poolFile)
     throw new Error(
-      `${unit} serves ${served ?? "no pool file this runner named"}, not ${call.poolFile}; rename the pool file`,
+      `${unit} serves ${served ?? "no pool file this runner named"}, not ${call.poolFile}; remove that unit if it is stale, or rename the pool file`,
     );
   await mkdir(paths.units, { recursive: true });
   await writeFile(
@@ -251,7 +254,9 @@ async function installService(call) {
       poolFile: call.poolFile,
     }),
   );
-  const legacy = await legacyServiceUnit(paths, credentials);
+  const legacyFound = await legacyService(paths, credentials);
+  const legacy =
+    legacyFound?.serves === "ThisPool" ? legacyFound.unit : undefined;
   call.host.out(
     legacy === undefined
       ? `wrote ${unit}; start it with:`
@@ -275,7 +280,8 @@ async function register(host, asked) {
     host.err(requested.refused);
     return 2;
   }
-  const { pools } = runnerPaths(host.environment, host.home);
+  const paths = runnerPaths(host.environment, host.home);
+  const { pools } = paths;
   await registerPoolDirectory(pools);
   const pool = await registerRedeemed(requested.request, host.fetch);
   const { file, replaced } = await registerPoolFileWritten(pools, pool).catch(
@@ -287,9 +293,18 @@ async function register(host, asked) {
     },
   );
   await poolCredentials(file);
-  host.out(`${replaced ? "replaced" : "wrote"} ${file}; next:`);
+  const verb = replaced ? "replaced" : "wrote";
+  const units = await poolFileServiceUnits(paths, file);
+  host.out(
+    units.length === 0
+      ? `${verb} ${file}; next:`
+      : `${verb} ${file}; chuggy denies the pool's earlier registration, so its service stops until it is restarted:`,
+  );
   host.out(`  chuggy-linux doctor --pool ${shellQuoted(file)}`);
-  host.out(`  chuggy-linux install-service --pool ${shellQuoted(file)}`);
+  if (units.length === 0)
+    host.out(`  chuggy-linux install-service --pool ${shellQuoted(file)}`);
+  for (const unit of units)
+    host.out(`  systemctl --user restart ${shellQuoted(unit)}`);
   return 0;
 }
 

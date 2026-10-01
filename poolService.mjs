@@ -3,7 +3,8 @@
  * listens. A pool's service listens in the pool's own runtime directory. A
  * service still running a runner from before pools had their own listens in
  * the runtime directory's root until it restarts, and is this pool's when the
- * legacy unit serves a file naming this pool.
+ * legacy unit serves a file naming this pool. One whose file cannot be read
+ * may be this pool's or another's.
  */
 
 import { readFile } from "node:fs/promises";
@@ -14,15 +15,24 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { controlAsked, controlSocketPath } from "./control.mjs";
 import { poolIdentitySame } from "./poolIdentity.mjs";
 import { poolRuntimeDirectory, runtimeDirectory } from "./runner.mjs";
-import { legacyServiceUnitName, unitPoolFile } from "./systemdUnit.mjs";
+import {
+  legacyServiceUnitName,
+  serviceUnitName,
+  unitPoolFile,
+} from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("./poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *
+ * @typedef {object} LegacyService
+ * @property {string} unit the legacy unit's file
+ * @property {string} file the pool file it serves
+ * @property {"ThisPool" | "Unread"} serves this pool, or a pool file that cannot be read and so may name it
+ *
  * @typedef {object} PoolServiceSockets
  * @property {string} own where the pool's service listens
- * @property {string | undefined} legacy where a legacy service serving this pool listens
+ * @property {{socket: string, serves: LegacyService["serves"]} | undefined} legacy where a legacy service listens that serves this pool, or may
  */
 
 /**
@@ -41,22 +51,42 @@ export async function serviceUnitText(unit) {
 }
 
 /**
- * The legacy unit's file, where it serves a file naming this pool. A pool
- * file it names that cannot be read names no pool.
+ * The legacy unit, where it serves this pool or a pool file that cannot be
+ * read. Nothing where it serves another pool, or there is none this runner
+ * wrote.
  *
  * @param {RunnerPaths} paths
  * @param {PoolIdentity} identity
- * @returns {Promise<string | undefined>}
+ * @returns {Promise<LegacyService | undefined>}
  */
-export async function legacyServiceUnit(paths, identity) {
+export async function legacyService(paths, identity) {
   const unit = join(paths.units, legacyServiceUnitName);
   const text = await serviceUnitText(unit);
-  const served = text === undefined ? undefined : unitPoolFile(text);
-  if (served === undefined) return undefined;
-  const named = await poolCredentials(served).catch(() => undefined);
-  return named !== undefined && poolIdentitySame(named, identity)
-    ? unit
+  const file = text === undefined ? undefined : unitPoolFile(text);
+  if (file === undefined) return undefined;
+  const named = await poolCredentials(file).catch(() => undefined);
+  if (named === undefined) return { unit, file, serves: "Unread" };
+  return poolIdentitySame(named, identity)
+    ? { unit, file, serves: "ThisPool" }
     : undefined;
+}
+
+/**
+ * The units here that serve exactly `file`: its own and the legacy one.
+ *
+ * @param {RunnerPaths} paths
+ * @param {string} file
+ */
+export async function poolFileServiceUnits(paths, file) {
+  const names = [serviceUnitName(file), legacyServiceUnitName];
+  const served = await Promise.all(
+    names.map(
+      async (name) =>
+        unitPoolFile((await serviceUnitText(join(paths.units, name))) ?? "") ===
+        file,
+    ),
+  );
+  return names.filter((_, index) => served[index]);
 }
 
 /**
@@ -65,18 +95,23 @@ export async function legacyServiceUnit(paths, identity) {
  * @returns {Promise<PoolServiceSockets>}
  */
 export async function poolServiceSockets(paths, identity) {
+  const legacy = await legacyService(paths, identity);
   return {
     own: controlSocketPath(poolRuntimeDirectory(paths, identity)),
     legacy:
-      (await legacyServiceUnit(paths, identity)) === undefined
+      legacy === undefined
         ? undefined
-        : controlSocketPath(runtimeDirectory(paths)),
+        : {
+            socket: controlSocketPath(runtimeDirectory(paths)),
+            serves: legacy.serves,
+          },
   };
 }
 
 /**
  * Asks the service answering for the pool, answering nothing when none is
- * running.
+ * running. A legacy service whose pool file cannot be read is not asked, since
+ * it may be another pool's.
  *
  * @param {PoolServiceSockets} sockets
  * @param {import("./control.mjs").ControlRequest} request
@@ -84,6 +119,7 @@ export async function poolServiceSockets(paths, identity) {
  */
 export async function poolServiceAsked(sockets, request) {
   const answered = await controlAsked(sockets.own, request);
-  if (answered !== undefined || sockets.legacy === undefined) return answered;
-  return controlAsked(sockets.legacy, request);
+  if (answered !== undefined || sockets.legacy?.serves !== "ThisPool")
+    return answered;
+  return controlAsked(sockets.legacy.socket, request);
 }
