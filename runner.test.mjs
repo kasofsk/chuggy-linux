@@ -10,7 +10,9 @@ import {
   engineEndpoint,
   jobNetwork,
   ownScratchRemoved,
+  poolRuntimeDirectory,
   runnerDirectories,
+  runnerLeftoversRemoved,
   runnerLoop,
   runnerParts,
   runnerSetup,
@@ -89,6 +91,39 @@ test("a run passes until the plane denies the pool, logging each outage and each
   ]);
 });
 
+test("a job network another run made between the inspection and the creation is present", async () => {
+  const { engine, state } = fakeEngine();
+  const raced = {
+    .../** @type {import("./engine.mjs").Engine} */ (engine),
+    exec: async (
+      /** @type {readonly string[]} */ argv,
+      /** @type {import("./engine.mjs").EngineCall | undefined} */ call,
+    ) => {
+      if (argv[0] === "network" && argv[1] === "create") {
+        state.networks.add(argv[2]);
+        return {
+          code: 1,
+          stdout: "",
+          stderr: `Error response from daemon: network with name ${argv[2]} already exists\n`,
+        };
+      }
+      return engine.exec(argv, call);
+    },
+  };
+  assert.equal(await jobNetwork(raced, "chuggy-jobs"), "Present");
+  const refused = {
+    ...raced,
+    exec: async (/** @type {readonly string[]} */ argv) =>
+      argv[1] === "create"
+        ? { code: 1, stdout: "", stderr: "Error: permission denied\n" }
+        : engine.exec(["network", "inspect", "missing"]),
+  };
+  await assert.rejects(
+    jobNetwork(refused, "missing"),
+    /^Error: network missing could not be created: Error: permission denied$/u,
+  );
+});
+
 test("the job network is made only where it is missing", async () => {
   const { engine, state } = fakeEngine();
   assert.equal(await jobNetwork(engine, "chuggy-jobs"), "Created");
@@ -108,25 +143,59 @@ test("the job network is made only where it is missing", async () => {
   );
 });
 
-test("the runner's directories are owner-only, and what a killed run left in them is removed", async (t) => {
+test("a pool's directories are owner-only, and what a killed run left in its runtime directory is removed", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const paths = runnerPaths(environment, home);
-  await mkdir(join(/** @type {string} */ (paths.runtime), "pull-left"), {
-    recursive: true,
-  });
-  await writeFile(
-    join(/** @type {string} */ (paths.runtime), "control.sock"),
-    "",
-  );
-  await runnerDirectories(paths);
-  assert.deepEqual(await readdir(/** @type {string} */ (paths.runtime)), [
-    "control.sock",
-  ]);
+  const runtime = poolRuntimeDirectory(paths, fixturePool);
+  await runnerDirectories(paths, runtime);
+  assert.equal((await stat(runtime)).mode & 0o777, 0o700);
   assert.equal((await stat(paths.logs)).mode & 0o777, 0o700);
-  await assert.rejects(
-    runnerDirectories(runnerPaths({}, home)),
+  await mkdir(join(runtime, "pull-left"));
+  await mkdir(join(runtime, "job-left"));
+  await writeFile(join(runtime, "control.sock"), "");
+  await runnerLeftoversRemoved(runtime);
+  assert.deepEqual(await readdir(runtime), ["control.sock"]);
+});
+
+test("each pool has a runtime directory of its own under the runner's, which needs XDG_RUNTIME_DIR", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const paths = runnerPaths(environment, home);
+  const own = poolRuntimeDirectory(paths, fixturePool);
+  const other = poolRuntimeDirectory(paths, {
+    ...fixturePool,
+    tenant: "newtenant",
+    project: "arbbot",
+  });
+  assert.match(
+    own,
+    new RegExp(
+      `^${environment.XDG_RUNTIME_DIR}/chuggy-linux/pools/[0-9a-f]{20}$`,
+      "u",
+    ),
+  );
+  assert.notEqual(own, other);
+  assert.equal(own, poolRuntimeDirectory(paths, { ...fixturePool }));
+  assert.throws(
+    () => poolRuntimeDirectory(runnerPaths({}, home), fixturePool),
     /XDG_RUNTIME_DIR is not set/u,
   );
+});
+
+test("a pool's scratch left by a killed run is removed at another pool's start no more than its own", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const paths = runnerPaths(environment, home);
+  const own = poolRuntimeDirectory(paths, fixturePool);
+  const other = poolRuntimeDirectory(paths, {
+    ...fixturePool,
+    project: "arbbot",
+  });
+  for (const runtime of [own, other]) {
+    await runnerDirectories(paths, runtime);
+    await mkdir(join(runtime, "pull-1-a"));
+  }
+  await runnerLeftoversRemoved(own);
+  assert.deepEqual(await readdir(own), []);
+  assert.deepEqual(await readdir(other), ["pull-1-a"]);
 });
 
 test("a run is composed from both files, and refuses to start without a runtime directory", async (t) => {
@@ -376,6 +445,14 @@ test("the registry the pool file names is the one a pull presents the pool's tok
   assert.deepEqual(Object.keys(JSON.parse(pull?.authFile ?? "").auths), [
     "registry.chuggy.example",
   ]);
+  assert.equal(
+    runner.runtime,
+    poolRuntimeDirectory(runnerPaths(environment, home), fixturePool),
+  );
+  assert.ok(
+    pull?.authDirectory?.startsWith(`${runner.runtime}/pull-`),
+    pull?.authDirectory,
+  );
 });
 
 test("a process removes only the pull credentials and env files it made", async (t) => {

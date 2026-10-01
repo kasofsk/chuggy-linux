@@ -268,10 +268,15 @@ function answer(state, call) {
       : answered(`${state.contextHost}\n`);
   if (verb === "run") return run(state, call);
   if (verb === "ps") {
-    const pool = last.replace(/^label=io\.chuggy\.pool=/u, "");
+    const wanted = flagValues(call.argv, "--filter").map((filter) => {
+      const [key, ...value] = filter.replace(/^label=/u, "").split("=");
+      return [key, value.join("=")];
+    });
     return answered(
       [...state.containers.values()]
-        .filter((container) => container.labels["io.chuggy.pool"] === pool)
+        .filter((container) =>
+          wanted.every(([key, value]) => container.labels[key] === value),
+        )
         .map((container) => `${container.id}\n`)
         .join(""),
     );

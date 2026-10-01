@@ -123,7 +123,8 @@ test("a directory is not a runner configuration", async (t) => {
 test("the runner's paths follow the XDG base directories, ignoring a relative one", () => {
   assert.deepEqual(runnerPaths({}, "/home/op"), {
     config: "/home/op/.config/chuggy-linux/runner.json",
-    unit: "/home/op/.config/systemd/user/chuggy-linux.service",
+    units: "/home/op/.config/systemd/user",
+    pools: "/home/op/.config/chuggy/pools",
     logs: "/home/op/.local/state/chuggy-linux/logs",
     runtime: undefined,
   });
@@ -138,7 +139,8 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
     ),
     {
       config: "/etc/op/chuggy-linux/runner.json",
-      unit: "/etc/op/systemd/user/chuggy-linux.service",
+      units: "/etc/op/systemd/user",
+      pools: "/etc/op/chuggy/pools",
       logs: "/home/op/.local/state/chuggy-linux/logs",
       runtime: "/run/user/1000/chuggy-linux",
     },

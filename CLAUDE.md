@@ -10,7 +10,7 @@ A Linux machine's worker pool for chuggy: a background service and a CLI that ru
 
 ## Layout
 
-Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core and the backend, and the backend, the engine's argv and its error classes, the configuration, the envelope, the pull credential, the control socket, `doctor`'s checks and the systemd unit each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
+Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core and the backend, and registration, a pool's identity, the service answering for a pool, the backend, the engine's argv and its error classes, the configuration, the envelope, the pull credential, the control socket, `doctor`'s checks and the systemd unit each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
 
 ## Checks
 

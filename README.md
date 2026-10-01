@@ -12,9 +12,25 @@ npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.1.1/chuggy
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout.
 
+## Register
+
+Mint a registration token for the pool in chuggy, then:
+
+```sh
+chuggy-linux register --api <chuggy's origin> --token=<token>
+```
+
+Give the token with `=`: a token can begin with `-`, which `--token <token>` would read as an option.
+
+This spends the token, declaring the machine's platform, `Platform:Linux:Amd64` or `Platform:Linux:Arm64`, and writes the pool file chuggy answers with to `~/.config/chuggy/pools/`, named for its tenant, project and pool: `vteng.chuggy.shame.json`. `--api` must be https unless it is this machine's loopback. The secret goes only into the file, mode 600.
+
+The pool takes the hostname's first label unless `--pool <name>` names it; a name is lowercase letters, digits and hyphens. A pool is one per name in a project, so a second machine of the same name registering in the same project displaces the first: give one a `--pool`.
+
+Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. `register` prints the restart for a unit here that serves exactly the file it wrote; a 0.1 unit serving the pool from a file of another name, such as `vteng-chuggy-shame.json`, is handed over by `install-service` instead. Registering another pool adds a file beside the first.
+
 ## Configure
 
-**The pool file** is what registering the pool wrote, such as `~/.config/chuggy/pools/vteng-chuggy-shame.json`. Every command takes it as `--pool <file>`, or from `CHUGGY_LINUX_POOL`. It must be mode 600.
+**The pool file** is what registering the pool wrote, such as `~/.config/chuggy/pools/vteng.chuggy.shame.json`. Every command but `register` takes it as `--pool <file>`, or from `CHUGGY_LINUX_POOL`. It must be mode 600.
 
 **The runner's file** is `~/.config/chuggy-linux/runner.json` (under `$XDG_CONFIG_HOME` when that is set). It must be mode 600, and a key it does not know is an error.
 
@@ -33,7 +49,7 @@ The tarball carries its dependencies, so the install fetches nothing else. `just
 | Key               | Required | Meaning                                                                                                    |
 | ----------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `engine`          | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`  | no       | Jobs run at once. Default 1.                                                                               |
+| `concurrencyMax`  | no       | Jobs each pool's service runs at once. Default 1.                                                          |
 | `claudeTokenFile` | yes      | The file `claude setup-token`'s output was saved to, mode 600. It is mounted into each job, never read.     |
 | `timeoutSecsMax`  | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
 | `outputBytesMax`  | yes      | The most output a job may report.                                                                          |
@@ -45,7 +61,7 @@ A job runs as uid 1000, the image's user, and reads the token file as that uid, 
 ## Check
 
 ```sh
-chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng-chuggy-shame.json
+chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
 It checks both files, the token file, podman's credential helpers, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
@@ -53,21 +69,24 @@ It checks both files, the token file, podman's credential helpers, the engine, t
 ## Run as a service
 
 ```sh
-chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng-chuggy-shame.json
+chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-This writes `~/.config/systemd/user/chuggy-linux.service`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again after upgrading Node or moving the install.
+This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again after upgrading Node or moving the install.
+
+chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-linux.service`, and it keeps working after an upgrade. Where it serves the pool being installed, `install-service` prints the commands that stop and remove it before starting the pool's own. A pool's service refuses to start while another service of the pool runs, or while the old unit's service runs a pool file this runner cannot read, which may be the same pool. It cannot see a 0.1 runner started by hand rather than by that unit. Where the old unit serves another pool, it runs on beside the new unit. The containers it started are found by their labels, so `status` and `stop` still see them.
 
 ## Commands
 
-| Command             | What it does                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------ |
-| `run`               | The service: polls until the plane denies the pool.                                  |
-| `once`              | One poll, then waits for what it placed to start. Refused while the service runs.    |
-| `status`            | This pool's containers, and what the service is still pulling or starting.          |
-| `stop <assignment>` | Stops one assignment's container, through the service when it is running.          |
-| `doctor`            | The checks above.                                                                    |
-| `install-service`   | Writes the systemd user unit.                                                        |
+| Command             | What it does                                                                                                                            |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `register`          | Redeems a registration token for a pool file.                                                                                           |
+| `run`               | The service: polls until the plane denies the pool.                                                                                     |
+| `once`              | One poll, then waits for what it placed to start. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
+| `status`            | This pool's containers, and what the service is still pulling or starting.                                                              |
+| `stop <assignment>` | Stops one assignment's container, through the service when it is running.                                                               |
+| `doctor`            | The checks above.                                                                                                                       |
+| `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
 
 `once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going.
 

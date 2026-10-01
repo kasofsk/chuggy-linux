@@ -35,6 +35,7 @@ import {
   podmanVersionArgv,
 } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
+import { poolIdentityDigest } from "./poolIdentity.mjs";
 import { runnerConfig, runnerPaths, runtimeScratch } from "./runnerConfig.mjs";
 import { deniedExitStatus } from "./systemdUnit.mjs";
 
@@ -43,6 +44,7 @@ import { deniedExitStatus } from "./systemdUnit.mjs";
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("./containerBackend.mjs").ContainerBackend} ContainerBackend
  * @typedef {import("./engine.mjs").Engine} Engine
+ * @typedef {import("./poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *
@@ -53,6 +55,7 @@ import { deniedExitStatus } from "./systemdUnit.mjs";
  * @property {RunnerPaths} paths
  *
  * @typedef {object} Runner
+ * @property {string} runtime the pool's runtime directory
  * @property {Engine} engine
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client
@@ -101,6 +104,17 @@ export function runtimeDirectory(paths) {
       "XDG_RUNTIME_DIR is not set; a systemd user session sets it, and the runner keeps its pull credentials and env files there",
     );
   return paths.runtime;
+}
+
+/**
+ * A pool's own runtime directory under the runner's, so no two pools share a
+ * control socket or scratch. It sits in `pools`, a name no scratch entry has.
+ *
+ * @param {RunnerPaths} paths
+ * @param {PoolIdentity} identity
+ */
+export function poolRuntimeDirectory(paths, identity) {
+  return join(runtimeDirectory(paths), "pools", poolIdentityDigest(identity));
 }
 
 /**
@@ -240,7 +254,7 @@ export function runnerPlane(credentials) {
  */
 export async function runnerParts(setup, host) {
   const { credentials, config, paths } = setup;
-  const runtimeDir = runtimeDirectory(paths);
+  const runtimeDir = poolRuntimeDirectory(paths, credentials);
   const engine = host.engine ?? runnerEngine(config);
   const dockerHost = await engineEndpoint(config.engine, engine);
   const tokens = host.tokens ?? runnerTokens(credentials);
@@ -282,11 +296,12 @@ export async function runnerParts(setup, host) {
       passesMax: 1,
     }),
   };
-  return { engine, backend, client };
+  return { runtime: runtimeDir, engine, backend, client };
 }
 
 /**
- * The job network, made when it is missing.
+ * The job network, made when it is missing. Every pool's run on the machine
+ * shares it, so a creation that failed is one another run may have beaten.
  *
  * @param {Engine} engine
  * @param {string} network
@@ -300,11 +315,12 @@ export async function jobNetwork(engine, network) {
       `network ${network} could not be inspected: ${engineFailureLine(inspected)}`,
     );
   const created = await engine.exec(networkCreateArgv(network));
-  if (created.code !== 0)
-    throw new Error(
-      `network ${network} could not be created: ${engineFailureLine(created)}`,
-    );
-  return "Created";
+  if (created.code === 0) return "Created";
+  if ((await engine.exec(networkInspectArgv(network))).code === 0)
+    return "Present";
+  throw new Error(
+    `network ${network} could not be created: ${engineFailureLine(created)}`,
+  );
 }
 
 /**
@@ -339,16 +355,24 @@ export async function runnerLoop(client, seams) {
 }
 
 /**
- * The directories the runner writes under, made owner-only. A pull credential
- * or env file left in the runtime directory is one a killed run did not get to
- * remove, and is removed here.
+ * The directories a pool's run writes under, made owner-only.
  *
  * @param {RunnerPaths} paths
+ * @param {string} runtime the pool's runtime directory
  */
-export async function runnerDirectories(paths) {
-  const runtime = runtimeDirectory(paths);
+export async function runnerDirectories(paths, runtime) {
   await mkdir(runtime, { recursive: true, mode: 0o700 });
   await mkdir(paths.logs, { recursive: true, mode: 0o700 });
+}
+
+/**
+ * Removes every pull credential and env file in a pool's runtime directory,
+ * which only a run that no other run of the pool is beside may do: each is
+ * one a killed run did not get to remove.
+ *
+ * @param {string} runtime the pool's runtime directory
+ */
+export async function runnerLeftoversRemoved(runtime) {
   for (const entry of await readdir(runtime))
     if (/^(?:pull|job)-/u.test(entry))
       await rm(join(runtime, entry), { recursive: true, force: true });
