@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.2.0/chuggy-linux-0.2.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.2.1/chuggy-linux-0.2.1.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout.
