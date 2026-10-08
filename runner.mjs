@@ -1,13 +1,7 @@
 /**
- * The runner composed: the pool's credentials and the runner's file read, the
- * worker core's token source and plane client built from them, and the
- * container backend beside them. Every command starts here.
- *
- * THE LOOP IS THE CORE'S PASS, RUN UNTIL A DENIAL rather than for a count of
- * passes, because the placements a run has in flight live in its memory. Each
- * outage is logged, since under systemd an unlogged one is a pool that
- * silently stopped working. A pass that throws ends the run, and the unit's
- * restart begins the next one from what the engine lists.
+ * The runner composed: the pool's credentials and the runner's file read, and
+ * the container backend beside the worker core's pool runner, which passes
+ * until the plane denies the pool. Every command starts here.
  */
 
 import { readdirSync, rmSync } from "node:fs";
@@ -17,14 +11,11 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
-import { poolJobPlaneClient } from "@chuggy/worker-core/poolJobPlane.mjs";
 import {
-  checkedWorkerPoolClientSettings,
-  workerPoolClientPass,
-} from "@chuggy/worker-core/poolLoop.mjs";
-import { poolPlaneClient } from "@chuggy/worker-core/poolPlane.mjs";
-import { poolSessionPlaneClient } from "@chuggy/worker-core/poolSessionPlane.mjs";
-import { poolClientTokens } from "@chuggy/worker-core/poolTokens.mjs";
+  poolRunnerClient,
+  poolRunnerLoop,
+  poolRunnerTokens,
+} from "@chuggy/worker-core/poolRunner.mjs";
 
 import { containerBackend } from "./containerBackend.mjs";
 import { containerEngine } from "./engine.mjs";
@@ -62,19 +53,6 @@ import { deniedExitStatus } from "./systemdUnit.mjs";
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client
  */
-
-/** Chuggy's own pool client's bounds, which its issuer and plane are sized for. */
-const tokenSettings = {
-  requestTimeoutMs: 10_000,
-  responseBytesMax: 64 * 1024,
-  responseReadsMax: 64,
-  refreshMarginMs: 60_000,
-  mintCooldownMs: 1_000,
-};
-const planeSettings = { pollTimeoutMs: 120_000, settleTimeoutMs: 10_000 };
-const jobPlaneSettings = { timeoutMs: 10_000 };
-const sessionPlaneSettings = { timeoutMs: 10_000 };
-const outageBackoffMs = 5_000;
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
 const pullRetryMs = 5_000;
@@ -229,29 +207,6 @@ export async function engineEndpoint(name, engine) {
 }
 
 /**
- * @param {PoolCredentials} credentials
- * @returns {WorkerPoolClient["tokens"]}
- */
-export function runnerTokens(credentials) {
-  return poolClientTokens({
-    tokenUrl: credentials.tokenUrl,
-    clientId: credentials.clientId,
-    clientSecret: credentials.clientSecret,
-    audience: [credentials.audience],
-    scope: [],
-    ...tokenSettings,
-  });
-}
-
-/**
- * @param {PoolCredentials} credentials
- * @returns {WorkerPoolClient["plane"]}
- */
-export function runnerPlane(credentials) {
-  return poolPlaneClient({ baseUrl: credentials.planeUrl, ...planeSettings });
-}
-
-/**
  * @param {RunnerSetup} setup
  * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid, where its log lines go, the engine and token source when not those the files name, and the fetch a job's or a session's plane is reached by when not the global one
  * @returns {Promise<Runner>}
@@ -261,7 +216,7 @@ export async function runnerParts(setup, host) {
   const runtimeDir = poolRuntimeDirectory(paths, credentials);
   const engine = host.engine ?? runnerEngine(config);
   const dockerHost = await engineEndpoint(config.engine, engine);
-  const tokens = host.tokens ?? runnerTokens(credentials);
+  const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const backend = containerBackend(
     {
       engine: config.engine,
@@ -290,19 +245,12 @@ export async function runnerParts(setup, host) {
       log: host.log,
     },
   );
-  const client = {
-    tokens,
-    plane: runnerPlane(credentials),
-    jobs: poolJobPlaneClient(jobPlaneSettings, host.fetch),
-    sessions: poolSessionPlaneClient(sessionPlaneSettings, host.fetch),
+  const client = poolRunnerClient(
+    credentials,
     backend,
-    settings: checkedWorkerPoolClientSettings({
-      concurrencyMax: config.concurrencyMax,
-      sessionsMax: config.sessionsMax,
-      outageBackoffMs,
-      passesMax: 1,
-    }),
-  };
+    { concurrencyMax: config.concurrencyMax, sessionsMax: config.sessionsMax },
+    { tokens, fetch: host.fetch },
+  );
   return { runtime: runtimeDir, engine, backend, client };
 }
 
@@ -331,36 +279,16 @@ export async function jobNetwork(engine, network) {
 }
 
 /**
- * What a pass did, as a log line, naming the workloads it ended only where it
- * ended any.
- *
- * @param {{placed: number, stopped: number, refused: number, ended: number}} pass
- */
-export function passLine(pass) {
-  const line = `placed ${String(pass.placed)}, stopped ${String(pass.stopped)}, refused ${String(pass.refused)}`;
-  return pass.ended === 0 ? line : `${line}, ended ${String(pass.ended)}`;
-}
-
-/**
- * The pool loop until the plane denies the pool.
+ * The pool loop until the plane denies the pool, which the unit does not
+ * restart.
  *
  * @param {WorkerPoolClient} client
  * @param {{sleep: (ms: number) => Promise<void>, log: (line: string) => void}} seams
  * @returns {Promise<number>} the exit status
  */
 export async function runnerLoop(client, seams) {
-  for (;;) {
-    const pass = await workerPoolClientPass(client);
-    if (pass.passed === "Denied") {
-      seams.log(`the plane denied this pool: ${pass.evidence}`);
-      return deniedExitStatus;
-    }
-    if (pass.passed === "Unavailable") {
-      seams.log(`outage: ${pass.evidence}`);
-      await seams.sleep(client.settings.outageBackoffMs);
-    } else if (pass.placed + pass.stopped + pass.refused + pass.ended > 0)
-      seams.log(passLine(pass));
-  }
+  await poolRunnerLoop(client, seams);
+  return deniedExitStatus;
 }
 
 /**

@@ -20,122 +20,34 @@ import {
   runnerSetup,
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
+import { deniedExitStatus } from "./systemdUnit.mjs";
 import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
-/**
- * A client whose issuer is down for its first pass and whose plane answers
- * each poll after that from a script, as its backend answers what ended.
- *
- * @param {Array<() => unknown>} polls
- * @param {unknown[][]} ends
- */
-function scriptedClient(polls, ends = []) {
-  /** @type {string[]} */
-  const placed = [];
-  let acquired = 0;
-  let polled = 0;
-  let ending = 0;
+test("a run the plane denies ends with the status the unit does not restart", async () => {
   const client = {
     tokens: {
-      acquire: async () =>
-        acquired++ === 0
-          ? {
-              acquired: "Unavailable",
-              evidence: "the issuer could not be reached",
-            }
-          : { acquired: "Token", token: "pool-token" },
+      acquire: async () => ({ acquired: "Token", token: "pool-token" }),
       invalidate: () => undefined,
     },
     plane: {
-      poll: async () => polls[polled++](),
-      settle: async () => "Settled",
+      poll: async () => ({
+        polled: "Denied",
+        evidence: "the pool was revoked",
+      }),
     },
-    jobs: { end: async () => "Ended" },
-    backend: {
-      held: async () => [],
-      ended: async () => ends[ending++] ?? [],
-      place: async (/** @type {{assignment: string}} */ assignment) => {
-        placed.push(assignment.assignment);
-        return { placed: "Placed" };
-      },
-      stop: async () => ({ stopped: "Stopped" }),
-    },
+    backend: { held: async () => [], ended: async () => [] },
     settings: { concurrencyMax: 2, outageBackoffMs: 5000, passesMax: 1 },
   };
-  return { client, placed };
-}
-
-test("a run passes until the plane denies the pool, logging each outage and each pass that did something", async () => {
-  const { client, placed } = scriptedClient([
-    () => ({
-      polled: "Reconciled",
-      assignments: [{ assignment: "asg-1" }],
-      sessions: [],
-      stop: [],
-    }),
-    () => ({ polled: "Reconciled", assignments: [], sessions: [], stop: [] }),
-    () => ({ polled: "Denied", evidence: "the pool was revoked" }),
-  ]);
   /** @type {string[]} */
   const log = [];
-  /** @type {number[]} */
-  const slept = [];
   const status = await runnerLoop(/** @type {any} */ (client), {
-    sleep: async (ms) => {
-      slept.push(ms);
-    },
-    log: (line) => log.push(line),
-  });
-  assert.equal(status, 3);
-  assert.deepEqual(placed, ["asg-1"]);
-  assert.deepEqual(slept, [5000]);
-  assert.deepEqual(log, [
-    "outage: the issuer could not be reached",
-    "placed 1, stopped 0, refused 0",
-    "the plane denied this pool: the pool was revoked",
-  ]);
-});
-
-test("a pass that ended a job is logged with how many, and one that ended none names no count", async () => {
-  const quiet = () => ({
-    polled: "Reconciled",
-    assignments: [],
-    sessions: [],
-    stop: [],
-  });
-  const { client } = scriptedClient(
-    [
-      quiet,
-      quiet,
-      () => ({ polled: "Denied", evidence: "the pool was revoked" }),
-    ],
-    [
-      [
-        {
-          kind: "Job",
-          job: {
-            assignment: "asg-1",
-            callbackUrl: "https://chuggy.example/worker",
-            bearer: "attempt-bearer",
-          },
-          why: "its container exited with status 1",
-        },
-      ],
-    ],
-  );
-  /** @type {string[]} */
-  const log = [];
-  await runnerLoop(/** @type {any} */ (client), {
     sleep: async () => undefined,
     log: (line) => log.push(line),
   });
-  assert.deepEqual(log, [
-    "outage: the issuer could not be reached",
-    "placed 0, stopped 0, refused 0, ended 1",
-    "the plane denied this pool: the pool was revoked",
-  ]);
+  assert.equal(status, deniedExitStatus);
+  assert.deepEqual(log, ["the plane denied this pool: the pool was revoked"]);
 });
 
 test("a job network another run made between the inspection and the creation is present", async () => {
