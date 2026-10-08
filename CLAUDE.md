@@ -26,7 +26,7 @@ npm ci              # the pinned core, the locked contract release and the toolc
 just hooks          # git config core.hooksPath .githooks
 ```
 
-A gate exits 0 clean, 1 on a finding, **2 when it could not run** — and 2 is not a pass. `check-source` runs the suites only when `check-contract` finds the locked release installed; an `npm link` to a local chuggy is a could-not-run, never a green run. The hook runs the gates without the shell suites; `--no-verify` bypasses every gate at once. No suite needs a container engine, the network or the rig: the engine is a seam, and every call it would make is asserted as argv. Docker's own CLI is the one exception, run where it is installed against a daemon `docker.fixture.mjs` fakes, because which login a pull presents is the CLI's decision.
+A gate exits 0 clean, 1 on a finding, **2 when it could not run** — and 2 is not a pass. `check-source` runs the suites only when `check-contract` finds the locked release installed; an `npm link` to a local chuggy is a could-not-run, never a green run. The hook runs the gates without the shell suites; `--no-verify` bypasses every gate at once. No suite needs a container engine, the network or the rig: the engine is a seam, and every call it would make is asserted as argv.
 
 ## Conventions that bite if you miss them
 

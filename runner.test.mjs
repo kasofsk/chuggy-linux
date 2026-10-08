@@ -208,7 +208,7 @@ test("a run's backend refuses an assignment while the token file is not this run
   assert.equal(placed.placed, "Refused");
   assert.match(
     placed.evidence ?? "",
-    new RegExp(`this runner(?:'s| is) uid ${String(uid)}`, "u"),
+    new RegExp(`not by this runner's uid ${String(uid)}$`, "u"),
   );
   assert.equal(state.calls.length, calls);
 });
