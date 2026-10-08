@@ -6,7 +6,7 @@ A Linux machine's worker pool for chuggy: a background service and a CLI that ru
 
 - **Each gate's own header.** Every script in `.chug/tasks/` opens by stating the rule it enforces, and its sibling `*.test.sh` proves the rule bites. The rule and its enforcement are the same file.
 - **chuggy's review brief**, [`review-change.md`](https://github.com/kasofsk/chuggy/blob/main/.chug/tasks/review-change.md). Its house rules and standing commitments bind here, for the rules no script can decide.
-- **The loop and the wire are not this tree's.** The pool loop, its token source, its plane client and the credentials reader are the worker core's, consumed by commit; the contract is chuggy's, locked to a GitHub release asset by URL and integrity. A change here that needs either to be different is a change there first, then a pin or lock bump here.
+- **The loop and the wire are not this tree's.** The pool loop, its token source, its plane client, the credentials reader, registration and the control socket are the worker core's, consumed by commit; the contract is chuggy's, locked to a GitHub release asset by URL and integrity. A change here that needs either to be different is a change there first, then a pin or lock bump here.
 
 ## Layout
 

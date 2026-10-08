@@ -56,7 +56,10 @@ import {
   jobEnvironmentAttempt,
   jobEnvironmentFile,
 } from "./job.mjs";
-import { poolIdentityDigest, poolLabelValue } from "./poolIdentity.mjs";
+import {
+  poolIdentityDigest,
+  poolLabelValue,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import { imageRegistryHost, withRegistryAuth } from "./registryAuth.mjs";
 import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
 
@@ -71,7 +74,7 @@ import { claudeTokenFileRefusal, runtimeScratch } from "./runnerConfig.mjs";
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolTokens} WorkerPoolTokens
  * @typedef {import("./engine.mjs").Engine} Engine
  * @typedef {import("./engine.mjs").EngineAnswer} EngineAnswer
- * @typedef {import("./poolIdentity.mjs").PoolIdentity} PoolIdentity
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  *
  * @typedef {object} ContainerBackendSettings
  * @property {"docker" | "podman"} engine

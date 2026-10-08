@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { cliMain } from "./commands.mjs";
-import { controlSocketPath } from "./control.mjs";
+import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { answeringFetch, registeredFixture } from "./register.fixture.mjs";
@@ -538,7 +538,7 @@ test("a second run of a pool is refused before it removes anything of the first'
     environment,
   });
   assert.equal(status, 1);
-  assert.match(err, /^a chuggy-linux service already answers at /u);
+  assert.match(err, /^a runner's service already answers at /u);
   assert.deepEqual((await readdir(runtime)).sort(), [
     "control.sock",
     "pull-1-inflight",

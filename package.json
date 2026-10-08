@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.6.0/chuggy-worker-contract-1.6.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#07011ece8352e033ebbd8987fe83e0c4c9b79abe",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#943560ac87ac3e4015a0f2ab379509edf71ac923",
     "zod": "4.5.4"
   },
   "bundleDependencies": [
@@ -34,15 +34,12 @@
     "cli.mjs",
     "commands.mjs",
     "containerBackend.mjs",
-    "control.mjs",
     "doctor.mjs",
     "engine.mjs",
     "engineArgv.mjs",
     "engineErrors.mjs",
     "job.mjs",
-    "poolIdentity.mjs",
     "poolService.mjs",
-    "register.mjs",
     "registryAuth.mjs",
     "runner.mjs",
     "runnerConfig.mjs",

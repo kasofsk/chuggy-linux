@@ -28,7 +28,7 @@ import {
   podmanVersionArgv,
 } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
-import { poolIdentityDigest } from "./poolIdentity.mjs";
+import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import { runnerConfig, runnerPaths, runtimeScratch } from "./runnerConfig.mjs";
 import { deniedExitStatus } from "./systemdUnit.mjs";
 
@@ -37,7 +37,7 @@ import { deniedExitStatus } from "./systemdUnit.mjs";
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("./containerBackend.mjs").ContainerBackend} ContainerBackend
  * @typedef {import("./engine.mjs").Engine} Engine
- * @typedef {import("./poolIdentity.mjs").PoolIdentity} PoolIdentity
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *
