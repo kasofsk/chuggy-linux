@@ -12,7 +12,7 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 
 import { listArgv, networkInspectArgv } from "./engineArgv.mjs";
 import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
-import { poolLabelValue } from "./poolIdentity.mjs";
+import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   claudeTokenFileRefusal,
   runnerConfig,

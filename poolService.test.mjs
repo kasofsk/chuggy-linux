@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { controlSocketPath } from "./control.mjs";
+import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { controlServed } from "./control.fixture.mjs";
 import {
   legacyService,
@@ -96,7 +96,7 @@ test("the units serving a pool file are its own and the legacy one, where each n
 
 test("a pool's service is asked at its own socket, then at the legacy one only where the legacy unit serves the pool", async (t) => {
   const { home, paths } = await machine(t);
-  /** @type {import("./control.mjs").ControlRequest} */
+  /** @type {import("@chuggy/worker-core/control.mjs").ControlRequest} */
   const stop = { op: "stop", assignment: "asg-1" };
   const own = await poolServiceSockets(paths, fixturePool);
   assert.deepEqual(own, {

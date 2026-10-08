@@ -17,7 +17,7 @@ import {
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
 
-import { controlAsked, controlServer } from "./control.mjs";
+import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { doctorFindings, findingLine } from "./doctor.mjs";
 import {
   legacyService,
@@ -31,7 +31,7 @@ import {
   registerPoolFileWritten,
   registerRedeemed,
   registerRequest,
-} from "./register.mjs";
+} from "@chuggy/worker-core/register.mjs";
 import {
   jobNetwork,
   runnerDirectories,
@@ -52,6 +52,7 @@ import {
   legacyServiceUnitName,
   serviceCommands,
   serviceUnit,
+  serviceUnitBaseCharsMax,
   serviceUnitName,
   shellQuoted,
   unitPoolFile,
@@ -294,7 +295,7 @@ async function installService(call) {
  * no pool file: its `--pool` is the name the pool takes.
  *
  * @param {CliHost} host
- * @param {import("./register.mjs").RegisterAsked} asked
+ * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
  */
 async function register(host, asked) {
   const requested = registerRequest(asked, host);
@@ -306,14 +307,16 @@ async function register(host, asked) {
   const { pools } = paths;
   await registerPoolDirectory(pools);
   const pool = await registerRedeemed(requested.request, host.fetch);
-  const { file, replaced } = await registerPoolFileWritten(pools, pool).catch(
-    (/** @type {unknown} */ failure) => {
-      throw new Error(
-        `the pool file could not be written, and the token is spent, so mint another: ${failure instanceof Error ? failure.message : String(failure)}`,
-        { cause: failure },
-      );
-    },
-  );
+  const { file, replaced } = await registerPoolFileWritten(
+    pools,
+    pool,
+    serviceUnitBaseCharsMax,
+  ).catch((/** @type {unknown} */ failure) => {
+    throw new Error(
+      `the pool file could not be written, and the token is spent, so mint another: ${failure instanceof Error ? failure.message : String(failure)}`,
+      { cause: failure },
+    );
+  });
   await poolCredentials(file);
   const verb = replaced ? "replaced" : "wrote";
   const units = await poolFileServiceUnits(paths, file);

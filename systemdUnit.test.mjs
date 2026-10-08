@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { registerPoolFileName } from "@chuggy/worker-core/register.mjs";
+
 import {
   serviceCommands,
   serviceUnit,
@@ -130,4 +132,21 @@ test("an argument the operator is told is quoted for a shell only where it must 
   );
   assert.equal(shellQuoted("/home/o p/it's"), "'/home/o p/it'\\''s'");
   assert.equal(shellQuoted("a\\x2db;$(x)"), "'a\\x2db;$(x)'");
+});
+
+test("every pool file register names under the unit bound names a unit systemd accepts", () => {
+  const tenant = "t".repeat(
+    serviceUnitBaseCharsMax - "p".length - "shame".length - "..".length,
+  );
+  const longest = registerPoolFileName(
+    { tenant, project: "p", pool: "shame" },
+    serviceUnitBaseCharsMax,
+  );
+  assert.equal(longest, `${tenant}.p.shame.json`);
+  serviceUnitName(`/p/${longest}`);
+  const digest = registerPoolFileName(
+    { tenant: `${tenant}t`, project: "p", pool: "shame" },
+    serviceUnitBaseCharsMax,
+  );
+  assert.match(serviceUnitName(`/p/${digest}`), /^chuggy-linux-pool-/u);
 });

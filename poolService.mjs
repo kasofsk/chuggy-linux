@@ -12,8 +12,11 @@ import { join } from "node:path";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 
-import { controlAsked, controlSocketPath } from "./control.mjs";
-import { poolIdentitySame } from "./poolIdentity.mjs";
+import {
+  controlAsked,
+  controlSocketPath,
+} from "@chuggy/worker-core/control.mjs";
+import { poolIdentitySame } from "@chuggy/worker-core/poolIdentity.mjs";
 import { poolRuntimeDirectory, runtimeDirectory } from "./runner.mjs";
 import {
   legacyServiceUnitName,
@@ -22,7 +25,7 @@ import {
 } from "./systemdUnit.mjs";
 
 /**
- * @typedef {import("./poolIdentity.mjs").PoolIdentity} PoolIdentity
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *
  * @typedef {object} LegacyService
@@ -114,7 +117,7 @@ export async function poolServiceSockets(paths, identity) {
  * it may be another pool's.
  *
  * @param {PoolServiceSockets} sockets
- * @param {import("./control.mjs").ControlRequest} request
+ * @param {import("@chuggy/worker-core/control.mjs").ControlRequest} request
  * @returns {Promise<unknown>}
  */
 export async function poolServiceAsked(sockets, request) {

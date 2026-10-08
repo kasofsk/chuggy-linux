@@ -7,7 +7,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { controlServer } from "./control.mjs";
+import { controlServer } from "@chuggy/worker-core/control.mjs";
 
 /** @type {import("./containerBackend.mjs").InFlightPlacement} */
 export const inFlightFixture = {
