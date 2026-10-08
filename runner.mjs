@@ -17,8 +17,8 @@ import {
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
 
-import { containerBackend } from "./containerBackend.mjs";
-import { containerEngine } from "./engine.mjs";
+import { containerBackend } from "@chuggy/worker-core/containerBackend.mjs";
+import { containerEngine } from "@chuggy/worker-core/engine.mjs";
 import {
   dockerContextArgv,
   dockerInfoArgv,
@@ -26,17 +26,26 @@ import {
   networkInspectArgv,
   podmanRemoteArgv,
   podmanVersionArgv,
-} from "./engineArgv.mjs";
-import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
+} from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  engineFailure,
+  engineFailureLine,
+} from "@chuggy/worker-core/engineErrors.mjs";
 import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
-import { runnerConfig, runnerPaths, runtimeScratch } from "./runnerConfig.mjs";
+import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
+
+import {
+  claudeTokenFileRefusal,
+  runnerConfig,
+  runnerPaths,
+} from "./runnerConfig.mjs";
 import { deniedExitStatus } from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
- * @typedef {import("./containerBackend.mjs").ContainerBackend} ContainerBackend
- * @typedef {import("./engine.mjs").Engine} Engine
+ * @typedef {import("@chuggy/worker-core/containerBackend.mjs").ContainerBackend} ContainerBackend
+ * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
@@ -222,7 +231,6 @@ export async function runnerParts(setup, host) {
       engine: config.engine,
       pool: credentials,
       tokenFile: config.claudeTokenFile,
-      runnerUid: host.uid,
       registryHost: credentials.registryHost,
       dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
@@ -243,6 +251,8 @@ export async function runnerParts(setup, host) {
       nowMs: Date.now,
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
+      tokenFileRefusal: (file) =>
+        claudeTokenFileRefusal(file, config.engine, host.uid),
     },
   );
   const client = poolRunnerClient(

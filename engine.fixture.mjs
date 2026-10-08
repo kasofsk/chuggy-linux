@@ -9,7 +9,7 @@ import { constants } from "node:os";
 import { dirname } from "node:path";
 
 /**
- * @typedef {import("./engine.mjs").EngineAnswer} EngineAnswer
+ * @typedef {import("@chuggy/worker-core/engine.mjs").EngineAnswer} EngineAnswer
  *
  * @typedef {object} FakeContainer
  * @property {string} id
@@ -319,7 +319,7 @@ function answer(state, call) {
 
 export function fakeEngine() {
   const state = fakeEngineState();
-  /** @type {import("./engine.mjs").Engine} */
+  /** @type {import("@chuggy/worker-core/engine.mjs").Engine} */
   const engine = {
     exec: async (argv, engineCall = {}) => {
       /** @type {FakeCall} */

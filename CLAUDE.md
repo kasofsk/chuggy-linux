@@ -6,11 +6,11 @@ A Linux machine's worker pool for chuggy: a background service and a CLI that ru
 
 - **Each gate's own header.** Every script in `.chug/tasks/` opens by stating the rule it enforces, and its sibling `*.test.sh` proves the rule bites. The rule and its enforcement are the same file.
 - **chuggy's review brief**, [`review-change.md`](https://github.com/kasofsk/chuggy/blob/main/.chug/tasks/review-change.md). Its house rules and standing commitments bind here, for the rules no script can decide.
-- **The loop and the wire are not this tree's.** The pool loop, its token source, its plane client, the credentials reader, registration and the control socket are the worker core's, consumed by commit; the contract is chuggy's, locked to a GitHub release asset by URL and integrity. A change here that needs either to be different is a change there first, then a pin or lock bump here.
+- **The loop and the wire are not this tree's.** The pool loop, its token source, its plane client, the credentials reader, registration, the control socket and the container backend with its engine are the worker core's, consumed by commit; the contract is chuggy's, locked to a GitHub release asset by URL and integrity. A change here that needs either to be different is a change there first, then a pin or lock bump here.
 
 ## Layout
 
-Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core and the backend, and registration, a pool's identity, the service answering for a pool, the backend, the engine's argv and its error classes, the configuration, the envelope, the pull credential, the control socket, `doctor`'s checks and the systemd unit each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
+Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core's backend and this machine's policy, and the service answering for a pool, the configuration with the token file's uid rule, `doctor`'s checks and the systemd unit each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
 
 ## Checks
 

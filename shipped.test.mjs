@@ -49,7 +49,7 @@ test("the shipped set is every module the entry reaches, and every module here b
   );
 
   assert.equal(bin["chuggy-linux"], entry);
-  assert.ok(reached.includes("containerBackend.mjs"), reached.join(" "));
+  assert.ok(reached.includes("runner.mjs"), reached.join(" "));
   assert.deepEqual(reached, [...modules].sort());
   assert.deepEqual([...files].sort(), [...modules].sort());
 });

@@ -34,7 +34,7 @@ import { serviceUnit } from "./systemdUnit.mjs";
  * @property {string} [hostname]
  * @property {string} [arch]
  * @property {typeof globalThis.fetch} [fetch]
- * @property {import("./engine.mjs").Engine} [engine]
+ * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  */
 
 /** A token source whose issuer has revoked the pool, so a pass ends without the network. */
