@@ -10,7 +10,7 @@ import { isAbsolute, join } from "node:path";
 
 import { z } from "zod";
 
-import { jobUid, reservedJobVariables } from "./job.mjs";
+import { jobUid, reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
@@ -250,15 +250,4 @@ export async function claudeTokenFileRefusal(file, engine, runnerUid) {
   if (stats.uid !== runnerUid)
     return `the Claude token file ${file} is owned by uid ${String(stats.uid)}, not by this runner's uid ${String(runnerUid)}`;
   return undefined;
-}
-
-/**
- * How a directory this process makes under the runtime directory is named:
- * what it is for, then the process, so a process leaving can find its own.
- *
- * @param {"pull" | "job"} kind
- * @param {number} pid
- */
-export function runtimeScratch(kind, pid = process.pid) {
-  return `${kind}-${String(pid)}-`;
 }

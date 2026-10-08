@@ -10,8 +10,14 @@ import { join } from "node:path";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 
-import { listArgv, networkInspectArgv } from "./engineArgv.mjs";
-import { engineFailure, engineFailureLine } from "./engineErrors.mjs";
+import {
+  listArgv,
+  networkInspectArgv,
+} from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  engineFailure,
+  engineFailureLine,
+} from "@chuggy/worker-core/engineErrors.mjs";
 import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   claudeTokenFileRefusal,
@@ -23,7 +29,7 @@ import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
- * @typedef {import("./engine.mjs").Engine} Engine
+ * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *

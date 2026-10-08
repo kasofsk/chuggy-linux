@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 
 import { controlServer } from "@chuggy/worker-core/control.mjs";
 
-/** @type {import("./containerBackend.mjs").InFlightPlacement} */
+/** @type {import("@chuggy/worker-core/containerBackend.mjs").InFlightPlacement} */
 export const inFlightFixture = {
   assignment: "asg-1",
   kind: "Session",
@@ -29,7 +29,7 @@ export async function controlServed(t, socket, inFlight = [inFlightFixture]) {
   /** @type {string[]} */
   const stopped = [];
   const backend =
-    /** @type {import("./containerBackend.mjs").ContainerBackend} */ (
+    /** @type {import("@chuggy/worker-core/containerBackend.mjs").ContainerBackend} */ (
       /** @type {unknown} */ ({
         inFlight: () => inFlight,
         stop: async (/** @type {string} */ assignment) => {

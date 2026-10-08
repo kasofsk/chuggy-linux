@@ -66,7 +66,7 @@ import {
  * @property {string} hostname
  * @property {string} arch as `process.arch` names it
  * @property {typeof globalThis.fetch} fetch
- * @property {import("./engine.mjs").Engine} [engine] a run's engine, when not the one the runner's file names
+ * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] a run's engine, when not the one the runner's file names
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
  * @property {string} node the Node binary running this
  * @property {string} cli this CLI's entry, as an absolute path
@@ -186,7 +186,7 @@ async function status(call) {
   const { setup, runner, sockets } = await started(call);
   const containers = await runner.backend.containers();
   const answered =
-    /** @type {{inFlight?: import("./containerBackend.mjs").InFlightPlacement[]} | undefined} */ (
+    /** @type {{inFlight?: import("@chuggy/worker-core/containerBackend.mjs").InFlightPlacement[]} | undefined} */ (
       await poolServiceAsked(sockets, { op: "status" })
     );
   call.host.out(

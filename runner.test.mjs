@@ -53,10 +53,10 @@ test("a run the plane denies ends with the status the unit does not restart", as
 test("a job network another run made between the inspection and the creation is present", async () => {
   const { engine, state } = fakeEngine();
   const raced = {
-    .../** @type {import("./engine.mjs").Engine} */ (engine),
+    .../** @type {import("@chuggy/worker-core/engine.mjs").Engine} */ (engine),
     exec: async (
       /** @type {readonly string[]} */ argv,
-      /** @type {import("./engine.mjs").EngineCall | undefined} */ call,
+      /** @type {import("@chuggy/worker-core/engine.mjs").EngineCall | undefined} */ call,
     ) => {
       if (argv[0] === "network" && argv[1] === "create") {
         state.networks.add(argv[2]);
@@ -181,6 +181,36 @@ test("a run is composed from both files, and refuses to start without a runtime 
     runnerParts(bare, { uid: 1000, log: () => undefined, engine }),
     /XDG_RUNTIME_DIR is not set/u,
   );
+});
+
+test("a run's backend refuses an assignment while the token file is not this runner's to hand to a job", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t);
+  const { engine, state } = fakeEngine();
+  const uid = ownUid + 1;
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid, log: () => undefined, engine },
+  );
+  const calls = state.calls.length;
+  const placed = await runner.backend.place(
+    {
+      assignment: "asg-1",
+      capabilities: ["container"],
+      image: "registry.chuggy.example/worker@sha256:" + "a".repeat(64),
+      cpuMillis: 1,
+      memoryMib: 1,
+      deadlineSecs: 60,
+      callbackUrl: "https://chuggy.example/worker",
+      bearer: "attempt-bearer",
+    },
+    "Job",
+  );
+  assert.equal(placed.placed, "Refused");
+  assert.match(
+    placed.evidence ?? "",
+    new RegExp(`not by this runner's uid ${String(uid)}$`, "u"),
+  );
+  assert.equal(state.calls.length, calls);
 });
 
 test("a runner whose file sets sessionsMax to 0 is given no room for a session", async (t) => {
@@ -465,7 +495,7 @@ for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT"]))
         "-e",
         `import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { runtimeScratch } from ${JSON.stringify(import.meta.resolve("./runnerConfig.mjs"))};
+import { runtimeScratch } from ${JSON.stringify(import.meta.resolve("@chuggy/worker-core/runtimeScratch.mjs"))};
 import { scratchRemovedOnSignal } from ${JSON.stringify(import.meta.resolve("./runner.mjs"))};
 const runtime = process.argv[1];
 mkdirSync(join(runtime, runtimeScratch("pull") + "a"));

@@ -9,7 +9,6 @@ import {
   runnerConfig,
   podmanRegistriesConf,
   runnerPaths,
-  runtimeScratch,
 } from "./runnerConfig.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
@@ -214,11 +213,6 @@ test("under docker only a runner that is uid 1000 can hand a job its token file"
     (await claudeTokenFileRefusal(file, "docker", 1000)) ?? "",
     /cannot be found/u,
   );
-});
-
-test("a runtime directory entry names what it is for and the process that made it", () => {
-  assert.equal(runtimeScratch("pull", 4242), "pull-4242-");
-  assert.equal(runtimeScratch("job"), `job-${String(process.pid)}-`);
 });
 
 test("podman's registries.conf is sought wherever a supported podman reads it as this uid, the user's under both config homes", () => {
