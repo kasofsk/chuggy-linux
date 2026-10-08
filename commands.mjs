@@ -11,6 +11,11 @@ import { parseArgs } from "node:util";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
+import {
+  poolRunnerPassLine,
+  poolRunnerPlane,
+  poolRunnerTokens,
+} from "@chuggy/worker-core/poolRunner.mjs";
 
 import { controlAsked, controlServer } from "./control.mjs";
 import { doctorFindings, findingLine } from "./doctor.mjs";
@@ -29,15 +34,12 @@ import {
 } from "./register.mjs";
 import {
   jobNetwork,
-  passLine,
   runnerDirectories,
   runnerEngine,
   runnerLeftoversRemoved,
   runnerLoop,
   runnerParts,
-  runnerPlane,
   runnerSetup,
-  runnerTokens,
   scratchRemovedOnSignal,
 } from "./runner.mjs";
 import {
@@ -161,7 +163,7 @@ async function once(call) {
   const pass = await workerPoolClientPass(runner.client);
   await runner.backend.settled();
   if (pass.passed === "Reconciled") {
-    call.host.out(passLine(pass));
+    call.host.out(poolRunnerPassLine(pass));
     return 0;
   }
   call.host.err(`${pass.passed}: ${pass.evidence}`);
@@ -233,7 +235,11 @@ async function doctor(call) {
       call.host.home,
       call.host.uid,
     ),
-    parts: { engine: runnerEngine, tokens: runnerTokens, plane: runnerPlane },
+    parts: {
+      engine: runnerEngine,
+      tokens: poolRunnerTokens,
+      plane: poolRunnerPlane,
+    },
   });
   for (const finding of findings)
     (finding.passed && finding.warning !== true
