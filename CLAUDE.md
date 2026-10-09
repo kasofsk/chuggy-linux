@@ -17,6 +17,7 @@ Every module sits at the root. `cli.mjs` is the entry and holds nothing but the 
 ```sh
 just check          # every gate and the gates' own suites
 just pack           # the installable tarball
+just release <notes>  # this version's GitHub release, also as the name the install address serves
 ```
 
 A fresh clone needs two things once, and neither can set itself:
