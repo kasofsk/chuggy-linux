@@ -10,13 +10,13 @@ import { runnerFixture } from "./runner.fixture.mjs";
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, registries?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, registries?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own
  */
 async function doctored(t, options = {}) {
-  const { home, environment, poolFile } = await runnerFixture(
-    t,
-    "runner" in options ? { runner: options.runner } : {},
-  );
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    ...("runner" in options ? { runner: options.runner } : {}),
+    pool: options.pool,
+  });
   const { engine, state } = fakeEngine();
   state.securityOptions = options.securityOptions ?? state.securityOptions;
   state.podmanVersion = options.podmanVersion ?? state.podmanVersion;
@@ -55,6 +55,27 @@ async function doctored(t, options = {}) {
   });
   return { findings, state, polls, poolFile, registries };
 }
+
+test("doctor names a personal runner's file as one, by its tenant and member", async (t) => {
+  const { findings, poolFile } = await doctored(t, {
+    pool: {
+      kind: "Personal",
+      tenant: "vteng",
+      owner: "28:https://auth.chuggy.example/0f3c9a52-member",
+      capabilities: ["container"],
+      tokenUrl: "https://issuer.chuggy.example/oauth2/token",
+      audience: "https://chuggy.example",
+      planeUrl: "https://chuggy.example/pool",
+      clientId: "personal-client",
+      clientSecret: "personal-client-secret",
+    },
+  });
+  assert.deepEqual(findings[0], {
+    check: "pool file",
+    passed: true,
+    detail: `${poolFile} names personal runner vteng/28:https:%2F%2Fauth.chuggy.example%2F0f3c9a52-member`,
+  });
+});
 
 test("a machine ready to run passes every check, and doctor changes nothing", async (t) => {
   const { findings, state, polls, poolFile } = await doctored(t);

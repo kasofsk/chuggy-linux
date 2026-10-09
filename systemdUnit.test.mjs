@@ -149,4 +149,21 @@ test("every pool file register names under the unit bound names a unit systemd a
     serviceUnitBaseCharsMax,
   );
   assert.match(serviceUnitName(`/p/${digest}`), /^chuggy-linux-pool-/u);
+  const owner = "28:https://auth.chuggy.example/0f3c9a52-member";
+  const personal = registerPoolFileName(
+    { kind: "Personal", tenant: "vteng", owner },
+    serviceUnitBaseCharsMax,
+  );
+  assert.equal(
+    serviceUnitName(`/p/${personal}`),
+    `chuggy-linux-${personal.slice(0, -".json".length)}.service`,
+  );
+  const personalDigest = registerPoolFileName(
+    { kind: "Personal", tenant, owner },
+    serviceUnitBaseCharsMax,
+  );
+  assert.match(
+    serviceUnitName(`/p/${personalDigest}`),
+    /^chuggy-linux-personal-[0-9a-f]+\.service$/u,
+  );
 });

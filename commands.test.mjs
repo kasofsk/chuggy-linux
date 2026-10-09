@@ -17,7 +17,11 @@ import { cliMain } from "./commands.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
-import { answeringFetch, registeredFixture } from "./register.fixture.mjs";
+import {
+  answeringFetch,
+  registeredFixture,
+  registeredPersonalFixture,
+} from "./register.fixture.mjs";
 import { poolRuntimeDirectory, runtimeDirectory } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import {
@@ -582,6 +586,43 @@ test("register writes the pool file it redeems the token for, prints what to run
   assert.match(again.out, /^replaced /u);
 });
 
+test("register --personal redeems a member's personal token for their runner's file, named for its tenant and member, asking for no pool", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const { fetch, requests } = answeringFetch(201, registeredPersonalFixture);
+  const { status, out, err } = await called([...registerArgv, "--personal"], {
+    home,
+    environment,
+    fetch,
+  });
+  assert.equal(status, 0, err);
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json",
+  );
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; next:`,
+      `  chuggy-linux doctor --pool ${file}`,
+      `  chuggy-linux install-service --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.equal(
+    requests[0].url,
+    "https://chuggy.example/api/v1/personal-runner-registrations",
+  );
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+    token: "registration-token-fixture",
+    capabilities: ["Platform:Linux:Amd64"],
+  });
+  assert.deepEqual(
+    JSON.parse(await readFile(file, "utf8")),
+    registeredPersonalFixture,
+  );
+});
+
 test("register asked wrongly exits 2 before the token is spent", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const { fetch, requests } = answeringFetch(201, registeredFixture);
@@ -597,8 +638,14 @@ test("register asked wrongly exits 2 before the token is spent", async (t) => {
       {},
       /^register needs --api and --token$/u,
     ],
+    [
+      [...registerArgv, "--personal", "--pool", "shame"],
+      {},
+      /^--pool names a pool, and a personal runner is its member's one in the tenant/u,
+    ],
     [[...registerArgv, "extra"], {}, /^usage: chuggy-linux/u],
     [["run", "--pool", "/p", "--token", "t"], {}, /^usage: chuggy-linux/u],
+    [["doctor", "--pool", "/p", "--personal"], {}, /^usage: chuggy-linux/u],
     [
       ["status", "--pool", "/p", "--api", "https://chuggy.example"],
       {},
@@ -721,7 +768,7 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   assert.deepEqual(requests, []);
   assert.match(
     (await called(["help"])).out,
-    /^ {7}chuggy-linux register --api <origin> --token=<token> \[--pool <name>\]$/mu,
+    /^ {7}chuggy-linux register --api <origin> --token=<token> \[--pool <name> \| --personal\]$/mu,
   );
 });
 
@@ -763,6 +810,40 @@ test("registering a pool its service here runs says the service stops until rest
       `  chuggy-linux doctor --pool ${file}`,
       "  systemctl --user restart chuggy-linux-newtenant.arbbot.shame.service",
       "  systemctl --user restart chuggy-linux.service",
+    ].join("\n"),
+  );
+});
+
+test("registering a personal runner its service here runs says so of the runner, and restarts the unit named for its file", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const argv = [...registerArgv, "--personal"];
+  const fetch = answeringFetch(201, registeredPersonalFixture).fetch;
+  const base =
+    "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member";
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    `${base}.json`,
+  );
+  assert.equal((await called(argv, { home, environment, fetch })).status, 0);
+  const service = await called(["install-service", "--pool", file], {
+    home,
+    environment,
+  });
+  assert.equal(service.status, 0, service.err);
+  assert.equal(
+    service.out.split("\n")[0],
+    `wrote ${join(environment.XDG_CONFIG_HOME, "systemd", "user", `chuggy-linux-${base}.service`)}; start it with:`,
+  );
+  const again = await called(argv, { home, environment, fetch });
+  assert.equal(again.status, 0, again.err);
+  assert.equal(
+    again.out,
+    [
+      `replaced ${file}; chuggy denies this personal runner's earlier registration, so its service stops until it is restarted:`,
+      `  chuggy-linux doctor --pool ${file}`,
+      `  systemctl --user restart chuggy-linux-${base}.service`,
     ].join("\n"),
   );
 });
