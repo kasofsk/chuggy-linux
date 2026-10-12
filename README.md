@@ -28,6 +28,16 @@ The pool takes the hostname's first label unless `--pool <name>` names it; a nam
 
 Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. `register` prints the restart for a unit here that serves exactly the file it wrote; a 0.1 unit serving the pool from a file of another name, such as `vteng-chuggy-shame.json`, is handed over by `install-service` instead. Registering another pool adds a file beside the first.
 
+### A personal runner
+
+A member's personal runner runs only that member's work, in the projects they allowlist for it in chuggy. A tenant administrator grants the member the right to register one; the member mints a personal registration token for the tenant through chuggy's API, `POST /api/v1/tenants/:tenant/personal-runner-registration-tokens`, then:
+
+```sh
+chuggy-linux register --api <chuggy's origin> --token=<token> --personal
+```
+
+It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member has one personal runner in a tenant, so registering again, from here or any machine, replaces it as registering a pool again does. Every other command takes its file as it takes a pool's.
+
 ## Configure
 
 **The pool file** is what registering the pool wrote, such as `~/.config/chuggy/pools/vteng.chuggy.shame.json`. Every command but `register` takes it as `--pool <file>`, or from `CHUGGY_LINUX_POOL`. It must be mode 600.

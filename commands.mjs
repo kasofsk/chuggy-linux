@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
+import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import {
   poolRunnerPassLine,
@@ -80,10 +81,12 @@ import {
 export const poolFileVariable = "CHUGGY_LINUX_POOL";
 
 const usage = `usage: chuggy-linux <command> [--pool <file>]
-       chuggy-linux register --api <origin> --token=<token> [--pool <name>]
+       chuggy-linux register --api <origin> --token=<token> [--pool <name> | --personal]
 
   register                redeem a registration token for a pool file, the
-                          pool named for this machine unless --pool names it
+                          pool named for this machine unless --pool names it,
+                          or with --personal a member's personal token for
+                          their personal runner's file
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -292,7 +295,8 @@ async function installService(call) {
 
 /**
  * Redeems a registration token and writes the pool file it answers. It takes
- * no pool file: its `--pool` is the name the pool takes.
+ * no pool file: its `--pool` is the name the pool takes, and `--personal`
+ * redeems a member's personal token, which names no pool.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
@@ -323,7 +327,7 @@ async function register(host, asked) {
   host.out(
     units.length === 0
       ? `${verb} ${file}; next:`
-      : `${verb} ${file}; chuggy denies the pool's earlier registration, so its service stops until it is restarted:`,
+      : `${verb} ${file}; chuggy denies ${poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's"} earlier registration, so its service stops until it is restarted:`,
   );
   host.out(`  chuggy-linux doctor --pool ${shellQuoted(file)}`);
   if (units.length === 0)
@@ -356,6 +360,7 @@ export async function cliMain(argv, host) {
         pool: { type: "string" },
         api: { type: "string" },
         token: { type: "string" },
+        personal: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -378,7 +383,8 @@ export async function cliMain(argv, host) {
     (!registering &&
       (command === undefined ||
         values.api !== undefined ||
-        values.token !== undefined)) ||
+        values.token !== undefined ||
+        values.personal !== undefined)) ||
     (name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);
