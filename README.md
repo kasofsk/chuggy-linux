@@ -12,6 +12,8 @@ npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.6.0/chuggy
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout.
 
+It refuses to run on a Node below 24. A pool's service runs the copy that wrote its unit, under that copy's Node; `chuggy-linux --version` names a copy, and `doctor` warns where the service runs another.
+
 ## Register
 
 Mint a registration token for the pool in chuggy, then:
@@ -28,7 +30,7 @@ The pool takes the hostname's first label unless `--pool <name>` names it; a nam
 
 Once the file is written, `register` starts its service. Where every check `doctor` makes passes, it writes the file's unit as `install-service` does, runs `systemctl --user daemon-reload` and `systemctl --user enable --now` for it, and turns lingering on where that needs no password. The checks take as long as `doctor`'s do. Its first line on stdout says whether the service is running; where it stopped short, it prints why and the commands left. It exits 0 either way, since the token is spent.
 
-Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. Where the file's own unit here serves exactly that file and no 0.1 unit serves the pool, `register` enables and restarts it and turns lingering on. Where a 0.1 unit serves the pool, from any file, such as `vteng-chuggy-shame.json`, it starts nothing and leaves that unit alone: retiring it and starting the pool's own is left to you, with the commands `install-service` prints. Registering another pool adds a file beside the first.
+Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. Where the file's own unit here serves exactly that file and no 0.1 unit serves the pool, `register` writes it again as `install-service` does, then enables and restarts it and turns lingering on. Where a 0.1 unit serves the pool, from any file, such as `vteng-chuggy-shame.json`, it starts nothing and leaves that unit alone: retiring it and starting the pool's own is left to you, with the commands `install-service` prints. Registering another pool adds a file beside the first.
 
 ### A personal runner
 
@@ -105,7 +107,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-It checks both files, the token file, podman's credential helpers, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, whether the pool file's unit runs this copy, the token file, podman's credential helpers, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 
@@ -115,7 +117,7 @@ It checks both files, the token file, podman's credential helpers, the engine, t
 chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again after upgrading Node or moving the install.
+This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again from the new copy after upgrading Node or moving the install; until then `doctor` warns that the service runs another.
 
 chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-linux.service`, and it keeps working after an upgrade. Where it serves the pool being installed, `install-service` prints the commands that stop and remove it before starting the pool's own. A pool's service refuses to start while another service of the pool runs, or while the old unit's service runs a pool file this runner cannot read, which may be the same pool. It cannot see a 0.1 runner started by hand rather than by that unit. Where the old unit serves another pool, it runs on beside the new unit. The containers it started are found by their labels, so `status` and `stop` still see them.
 

@@ -76,7 +76,9 @@ import {
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] the token source a run and doctor reach, when not the pool's issuer
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane] the plane doctor polls, when not the pool's
  * @property {import("./systemd.mjs").Systemd} systemd how `systemctl` and `loginctl` are run
+ * @property {string} version this copy's, as its `package.json` names it
  * @property {string} node the Node binary running this
+ * @property {string} nodeVersion that Node's, as `process.versions.node` says it
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
@@ -89,6 +91,7 @@ export const poolFileVariable = "CHUGGY_LINUX_POOL";
 
 const usage = `usage: chuggy-linux <command> [--pool <file>]
        chuggy-linux register --api <origin> --token=<token> [--pool <name> | --personal]
+       chuggy-linux --version
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
@@ -254,6 +257,8 @@ function doctorFound(host, poolFile) {
     paths: runnerPaths(host.environment, host.home),
     uid: host.uid,
     registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
+    node: host.node,
+    cli: host.cli,
     parts: {
       engine: (config) => host.engine ?? runnerEngine(config),
       tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
@@ -271,13 +276,19 @@ function doctorAside(finding) {
   return !finding.passed || finding.warning === true;
 }
 
-/** @param {CliCall} call */
+/**
+ * Which copy is speaking, under which Node, and then each check.
+ *
+ * @param {CliCall} call
+ */
 async function doctor(call) {
-  const findings = await doctorFound(call.host, call.poolFile);
+  const { host } = call;
+  host.out(
+    `chuggy-linux ${host.version} at ${host.cli}, under Node ${host.nodeVersion} at ${host.node}`,
+  );
+  const findings = await doctorFound(host, call.poolFile);
   for (const finding of findings)
-    (doctorAside(finding) ? call.host.err : call.host.out)(
-      findingLine(finding),
-    );
+    (doctorAside(finding) ? host.err : host.out)(findingLine(finding));
   return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 
@@ -434,25 +445,44 @@ async function registerRan(host, argvs, said, since, why) {
 
 /**
  * Restarts each unit serving the file, since chuggy denies the registration
- * it ran on, after reading the units again and enabling each: a unit may have
- * been written, or rewritten, and never enabled.
+ * it ran on. The file's own unit is written first as install-service writes
+ * it, so what comes back is this copy under this Node, and then the units are
+ * read again and each enabled: a unit may have been written and never
+ * enabled. Where the write fails nothing is restarted, and what is left
+ * begins with install-service.
  *
  * @param {CliHost} host
+ * @param {string} file
  * @param {string} whose
  * @param {readonly string[]} units
  * @returns {Promise<RegisterServed>}
  */
-function registerRestarted(host, whose, units) {
+async function registerRestarted(host, file, whose, units) {
+  const argvs = [
+    serviceReloadArgv,
+    ...units.map(serviceEnableArgv),
+    ...units.map(serviceRestartArgv),
+  ];
+  /** @param {string} what */
+  const since = (what) =>
+    `chuggy denies ${whose} earlier registration and ${what}`;
+  try {
+    await installServiceUnit(host, file);
+  } catch (failure) {
+    return registerUnserved(
+      since("its unit could not be written"),
+      [failureMessage(failure)],
+      [
+        ...registerUnchecked(file).slice(1),
+        ...[...argvs, serviceLingerArgv].map(commandLine),
+      ],
+    );
+  }
   return registerRan(
     host,
-    [
-      serviceReloadArgv,
-      ...units.map(serviceEnableArgv),
-      ...units.map(serviceRestartArgv),
-    ],
+    argvs,
     `its service is running: restarted ${units.join(", ")}`,
-    (argv) =>
-      `chuggy denies ${whose} earlier registration and ${commandLine(argv)} failed`,
+    (argv) => since(`${commandLine(argv)} failed`),
     [],
   );
 }
@@ -504,11 +534,11 @@ async function registerStarted(host, file, written) {
 }
 
 /**
- * The written file's service: restarted where the file's own unit here
- * already serves it, since chuggy denies the registration it ran on, and
- * started otherwise. Where the legacy unit serves this pool, nothing is
- * started, as the start path answers. What fails is said rather than thrown,
- * since the token is spent.
+ * The written file's service: its unit written again and restarted where the
+ * file's own unit here already serves it, since chuggy denies the
+ * registration it ran on, and started otherwise. Where the legacy unit serves
+ * this pool, nothing is started, as the start path answers. What fails is
+ * said rather than thrown, since the token is spent.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisteredPool} pool
@@ -533,6 +563,7 @@ async function registerServed(host, pool, file, written) {
       );
     return await registerRestarted(
       host,
+      file,
       poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's",
       units,
     );
@@ -608,6 +639,7 @@ export async function cliMain(argv, host) {
         token: { type: "string" },
         personal: { type: "boolean" },
         help: { type: "boolean", short: "h" },
+        version: { type: "boolean" },
       },
       allowPositionals: true,
     });
@@ -619,6 +651,10 @@ export async function cliMain(argv, host) {
   const [name, ...positionals] = parsed.positionals;
   if (values.help === true || name === "help") {
     host.out(usage);
+    return 0;
+  }
+  if (values.version === true) {
+    host.out(`chuggy-linux ${host.version}`);
     return 0;
   }
   const registering = name === "register";

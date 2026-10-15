@@ -75,6 +75,14 @@ const ready = {
   },
 };
 
+/** The copy a suite's calls are made of, and the Node they run under. */
+const copyVersion = "9.8.7";
+const copyNode = "/opt/node/bin/node";
+const copyCli = "/opt/chuggy-linux/cli.mjs";
+
+/** What doctor says first, of the copy a suite's calls are made of. */
+const copyLine = `chuggy-linux ${copyVersion} at ${copyCli}, under Node 24.8.0 at ${copyNode}`;
+
 /**
  * @param {readonly string[]} argv
  * @param {Machine} machine
@@ -109,8 +117,10 @@ async function called(argv, machine = {}) {
         ...machine.systemd?.[command.join(" ")],
       };
     },
-    node: "/opt/node/bin/node",
-    cli: "/opt/chuggy-linux/cli.mjs",
+    version: copyVersion,
+    node: copyNode,
+    nodeVersion: "24.8.0",
+    cli: copyCli,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
@@ -157,6 +167,16 @@ test("help is asked for and answered", async () => {
     assert.equal(status, 0);
     assert.match(out, /^usage: chuggy-linux <command>/u);
   }
+});
+
+test("--version names this copy, whatever else is asked, and usage names it", async () => {
+  for (const argv of [["--version"], ["doctor", "--version"]]) {
+    const { status, out, err } = await called(argv);
+    assert.equal(status, 0, argv.join(" "));
+    assert.equal(out, `chuggy-linux ${copyVersion}`);
+    assert.equal(err, "");
+  }
+  assert.match((await called(["help"])).out, /^ {7}chuggy-linux --version$/mu);
 });
 
 test("a call asked wrongly exits 2 with the usage", async () => {
@@ -242,7 +262,11 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   assert.equal(status, 1);
   assert.equal(
     out,
-    `ok    runtime directory: ${join(environment.XDG_RUNTIME_DIR, "chuggy-linux")}`,
+    [
+      copyLine,
+      `ok    service unit: none yet at ${join(environment.XDG_CONFIG_HOME, "systemd", "user", "chuggy-linux-pool.service")}`,
+      `ok    runtime directory: ${join(environment.XDG_RUNTIME_DIR, "chuggy-linux")}`,
+    ].join("\n"),
   );
   assert.match(
     err,
@@ -275,6 +299,54 @@ test("doctor prints a warning with the failures, on stderr and never on stdout, 
   assert.ok(warned[0].includes(named), warned[0]);
   assert.ok(!out.includes("podman credential helpers"), out);
   assert.match(out, /^ok {4}runner configuration: /mu);
+});
+
+test("doctor says first which copy is speaking under which Node, and warns where the pool file's unit runs another, passing still", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t);
+  const units = join(environment.XDG_CONFIG_HOME, "systemd", "user");
+  const unit = join(units, "chuggy-linux-pool.service");
+  await mkdir(units, { recursive: true });
+  await writeFile(
+    unit,
+    serviceUnit({
+      node: "/usr/bin/node",
+      cli: "/usr/lib/node_modules/chuggy-linux/cli.mjs",
+      poolFile,
+    }),
+  );
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    environment,
+    ...ready,
+  });
+  assert.equal(status, 0, err);
+  assert.equal(out.split("\n")[0], copyLine);
+  assert.equal(
+    err,
+    `warn  service unit: ${unit} runs /usr/lib/node_modules/chuggy-linux/cli.mjs under /usr/bin/node, not this copy under this Node; to have it run this one: ${copyNode} ${copyCli} install-service --pool ${poolFile} && systemctl --user daemon-reload && systemctl --user restart chuggy-linux-pool.service`,
+  );
+  assert.equal(
+    (
+      await called(["install-service", "--pool", poolFile], {
+        home,
+        environment,
+      })
+    ).status,
+    0,
+  );
+  const again = await called(["doctor", "--pool", poolFile], {
+    home,
+    environment,
+    ...ready,
+  });
+  assert.equal(again.err, "");
+  assert.match(
+    again.out,
+    new RegExp(
+      `^ok {4}service unit: ${unit} runs this copy under this Node$`,
+      "mu",
+    ),
+  );
 });
 
 test("two pools' files get two units, and installing one leaves the other's alone", async (t) => {
@@ -963,6 +1035,7 @@ test("register refuses, as install-service does, a unit of the file's name servi
     err,
     [
       checking(file),
+      `warn  service unit: ${unit} serves ${elsewhere}, not this pool file`,
       `${unit} serves ${elsewhere}, not ${file}; remove that unit if it is stale, or rename the pool file`,
     ].join("\n"),
   );
@@ -1163,6 +1236,61 @@ test("registering a pool its own unit here serves restarts that unit, and checks
     ...startedSystemd(name).slice(2),
   ]);
 });
+
+test("registering a pool its own unit here serves writes that unit again first, so what is restarted is this copy under this Node", async (t) => {
+  const { file, units, unit, name, registered } = await registering(t);
+  await mkdir(units, { recursive: true });
+  await writeFile(
+    unit,
+    serviceUnit({ node: "/old/node", cli: "/old/cli.mjs", poolFile: file }),
+  );
+  const { status, out, err, systemd } = await registered();
+  assert.equal(status, 0, err);
+  assert.equal(out, `wrote ${file}; its service is running: restarted ${name}`);
+  assert.equal(err, "");
+  assert.equal(
+    await readFile(unit, "utf8"),
+    serviceUnit({ node: copyNode, cli: copyCli, poolFile: file }),
+  );
+  assert.deepEqual(systemd, [
+    ["systemctl", "--user", "daemon-reload"],
+    ["systemctl", "--user", "enable", name],
+    ["systemctl", "--user", "restart", name],
+    ...startedSystemd(name).slice(2),
+  ]);
+});
+
+test(
+  "registering a pool its own unit here serves restarts nothing where that unit cannot be written again, and says why and what is left",
+  { skip: process.getuid?.() === 0 && "root writes a file whatever its mode" },
+  async (t) => {
+    const { file, units, unit, name, registered } = await registering(t);
+    await mkdir(units, { recursive: true });
+    const written = serviceUnit({
+      node: "/old/node",
+      cli: "/old/cli.mjs",
+      poolFile: file,
+    });
+    await writeFile(unit, written);
+    await chmod(unit, 0o444);
+    const { status, out, err, systemd } = await registered();
+    assert.equal(status, 0);
+    assert.equal(
+      out,
+      [
+        `wrote ${file}; its service is not running, since chuggy denies the pool's earlier registration and its unit could not be written; next:`,
+        `  chuggy-linux install-service --pool ${file}`,
+        "  systemctl --user daemon-reload",
+        `  systemctl --user enable ${name}`,
+        `  systemctl --user restart ${name}`,
+        "  loginctl enable-linger",
+      ].join("\n"),
+    );
+    assert.equal(err, `EACCES: permission denied, open '${unit}'`);
+    assert.deepEqual(systemd, []);
+    assert.equal(await readFile(unit, "utf8"), written);
+  },
+);
 
 test("registering again over a unit written and never started reads the units again, enables and restarts it and turns lingering on, and says it is not running where any of those failed", async (t) => {
   const { file, name, registered } = await registering(t);
