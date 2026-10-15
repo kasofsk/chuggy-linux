@@ -65,7 +65,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `claudeTokenFile` | yes      | The file `claude setup-token`'s output was saved to, mode 600. It is mounted into each job, never read.     |
 | `timeoutSecsMax`  | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
 | `outputBytesMax`  | yes      | The most output a job may report.                                                                          |
-| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's to set.   |
+| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's. |
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
