@@ -638,7 +638,7 @@ async function registering(t) {
  * @param {string} file
  */
 const checking = (file) =>
-  `wrote ${file}, spending the token; checking this machine before starting its service`;
+  `wrote ${file}, and the token is spent; checking this machine before starting its service`;
 
 /** What starts a unit no unit here serves, lingering read and turned on. */
 const startedSystemd = (/** @type {string} */ name) => [
@@ -888,6 +888,62 @@ test("where the legacy unit serves the pool, register writes the pool's own unit
   assert.equal(await readFile(legacy, "utf8"), before);
 });
 
+test("registering again where the legacy unit serves the pool, from its own file or this one, restarts nothing and prints what install-service does", async (t) => {
+  const { home, file, units, name, registered } = await registering(t);
+  const legacyFile = await poolFileWritten(
+    join(home, "newtenant-arbbot-shame.json"),
+    registeredFixture,
+  );
+  const legacy = await legacyUnitWritten(units, legacyFile);
+  assert.equal((await registered()).status, 0);
+  const retire = [
+    `replaced ${file}; its service is not running, since chuggy-linux.service serves this pool already; next:`,
+    "  systemctl --user disable --now chuggy-linux.service",
+    `  rm ${legacy}`,
+    "  systemctl --user daemon-reload",
+    `  systemctl --user enable --now ${name}`,
+    "  loginctl enable-linger",
+  ].join("\n");
+  for (const served of [legacyFile, file]) {
+    await legacyUnitWritten(units, served);
+    const { status, out, err, systemd } = await registered();
+    assert.equal(status, 0, err);
+    assert.equal(out, retire);
+    assert.equal(err, "");
+    assert.deepEqual(systemd, []);
+  }
+});
+
+test("where the legacy unit serves exactly the file and the file's own unit is not there, register writes that unit and starts nothing", async (t) => {
+  const { file, units, unit, registered } = await registering(t);
+  await registered({ tokens: deniedTokens });
+  const legacy = await legacyUnitWritten(units, file);
+  const { status, out, err, systemd } = await registered();
+  assert.equal(status, 0, err);
+  assert.equal(
+    out.split("\n").slice(0, 3).join("\n"),
+    [
+      `replaced ${file}; its service is not running, since chuggy-linux.service serves this pool already; next:`,
+      "  systemctl --user disable --now chuggy-linux.service",
+      `  rm ${legacy}`,
+    ].join("\n"),
+  );
+  assert.deepEqual(systemd, []);
+  assert.match(await readFile(unit, "utf8"), /^ExecStart=/mu);
+});
+
+test("registering again restarts the file's own unit beside a legacy unit whose pool file cannot be read, as install-service leaves it", async (t) => {
+  const { home, file, units, name, registered } = await registering(t);
+  assert.equal((await registered()).status, 0);
+  await legacyUnitWritten(units, join(home, "gone.json"));
+  const { status, out } = await registered();
+  assert.equal(status, 0);
+  assert.equal(
+    out,
+    `replaced ${file}; its service is running: restarted ${name}`,
+  );
+});
+
 test("register refuses, as install-service does, a unit of the file's name serving another pool file, and starts nothing", async (t) => {
   const { home, file, units, unit, registered } = await registering(t);
   const elsewhere = join(home, "elsewhere", "newtenant.arbbot.shame.json");
@@ -1080,9 +1136,8 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   );
 });
 
-test("registering a pool a unit here serves restarts each unit serving exactly its file, and checks nothing", async (t) => {
-  const { home, environment, file, units, name, registered } =
-    await registering(t);
+test("registering a pool its own unit here serves restarts that unit, and checks nothing", async (t) => {
+  const { home, environment, file, name, registered } = await registering(t);
   assert.equal(
     (await registered({ tokens: deniedTokens })).out.split("\n")[0],
     `wrote ${file}; its service is not running, since a check failed; next:`,
@@ -1092,22 +1147,19 @@ test("registering a pool a unit here serves restarts each unit serving exactly i
       .status,
     0,
   );
-  await legacyUnitWritten(units, file);
   const { status, out, err, systemd } = await registered({
     tokens: deniedTokens,
   });
   assert.equal(status, 0, err);
   assert.equal(
     out,
-    `replaced ${file}; its service is running: restarted ${name}, chuggy-linux.service`,
+    `replaced ${file}; its service is running: restarted ${name}`,
   );
   assert.equal(err, "");
   assert.deepEqual(systemd, [
     ["systemctl", "--user", "daemon-reload"],
     ["systemctl", "--user", "enable", name],
-    ["systemctl", "--user", "enable", "chuggy-linux.service"],
     ["systemctl", "--user", "restart", name],
-    ["systemctl", "--user", "restart", "chuggy-linux.service"],
     ...startedSystemd(name).slice(2),
   ]);
 });

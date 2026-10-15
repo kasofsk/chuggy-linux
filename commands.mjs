@@ -458,10 +458,11 @@ function registerRestarted(host, whose, units) {
 }
 
 /**
- * Starts the service of a file no unit here serves: doctor's checks, then its
- * unit as install-service writes it, then the user's service manager asked to
- * start it, and lingering on. Where the legacy unit serves this pool, nothing
- * is started, and what install-service prints is what is left.
+ * Starts the service of a file its own unit here does not serve: doctor's
+ * checks, then its unit as install-service writes it, then the user's service
+ * manager asked to start it, and lingering on. Where the legacy unit serves
+ * this pool, nothing is started, and what install-service prints is what is
+ * left.
  *
  * @param {CliHost} host
  * @param {string} file
@@ -470,7 +471,7 @@ function registerRestarted(host, whose, units) {
  */
 async function registerStarted(host, file, written) {
   host.err(
-    `${written}, spending the token; checking this machine before starting its service`,
+    `${written}, and the token is spent; checking this machine before starting its service`,
   );
   const findings = await doctorFound(host, file);
   const why = findings.filter(doctorAside).map(findingLine);
@@ -503,9 +504,11 @@ async function registerStarted(host, file, written) {
 }
 
 /**
- * The written file's service: restarted where a unit here already serves the
- * file, since chuggy denies the registration it ran on, and started
- * otherwise. What fails is said rather than thrown, since the token is spent.
+ * The written file's service: restarted where the file's own unit here
+ * already serves it, since chuggy denies the registration it ran on, and
+ * started otherwise. Where the legacy unit serves this pool, nothing is
+ * started, as the start path answers. What fails is said rather than thrown,
+ * since the token is spent.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisteredPool} pool
@@ -515,12 +518,19 @@ async function registerStarted(host, file, written) {
  */
 async function registerServed(host, pool, file, written) {
   try {
-    await poolCredentials(file);
-    const units = await poolFileServiceUnits(
-      runnerPaths(host.environment, host.home),
-      file,
-    );
-    if (units.length === 0) return await registerStarted(host, file, written);
+    const credentials = await poolCredentials(file);
+    const paths = runnerPaths(host.environment, host.home);
+    const name = serviceUnitName(file);
+    const units = await poolFileServiceUnits(paths, file);
+    if (!units.includes(name))
+      return await registerStarted(host, file, written);
+    const legacy = await legacyService(paths, credentials);
+    if (legacy?.serves === "ThisPool")
+      return registerUnserved(
+        `${legacyServiceUnitName} serves this pool already`,
+        [],
+        serviceCommands(name, legacy.unit),
+      );
     return await registerRestarted(
       host,
       poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's",
