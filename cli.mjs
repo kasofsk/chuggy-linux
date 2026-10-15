@@ -3,6 +3,7 @@ import { homedir, hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { cliMain } from "./commands.mjs";
+import { systemdCalled } from "./systemd.mjs";
 
 // An exit rather than an exit code: a run that failed can leave placements in
 // flight, which would otherwise hold the process open until they finish.
@@ -16,6 +17,7 @@ process.exit(
     fetch: globalThis.fetch,
     node: process.execPath,
     cli: fileURLToPath(import.meta.url),
+    systemd: systemdCalled,
     out: (line) => process.stdout.write(`${line}\n`),
     err: (line) => process.stderr.write(`${line}\n`),
   }),

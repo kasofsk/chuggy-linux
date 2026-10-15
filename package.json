@@ -37,6 +37,7 @@
     "poolService.mjs",
     "runner.mjs",
     "runnerConfig.mjs",
+    "systemd.mjs",
     "systemdUnit.mjs"
   ]
 }

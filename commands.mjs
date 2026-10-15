@@ -49,13 +49,18 @@ import {
   runnerPaths,
 } from "./runnerConfig.mjs";
 import {
+  commandLine,
   deniedExitStatus,
   legacyServiceUnitName,
   serviceCommands,
+  serviceLingerArgv,
+  serviceEnableArgv,
+  serviceReloadArgv,
+  serviceRestartArgv,
+  serviceStartArgvs,
   serviceUnit,
   serviceUnitBaseCharsMax,
   serviceUnitName,
-  shellQuoted,
   unitPoolFile,
 } from "./systemdUnit.mjs";
 
@@ -67,8 +72,10 @@ import {
  * @property {string} hostname
  * @property {string} arch as `process.arch` names it
  * @property {typeof globalThis.fetch} fetch
- * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] a run's engine, when not the one the runner's file names
- * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
+ * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run and doctor reach, when not the one the runner's file names
+ * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] the token source a run and doctor reach, when not the pool's issuer
+ * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane] the plane doctor polls, when not the pool's
+ * @property {import("./systemd.mjs").Systemd} systemd how `systemctl` and `loginctl` are run
  * @property {string} node the Node binary running this
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
@@ -86,7 +93,8 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
-                          their personal runner's file
+                          their personal runner's file, and start its service
+                          where it can
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -228,61 +236,93 @@ async function stop(call) {
   return 1;
 }
 
-/** @param {CliCall} call */
-async function doctor(call) {
-  const findings = await doctorFindings({
-    poolFile: call.poolFile,
-    paths: runnerPaths(call.host.environment, call.host.home),
-    uid: call.host.uid,
-    registriesConf: podmanRegistriesConf(
-      call.host.environment,
-      call.host.home,
-      call.host.uid,
-    ),
+/** @param {unknown} failure */
+function failureMessage(failure) {
+  return failure instanceof Error ? failure.message : String(failure);
+}
+
+/**
+ * doctor's findings for a pool file, reaching the engine, issuer and plane
+ * the host names, or else those the files do.
+ *
+ * @param {CliHost} host
+ * @param {string} poolFile
+ */
+function doctorFound(host, poolFile) {
+  return doctorFindings({
+    poolFile,
+    paths: runnerPaths(host.environment, host.home),
+    uid: host.uid,
+    registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
     parts: {
-      engine: runnerEngine,
-      tokens: poolRunnerTokens,
-      plane: poolRunnerPlane,
+      engine: (config) => host.engine ?? runnerEngine(config),
+      tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
+      plane: (credentials) => host.plane ?? poolRunnerPlane(credentials),
     },
   });
+}
+
+/**
+ * Whether a finding is one to read: a failure, or a pass with a warning.
+ *
+ * @param {import("./doctor.mjs").DoctorFinding} finding
+ */
+function doctorAside(finding) {
+  return !finding.passed || finding.warning === true;
+}
+
+/** @param {CliCall} call */
+async function doctor(call) {
+  const findings = await doctorFound(call.host, call.poolFile);
   for (const finding of findings)
-    (finding.passed && finding.warning !== true
-      ? call.host.out
-      : call.host.err)(findingLine(finding));
+    (doctorAside(finding) ? call.host.err : call.host.out)(
+      findingLine(finding),
+    );
   return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 
 /**
  * Writes the pool file's own unit, refusing one of its name that serves
- * another file. Where the legacy unit serves this pool, the operator is told
- * to retire it before starting this one; one serving another pool is left to
- * run beside it.
+ * another file, and answers the unit's file and name, and the legacy unit's
+ * file where that unit serves this pool.
  *
- * @param {CliCall} call
+ * @param {CliHost} host
+ * @param {string} poolFile
  */
-async function installService(call) {
-  const credentials = await poolCredentials(call.poolFile);
-  const paths = runnerPaths(call.host.environment, call.host.home);
-  const name = serviceUnitName(call.poolFile);
+async function installServiceUnit(host, poolFile) {
+  const credentials = await poolCredentials(poolFile);
+  const paths = runnerPaths(host.environment, host.home);
+  const name = serviceUnitName(poolFile);
   const unit = join(paths.units, name);
   const existing = await serviceUnitText(unit);
   const served = existing === undefined ? undefined : unitPoolFile(existing);
-  if (existing !== undefined && served !== call.poolFile)
+  if (existing !== undefined && served !== poolFile)
     throw new Error(
-      `${unit} serves ${served ?? "no pool file this runner named"}, not ${call.poolFile}; remove that unit if it is stale, or rename the pool file`,
+      `${unit} serves ${served ?? "no pool file this runner named"}, not ${poolFile}; remove that unit if it is stale, or rename the pool file`,
     );
   await mkdir(paths.units, { recursive: true });
   await writeFile(
     unit,
-    serviceUnit({
-      node: call.host.node,
-      cli: call.host.cli,
-      poolFile: call.poolFile,
-    }),
+    serviceUnit({ node: host.node, cli: host.cli, poolFile }),
   );
   const legacyFound = await legacyService(paths, credentials);
   const legacy =
     legacyFound?.serves === "ThisPool" ? legacyFound.unit : undefined;
+  return { unit, name, legacy };
+}
+
+/**
+ * Writes the pool file's own unit and prints how to start it. Where the
+ * legacy unit serves this pool, the operator is told to retire it before
+ * starting this one; one serving another pool is left to run beside it.
+ *
+ * @param {CliCall} call
+ */
+async function installService(call) {
+  const { unit, name, legacy } = await installServiceUnit(
+    call.host,
+    call.poolFile,
+  );
   call.host.out(
     legacy === undefined
       ? `wrote ${unit}; start it with:`
@@ -294,9 +334,223 @@ async function installService(call) {
 }
 
 /**
- * Redeems a registration token and writes the pool file it answers. It takes
- * no pool file: its `--pool` is the name the pool takes, and `--personal`
- * redeems a member's personal token, which names no pool.
+ * @typedef {object} RegisterServed what became of the written file's service
+ * @property {string} said what the first line says of the service
+ * @property {readonly string[]} why what failed, and what a check warned of
+ * @property {string} [then] what the commands left are for, where `said` does not say
+ * @property {readonly string[]} left the commands left to the operator, from the first not done
+ */
+
+/**
+ * @param {string} since
+ * @param {readonly string[]} why
+ * @param {readonly string[]} left
+ * @returns {RegisterServed}
+ */
+function registerUnserved(since, why, left) {
+  return {
+    said: `its service is not running, since ${since}; next:`,
+    why,
+    left,
+  };
+}
+
+/**
+ * What is left of a file's service from doctor's checks on: the checks, then
+ * the unit install-service writes, which prints what starts it.
+ *
+ * @param {string} file
+ */
+function registerUnchecked(file) {
+  return ["doctor", "install-service"].map((command) =>
+    commandLine(["chuggy-linux", command, "--pool", file]),
+  );
+}
+
+/**
+ * A failed command and the first line it printed on stderr, or its exit
+ * status where it printed none.
+ *
+ * @param {readonly string[]} argv
+ * @param {import("./systemd.mjs").SystemdAnswer} answer
+ */
+function registerFailureLine(argv, answer) {
+  const [said] = answer.stderr.trim().split("\n");
+  return `${commandLine(argv)}: ${said === "" ? `exited ${String(answer.code)}` : said}`;
+}
+
+/**
+ * Turns lingering on where it is not on, with no leave to ask anyone for a
+ * password, and answers why it is not on where it could not be.
+ *
+ * @param {CliHost} host
+ * @returns {Promise<string | undefined>}
+ */
+async function registerLingered(host) {
+  const user = String(host.uid);
+  const read = await host.systemd([
+    "loginctl",
+    "show-user",
+    user,
+    "--property",
+    "Linger",
+  ]);
+  if (read.code === 0 && /^Linger=yes$/mu.test(read.stdout)) return undefined;
+  const argv = ["loginctl", "--no-ask-password", "enable-linger", user];
+  const answer = await host.systemd(argv);
+  return answer.code === 0 ? undefined : registerFailureLine(argv, answer);
+}
+
+/**
+ * Runs each command in turn, then turns lingering on. Where a command fails,
+ * the service is not running, and what is left is that command on.
+ *
+ * @param {CliHost} host
+ * @param {readonly (readonly string[])[]} argvs
+ * @param {string} said what the first line says once every command ran
+ * @param {(argv: readonly string[]) => string} since why the service is not running where `argv` failed
+ * @param {readonly string[]} why what a check warned of
+ * @returns {Promise<RegisterServed>}
+ */
+async function registerRan(host, argvs, said, since, why) {
+  for (const [index, argv] of argvs.entries()) {
+    const answer = await host.systemd(argv);
+    if (answer.code !== 0)
+      return registerUnserved(
+        since(argv),
+        [...why, registerFailureLine(argv, answer)],
+        [...argvs.slice(index), serviceLingerArgv].map(commandLine),
+      );
+  }
+  const lingered = await registerLingered(host);
+  if (lingered === undefined) return { said, why, left: [] };
+  return {
+    said,
+    why: [...why, lingered],
+    then: "it runs only while you are logged in, until you run:",
+    left: [commandLine(serviceLingerArgv)],
+  };
+}
+
+/**
+ * Restarts each unit serving the file, since chuggy denies the registration
+ * it ran on, after reading the units again and enabling each: a unit may have
+ * been written, or rewritten, and never enabled.
+ *
+ * @param {CliHost} host
+ * @param {string} whose
+ * @param {readonly string[]} units
+ * @returns {Promise<RegisterServed>}
+ */
+function registerRestarted(host, whose, units) {
+  return registerRan(
+    host,
+    [
+      serviceReloadArgv,
+      ...units.map(serviceEnableArgv),
+      ...units.map(serviceRestartArgv),
+    ],
+    `its service is running: restarted ${units.join(", ")}`,
+    (argv) =>
+      `chuggy denies ${whose} earlier registration and ${commandLine(argv)} failed`,
+    [],
+  );
+}
+
+/**
+ * Starts the service of a file its own unit here does not serve: doctor's
+ * checks, then its unit as install-service writes it, then the user's service
+ * manager asked to start it, and lingering on. Where the legacy unit serves
+ * this pool, nothing is started, and what install-service prints is what is
+ * left.
+ *
+ * @param {CliHost} host
+ * @param {string} file
+ * @param {string} written what register says it did with the file
+ * @returns {Promise<RegisterServed>}
+ */
+async function registerStarted(host, file, written) {
+  host.err(
+    `${written}, and the token is spent; checking this machine before starting its service`,
+  );
+  const findings = await doctorFound(host, file);
+  const why = findings.filter(doctorAside).map(findingLine);
+  if (!findings.every((finding) => finding.passed))
+    return registerUnserved("a check failed", why, registerUnchecked(file));
+  let installed;
+  try {
+    installed = await installServiceUnit(host, file);
+  } catch (failure) {
+    return registerUnserved(
+      "its unit could not be written",
+      [...why, failureMessage(failure)],
+      registerUnchecked(file).slice(1),
+    );
+  }
+  const { name, legacy } = installed;
+  if (legacy !== undefined)
+    return registerUnserved(
+      `${legacyServiceUnitName} serves this pool already`,
+      why,
+      serviceCommands(name, legacy),
+    );
+  return registerRan(
+    host,
+    serviceStartArgvs(name),
+    `its service is running: started ${name}`,
+    (argv) => `${commandLine(argv)} failed`,
+    why,
+  );
+}
+
+/**
+ * The written file's service: restarted where the file's own unit here
+ * already serves it, since chuggy denies the registration it ran on, and
+ * started otherwise. Where the legacy unit serves this pool, nothing is
+ * started, as the start path answers. What fails is said rather than thrown,
+ * since the token is spent.
+ *
+ * @param {CliHost} host
+ * @param {import("@chuggy/worker-core/register.mjs").RegisteredPool} pool
+ * @param {string} file
+ * @param {string} written what register says it did with the file
+ * @returns {Promise<RegisterServed>}
+ */
+async function registerServed(host, pool, file, written) {
+  try {
+    const credentials = await poolCredentials(file);
+    const paths = runnerPaths(host.environment, host.home);
+    const name = serviceUnitName(file);
+    const units = await poolFileServiceUnits(paths, file);
+    if (!units.includes(name))
+      return await registerStarted(host, file, written);
+    const legacy = await legacyService(paths, credentials);
+    if (legacy?.serves === "ThisPool")
+      return registerUnserved(
+        `${legacyServiceUnitName} serves this pool already`,
+        [],
+        serviceCommands(name, legacy.unit),
+      );
+    return await registerRestarted(
+      host,
+      poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's",
+      units,
+    );
+  } catch (failure) {
+    return registerUnserved(
+      "it could not be started",
+      [failureMessage(failure)],
+      registerUnchecked(file),
+    );
+  }
+}
+
+/**
+ * Redeems a registration token, writes the pool file it answers, and leaves
+ * the file's service running where it can. It takes no pool file: its
+ * `--pool` is the name the pool takes, and `--personal` redeems a member's
+ * personal token, which names no pool. Once the file is written it exits 0
+ * whatever became of the service, since a rerun would spend another token.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
@@ -307,8 +561,7 @@ async function register(host, asked) {
     host.err(requested.refused);
     return 2;
   }
-  const paths = runnerPaths(host.environment, host.home);
-  const { pools } = paths;
+  const { pools } = runnerPaths(host.environment, host.home);
   await registerPoolDirectory(pools);
   const pool = await registerRedeemed(requested.request, host.fetch);
   const { file, replaced } = await registerPoolFileWritten(
@@ -317,23 +570,16 @@ async function register(host, asked) {
     serviceUnitBaseCharsMax,
   ).catch((/** @type {unknown} */ failure) => {
     throw new Error(
-      `the pool file could not be written, and the token is spent, so mint another: ${failure instanceof Error ? failure.message : String(failure)}`,
+      `the pool file could not be written, and the token is spent, so mint another: ${failureMessage(failure)}`,
       { cause: failure },
     );
   });
-  await poolCredentials(file);
-  const verb = replaced ? "replaced" : "wrote";
-  const units = await poolFileServiceUnits(paths, file);
-  host.out(
-    units.length === 0
-      ? `${verb} ${file}; next:`
-      : `${verb} ${file}; chuggy denies ${poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's"} earlier registration, so its service stops until it is restarted:`,
-  );
-  host.out(`  chuggy-linux doctor --pool ${shellQuoted(file)}`);
-  if (units.length === 0)
-    host.out(`  chuggy-linux install-service --pool ${shellQuoted(file)}`);
-  for (const unit of units)
-    host.out(`  systemctl --user restart ${shellQuoted(unit)}`);
+  const written = `${replaced ? "replaced" : "wrote"} ${file}`;
+  const served = await registerServed(host, pool, file, written);
+  host.out(`${written}; ${served.said}`);
+  for (const line of served.why) host.err(line);
+  if (served.then !== undefined) host.out(served.then);
+  for (const command of served.left) host.out(`  ${command}`);
   return 0;
 }
 
@@ -405,7 +651,7 @@ export async function cliMain(argv, host) {
       positionals,
     });
   } catch (failure) {
-    host.err(failure instanceof Error ? failure.message : String(failure));
+    host.err(failureMessage(failure));
     return 1;
   }
 }

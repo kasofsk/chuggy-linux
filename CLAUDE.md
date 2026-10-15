@@ -10,7 +10,7 @@ A Linux machine's worker pool for chuggy: a background service and a CLI that ru
 
 ## Layout
 
-Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core's backend and this machine's policy, and the service answering for a pool, the configuration with the token file's uid rule, `doctor`'s checks and the systemd unit each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
+Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core's backend and this machine's policy, and the service answering for a pool, the configuration with the token file's uid rule, `doctor`'s checks, the systemd unit and systemd's own commands each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
 
 ## Checks
 
@@ -26,7 +26,7 @@ npm ci              # the pinned core, the locked contract release and the toolc
 just hooks          # git config core.hooksPath .githooks
 ```
 
-A gate exits 0 clean, 1 on a finding, **2 when it could not run** — and 2 is not a pass. `check-source` runs the suites only when `check-contract` finds the locked release installed; an `npm link` to a local chuggy is a could-not-run, never a green run. The hook runs the gates without the shell suites; `--no-verify` bypasses every gate at once. No suite needs a container engine, the network or the rig: the engine is a seam, and every call it would make is asserted as argv.
+A gate exits 0 clean, 1 on a finding, **2 when it could not run** — and 2 is not a pass. `check-source` runs the suites only when `check-contract` finds the locked release installed; an `npm link` to a local chuggy is a could-not-run, never a green run. The hook runs the gates without the shell suites; `--no-verify` bypasses every gate at once. No suite needs a container engine, a systemd user session, the network or the rig: the engine and systemd are seams, and every call either would make is asserted as argv.
 
 ## Conventions that bite if you miss them
 
