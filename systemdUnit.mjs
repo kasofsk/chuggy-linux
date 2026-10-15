@@ -130,6 +130,9 @@ export function commandLine(argv) {
   return argv.map(shellQuoted).join(" ");
 }
 
+/** What reads the user's units again, once one is written. */
+export const serviceReloadArgv = ["systemctl", "--user", "daemon-reload"];
+
 /**
  * What starts a unit once it is written: the user's units read again, then
  * the unit enabled and started.
@@ -138,9 +141,14 @@ export function commandLine(argv) {
  */
 export function serviceStartArgvs(unitName) {
   return [
-    ["systemctl", "--user", "daemon-reload"],
+    serviceReloadArgv,
     ["systemctl", "--user", "enable", "--now", unitName],
   ];
+}
+
+/** @param {string} unitName */
+export function serviceEnableArgv(unitName) {
+  return ["systemctl", "--user", "enable", unitName];
 }
 
 /** @param {string} unitName */

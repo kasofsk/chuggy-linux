@@ -54,6 +54,8 @@ import {
   legacyServiceUnitName,
   serviceCommands,
   serviceLingerArgv,
+  serviceEnableArgv,
+  serviceReloadArgv,
   serviceRestartArgv,
   serviceStartArgvs,
   serviceUnit,
@@ -378,33 +380,6 @@ function registerFailureLine(argv, answer) {
 }
 
 /**
- * Restarts each unit serving the file, since chuggy denies the registration
- * it ran on.
- *
- * @param {CliHost} host
- * @param {string} whose
- * @param {readonly string[]} units
- * @returns {Promise<RegisterServed>}
- */
-async function registerRestarted(host, whose, units) {
-  for (const [index, unit] of units.entries()) {
-    const argv = serviceRestartArgv(unit);
-    const answer = await host.systemd(argv);
-    if (answer.code !== 0)
-      return registerUnserved(
-        `chuggy denies ${whose} earlier registration and restarting it failed`,
-        [registerFailureLine(argv, answer)],
-        units.slice(index).map((left) => commandLine(serviceRestartArgv(left))),
-      );
-  }
-  return {
-    said: `its service is running: restarted ${units.join(", ")}`,
-    why: [],
-    left: [],
-  };
-}
-
-/**
  * Turns lingering on where it is not on, with no leave to ask anyone for a
  * password, and answers why it is not on where it could not be.
  *
@@ -427,6 +402,62 @@ async function registerLingered(host) {
 }
 
 /**
+ * Runs each command in turn, then turns lingering on. Where a command fails,
+ * the service is not running, and what is left is that command on.
+ *
+ * @param {CliHost} host
+ * @param {readonly (readonly string[])[]} argvs
+ * @param {string} said what the first line says once every command ran
+ * @param {(argv: readonly string[]) => string} since why the service is not running where `argv` failed
+ * @param {readonly string[]} why what a check warned of
+ * @returns {Promise<RegisterServed>}
+ */
+async function registerRan(host, argvs, said, since, why) {
+  for (const [index, argv] of argvs.entries()) {
+    const answer = await host.systemd(argv);
+    if (answer.code !== 0)
+      return registerUnserved(
+        since(argv),
+        [...why, registerFailureLine(argv, answer)],
+        [...argvs.slice(index), serviceLingerArgv].map(commandLine),
+      );
+  }
+  const lingered = await registerLingered(host);
+  if (lingered === undefined) return { said, why, left: [] };
+  return {
+    said,
+    why: [...why, lingered],
+    then: "it runs only while you are logged in, until you run:",
+    left: [commandLine(serviceLingerArgv)],
+  };
+}
+
+/**
+ * Restarts each unit serving the file, since chuggy denies the registration
+ * it ran on, after reading the units again and enabling each: a unit may have
+ * been written, or rewritten, and never enabled.
+ *
+ * @param {CliHost} host
+ * @param {string} whose
+ * @param {readonly string[]} units
+ * @returns {Promise<RegisterServed>}
+ */
+function registerRestarted(host, whose, units) {
+  return registerRan(
+    host,
+    [
+      serviceReloadArgv,
+      ...units.map(serviceEnableArgv),
+      ...units.map(serviceRestartArgv),
+    ],
+    `its service is running: restarted ${units.join(", ")}`,
+    (argv) =>
+      `chuggy denies ${whose} earlier registration and ${commandLine(argv)} failed`,
+    [],
+  );
+}
+
+/**
  * Starts the service of a file no unit here serves: doctor's checks, then its
  * unit as install-service writes it, then the user's service manager asked to
  * start it, and lingering on. Where the legacy unit serves this pool, nothing
@@ -434,9 +465,13 @@ async function registerLingered(host) {
  *
  * @param {CliHost} host
  * @param {string} file
+ * @param {string} written what register says it did with the file
  * @returns {Promise<RegisterServed>}
  */
-async function registerStarted(host, file) {
+async function registerStarted(host, file, written) {
+  host.err(
+    `${written}, spending the token; checking this machine before starting its service`,
+  );
   const findings = await doctorFound(host, file);
   const why = findings.filter(doctorAside).map(findingLine);
   if (!findings.every((finding) => finding.passed))
@@ -458,24 +493,13 @@ async function registerStarted(host, file) {
       why,
       serviceCommands(name, legacy),
     );
-  for (const [index, argv] of serviceStartArgvs(name).entries()) {
-    const answer = await host.systemd(argv);
-    if (answer.code !== 0)
-      return registerUnserved(
-        `${commandLine(argv)} failed`,
-        [...why, registerFailureLine(argv, answer)],
-        serviceCommands(name).slice(index),
-      );
-  }
-  const lingered = await registerLingered(host);
-  const said = `its service is running: started ${name}`;
-  if (lingered === undefined) return { said, why, left: [] };
-  return {
-    said,
-    why: [...why, lingered],
-    then: "it runs only while you are logged in, until you run:",
-    left: [commandLine(serviceLingerArgv)],
-  };
+  return registerRan(
+    host,
+    serviceStartArgvs(name),
+    `its service is running: started ${name}`,
+    (argv) => `${commandLine(argv)} failed`,
+    why,
+  );
 }
 
 /**
@@ -486,16 +510,17 @@ async function registerStarted(host, file) {
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisteredPool} pool
  * @param {string} file
+ * @param {string} written what register says it did with the file
  * @returns {Promise<RegisterServed>}
  */
-async function registerServed(host, pool, file) {
+async function registerServed(host, pool, file, written) {
   try {
     await poolCredentials(file);
     const units = await poolFileServiceUnits(
       runnerPaths(host.environment, host.home),
       file,
     );
-    if (units.length === 0) return await registerStarted(host, file);
+    if (units.length === 0) return await registerStarted(host, file, written);
     return await registerRestarted(
       host,
       poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's",
@@ -539,8 +564,9 @@ async function register(host, asked) {
       { cause: failure },
     );
   });
-  const served = await registerServed(host, pool, file);
-  host.out(`${replaced ? "replaced" : "wrote"} ${file}; ${served.said}`);
+  const written = `${replaced ? "replaced" : "wrote"} ${file}`;
+  const served = await registerServed(host, pool, file, written);
+  host.out(`${written}; ${served.said}`);
   for (const line of served.why) host.err(line);
   if (served.then !== undefined) host.out(served.then);
   for (const command of served.left) host.out(`  ${command}`);

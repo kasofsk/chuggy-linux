@@ -631,6 +631,15 @@ async function registering(t) {
   };
 }
 
+/**
+ * What register says on stderr before doctor's checks, on a machine where it
+ * wrote the file.
+ *
+ * @param {string} file
+ */
+const checking = (file) =>
+  `wrote ${file}, spending the token; checking this machine before starting its service`;
+
 /** What starts a unit no unit here serves, lingering read and turned on. */
 const startedSystemd = (/** @type {string} */ name) => [
   ["systemctl", "--user", "daemon-reload"],
@@ -651,7 +660,7 @@ test("register writes the pool file it redeems the token for, and where every ch
   });
   assert.equal(status, 0, err);
   assert.equal(out, `wrote ${file}; its service is running: started ${name}`);
-  assert.equal(err, "");
+  assert.equal(err, checking(file));
   assert.deepEqual(systemd, startedSystemd(name));
   assert.match(
     await readFile(unit, "utf8"),
@@ -728,7 +737,7 @@ test("register prints a warning a check gave, and starts the service still", asy
   });
   assert.equal(status, 0);
   assert.match(out, /^wrote .*; its service is running: started /u);
-  assert.match(err, /^warn {2}podman credential helpers: .*registries\.conf/u);
+  assert.match(err, /^warn {2}podman credential helpers: .*registries\.conf/mu);
   assert.ok(err.includes(registries), err);
 });
 
@@ -746,7 +755,10 @@ test("register starts nothing where a check fails, and prints the failed check a
       `  chuggy-linux install-service --pool ${file}`,
     ].join("\n"),
   );
-  assert.equal(err, "FAIL  pool token: the pool was revoked");
+  assert.equal(
+    err,
+    [checking(file), "FAIL  pool token: the pool was revoked"].join("\n"),
+  );
   assert.deepEqual(systemd, []);
   await assert.rejects(stat(units), { code: "ENOENT" });
 });
@@ -773,7 +785,10 @@ test("register stops where the user's service manager cannot be reached, or fail
   );
   assert.equal(
     unreached.err,
-    "systemctl --user daemon-reload: Failed to connect to bus: No medium found",
+    [
+      checking(reloading.file),
+      "systemctl --user daemon-reload: Failed to connect to bus: No medium found",
+    ].join("\n"),
   );
   assert.deepEqual(unreached.systemd, [
     ["systemctl", "--user", "daemon-reload"],
@@ -797,7 +812,10 @@ test("register stops where the user's service manager cannot be reached, or fail
   );
   assert.equal(
     unstarted.err,
-    `systemctl --user enable --now ${starting.name}: exited 1`,
+    [
+      checking(starting.file),
+      `systemctl --user enable --now ${starting.name}: exited 1`,
+    ].join("\n"),
   );
 });
 
@@ -836,7 +854,10 @@ test("register leaves lingering on where it is on, and where it cannot turn it o
   );
   assert.equal(
     refused.err,
-    "loginctl --no-ask-password enable-linger 1000: Could not enable linger: Interactive authentication required.",
+    [
+      checking(refusing.file),
+      "loginctl --no-ask-password enable-linger 1000: Could not enable linger: Interactive authentication required.",
+    ].join("\n"),
   );
   assert.deepEqual(refused.systemd, startedSystemd(refusing.name));
 });
@@ -884,7 +905,10 @@ test("register refuses, as install-service does, a unit of the file's name servi
   );
   assert.equal(
     err,
-    `${unit} serves ${elsewhere}, not ${file}; remove that unit if it is stale, or rename the pool file`,
+    [
+      checking(file),
+      `${unit} serves ${elsewhere}, not ${file}; remove that unit if it is stale, or rename the pool file`,
+    ].join("\n"),
   );
   assert.deepEqual(systemd, []);
   assert.equal(await readFile(unit, "utf8"), written);
@@ -1079,9 +1103,59 @@ test("registering a pool a unit here serves restarts each unit serving exactly i
   );
   assert.equal(err, "");
   assert.deepEqual(systemd, [
+    ["systemctl", "--user", "daemon-reload"],
+    ["systemctl", "--user", "enable", name],
+    ["systemctl", "--user", "enable", "chuggy-linux.service"],
     ["systemctl", "--user", "restart", name],
     ["systemctl", "--user", "restart", "chuggy-linux.service"],
+    ...startedSystemd(name).slice(2),
   ]);
+});
+
+test("registering again over a unit written and never started reads the units again, enables and restarts it and turns lingering on, and says it is not running where any of those failed", async (t) => {
+  const { file, name, registered } = await registering(t);
+  const first = await registered({
+    systemd: {
+      "systemctl --user daemon-reload": {
+        code: 1,
+        stderr: "Failed to connect to bus: No medium found\n",
+      },
+    },
+  });
+  assert.match(
+    first.out,
+    /since systemctl --user daemon-reload failed; next:$/mu,
+  );
+  const steps = [
+    ["systemctl", "--user", "daemon-reload"],
+    ["systemctl", "--user", "enable", name],
+    ["systemctl", "--user", "restart", name],
+  ];
+  for (const [index, failing] of steps.entries()) {
+    const failed = await registered({
+      systemd: { [failing.join(" ")]: { code: 1, stderr: "Failed\n" } },
+    });
+    assert.equal(failed.status, 0);
+    assert.equal(
+      failed.out,
+      [
+        `replaced ${file}; its service is not running, since chuggy denies the pool's earlier registration and ${failing.join(" ")} failed; next:`,
+        ...[...steps.slice(index), ["loginctl", "enable-linger"]].map(
+          (argv) => `  ${argv.join(" ")}`,
+        ),
+      ].join("\n"),
+    );
+    assert.equal(failed.err, `${failing.join(" ")}: Failed`);
+    assert.deepEqual(failed.systemd, steps.slice(0, index + 1));
+  }
+  const again = await registered();
+  assert.equal(again.status, 0);
+  assert.equal(
+    again.out,
+    `replaced ${file}; its service is running: restarted ${name}`,
+  );
+  assert.equal(again.err, "");
+  assert.deepEqual(again.systemd, [...steps, ...startedSystemd(name).slice(2)]);
 });
 
 test("registering a personal runner its service here runs restarts the unit named for its file, and where the restart fails says so of the runner", async (t) => {
@@ -1128,8 +1202,9 @@ test("registering a personal runner its service here runs restarts the unit name
   assert.equal(
     failed.out,
     [
-      `replaced ${file}; its service is not running, since chuggy denies this personal runner's earlier registration and restarting it failed; next:`,
+      `replaced ${file}; its service is not running, since chuggy denies this personal runner's earlier registration and systemctl --user restart ${name} failed; next:`,
       `  systemctl --user restart ${name}`,
+      "  loginctl enable-linger",
     ].join("\n"),
   );
   assert.equal(
