@@ -26,7 +26,9 @@ This spends the token, declaring the machine's platform, `Platform:Linux:Amd64` 
 
 The pool takes the hostname's first label unless `--pool <name>` names it; a name is lowercase letters, digits and hyphens. A pool is one per name in a project, so a second machine of the same name registering in the same project displaces the first: give one a `--pool`.
 
-Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. `register` prints the restart for a unit here that serves exactly the file it wrote; a 0.1 unit serving the pool from a file of another name, such as `vteng-chuggy-shame.json`, is handed over by `install-service` instead. Registering another pool adds a file beside the first.
+Once the file is written, `register` starts its service. Where every check `doctor` makes passes, it writes the file's unit as `install-service` does, runs `systemctl --user daemon-reload` and `systemctl --user enable --now` for it, and turns lingering on where that needs no password. Its first line says whether the service is running; where it stopped short, it prints why and the commands left. It exits 0 either way, since the token is spent.
+
+Registering a pool again, from here or any machine, replaces its registration. chuggy denies the earlier one, so a service still running it stops, and stays stopped until it is restarted on the new file. `register` restarts a unit here that serves exactly the file it wrote; a 0.1 unit serving the pool from a file of another name, such as `vteng-chuggy-shame.json`, it leaves alone, printing the commands that retire it and start the pool's own, as `install-service` does. Registering another pool adds a file beside the first.
 
 ### A personal runner
 
@@ -107,6 +109,8 @@ It checks both files, the token file, podman's credential helpers, the engine, t
 
 ## Run as a service
 
+`register` writes the unit and starts it itself where it can. Otherwise:
+
 ```sh
 chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
@@ -119,7 +123,7 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 
 | Command             | What it does                                                                                                                            |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `register`          | Redeems a registration token for a pool file.                                                                                           |
+| `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
 | `once`              | One poll, then waits for what it placed to start. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
 | `status`            | The runner's limits, this pool's containers and what the service is still pulling or starting, each named a job or a session.           |
@@ -144,6 +148,6 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 - Run an assignment that names capabilities rather than an image: this runner has no image of its own.
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
-- Install docker or podman, start the service, or upgrade itself.
+- Install docker or podman, or upgrade itself.
 - Pull with your own registry logins: an image not from the pool's registry is pulled with none. The exception is a credential helper you set in podman's `registries.conf`, which podman still asks; `doctor` warns of one. It reads the `registries.conf` your shell's environment names, while the service runs with systemd's (`systemctl --user show-environment`).
 - Limit a job's workspace: its volume has no size limit.

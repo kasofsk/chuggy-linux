@@ -39,6 +39,9 @@ import { serviceUnit } from "./systemdUnit.mjs";
  * @property {string} [arch]
  * @property {typeof globalThis.fetch} [fetch]
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
+ * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens]
+ * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane]
+ * @property {Readonly<Record<string, Partial<import("./systemd.mjs").SystemdAnswer>>>} [systemd] what a command answers, by its argv joined with spaces, where it does not succeed
  */
 
 /** A token source whose issuer has revoked the pool, so a pass ends without the network. */
@@ -50,6 +53,28 @@ const deniedTokens = {
   invalidate: () => undefined,
 };
 
+/** A plane a suite never reaches. */
+const unreachedPlane = {
+  poll: async () => {
+    throw new Error("a suite reaches no network");
+  },
+  settle: async () => {
+    throw new Error("a suite reaches no network");
+  },
+};
+
+/** A pool's issuer and plane answering as chuggy's do, so every check doctor makes passes. */
+const ready = {
+  tokens: {
+    acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+    invalidate: () => undefined,
+  },
+  plane: {
+    poll: async () => ({ polled: "Reconciled", assignments: [], stop: [] }),
+    settle: async () => "Settled",
+  },
+};
+
 /**
  * @param {readonly string[]} argv
  * @param {Machine} machine
@@ -59,6 +84,8 @@ async function called(argv, machine = {}) {
   const out = [];
   /** @type {string[]} */
   const err = [];
+  /** @type {string[][]} */
+  const systemd = [];
   const status = await cliMain(argv, {
     environment: machine.environment ?? {},
     home: machine.home ?? "/nonexistent",
@@ -71,13 +98,23 @@ async function called(argv, machine = {}) {
         throw new Error("a suite reaches no network");
       }),
     engine: machine.engine ?? fakeEngine().engine,
-    tokens: deniedTokens,
+    tokens: machine.tokens ?? deniedTokens,
+    plane: machine.plane ?? unreachedPlane,
+    systemd: async (command) => {
+      systemd.push([...command]);
+      return {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        ...machine.systemd?.[command.join(" ")],
+      };
+    },
     node: "/opt/node/bin/node",
     cli: "/opt/chuggy-linux/cli.mjs",
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
-  return { status, out: out.join("\n"), err: err.join("\n") };
+  return { status, out: out.join("\n"), err: err.join("\n"), systemd };
 }
 
 /**
@@ -556,32 +593,84 @@ const registerArgv = [
   "--token=registration-token-fixture",
 ];
 
-test("register writes the pool file it redeems the token for, prints what to run next, and prints no secret", async (t) => {
-  const { home, environment } = await runnerFixture(t);
+/**
+ * A machine to register the pool on, with where its file and unit go. Its
+ * runner is on docker, so podman's registries.conf, which is the machine's
+ * own, reaches no line a suite asserts.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+async function registering(t) {
+  const { home, environment } = await runnerFixture(t, {
+    runner: { engine: "docker" },
+  });
+  const units = join(environment.XDG_CONFIG_HOME, "systemd", "user");
+  const name = "chuggy-linux-newtenant.arbbot.shame.service";
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    "newtenant.arbbot.shame.json",
+  );
+  return {
+    home,
+    environment,
+    units,
+    name,
+    unit: join(units, name),
+    file,
+    /** @param {Machine} [machine] where every check passes unless it says otherwise */
+    registered: (machine = {}) =>
+      called(registerArgv, {
+        home,
+        environment,
+        fetch: answeringFetch(201, registeredFixture).fetch,
+        ...ready,
+        ...machine,
+      }),
+  };
+}
+
+/** What starts a unit no unit here serves, lingering read and turned on. */
+const startedSystemd = (/** @type {string} */ name) => [
+  ["systemctl", "--user", "daemon-reload"],
+  ["systemctl", "--user", "enable", "--now", name],
+  ["loginctl", "show-user", "1000", "--property", "Linger"],
+  ["loginctl", "--no-ask-password", "enable-linger", "1000"],
+];
+
+test("register writes the pool file it redeems the token for, and where every check passes writes its unit, starts it, turns lingering on and prints no secret", async (t) => {
+  const { home, environment, file, name, unit } = await registering(t);
   const { fetch, requests } = answeringFetch(201, registeredFixture);
-  const { status, out, err } = await called(registerArgv, {
+  const { status, out, err, systemd } = await called(registerArgv, {
     home,
     environment: { ...environment, CHUGGY_LINUX_POOL: "/elsewhere.json" },
     hostname: "Shame.lan",
     fetch,
+    ...ready,
   });
   assert.equal(status, 0, err);
-  const pools = join(environment.XDG_CONFIG_HOME, "chuggy", "pools");
-  const file = join(pools, "newtenant.arbbot.shame.json");
-  assert.equal(
-    out,
-    [
-      `wrote ${file}; next:`,
-      `  chuggy-linux doctor --pool ${file}`,
-      `  chuggy-linux install-service --pool ${file}`,
-    ].join("\n"),
-  );
+  assert.equal(out, `wrote ${file}; its service is running: started ${name}`);
   assert.equal(err, "");
+  assert.deepEqual(systemd, startedSystemd(name));
+  assert.match(
+    await readFile(unit, "utf8"),
+    new RegExp(
+      `^ExecStart="/opt/node/bin/node" "/opt/chuggy-linux/cli.mjs" "run" "--pool" "${file}"$`,
+      "mu",
+    ),
+  );
   assert.deepEqual(JSON.parse(String(requests[0].init.body)).pool, "shame");
+  const pools = dirname(file);
   assert.equal((await stat(pools)).mode & 0o777, 0o700);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), registeredFixture);
   assert.ok(!`${out}${err}`.includes(registeredFixture.clientSecret));
+  assert.ok(
+    !systemd
+      .flat()
+      .some((word) => word.includes(registeredFixture.clientSecret)),
+  );
   const again = await called(registerArgv, { home, environment, fetch });
   assert.match(again.out, /^replaced /u);
 });
@@ -589,25 +678,24 @@ test("register writes the pool file it redeems the token for, prints what to run
 test("register --personal redeems a member's personal token for their runner's file, named for its tenant and member, asking for no pool", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const { fetch, requests } = answeringFetch(201, registeredPersonalFixture);
-  const { status, out, err } = await called([...registerArgv, "--personal"], {
+  const { status, out } = await called([...registerArgv, "--personal"], {
     home,
     environment,
     fetch,
+    ...ready,
   });
-  assert.equal(status, 0, err);
+  assert.equal(status, 0);
+  const base =
+    "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member";
   const file = join(
     environment.XDG_CONFIG_HOME,
     "chuggy",
     "pools",
-    "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json",
+    `${base}.json`,
   );
   assert.equal(
     out,
-    [
-      `wrote ${file}; next:`,
-      `  chuggy-linux doctor --pool ${file}`,
-      `  chuggy-linux install-service --pool ${file}`,
-    ].join("\n"),
+    `wrote ${file}; its service is running: started chuggy-linux-${base}.service`,
   );
   assert.equal(
     requests[0].url,
@@ -621,6 +709,202 @@ test("register --personal redeems a member's personal token for their runner's f
     JSON.parse(await readFile(file, "utf8")),
     registeredPersonalFixture,
   );
+});
+
+test("register prints a warning a check gave, and starts the service still", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const registries = join(
+    environment.XDG_CONFIG_HOME,
+    "containers",
+    "registries.conf",
+  );
+  await mkdir(dirname(registries), { recursive: true });
+  await writeFile(registries, 'credential-helpers = ["secretservice"]\n');
+  const { status, out, err } = await called(registerArgv, {
+    home,
+    environment,
+    fetch: answeringFetch(201, registeredFixture).fetch,
+    ...ready,
+  });
+  assert.equal(status, 0);
+  assert.match(out, /^wrote .*; its service is running: started /u);
+  assert.match(err, /^warn {2}podman credential helpers: .*registries\.conf/u);
+  assert.ok(err.includes(registries), err);
+});
+
+test("register starts nothing where a check fails, and prints the failed check and what is left", async (t) => {
+  const { file, units, registered } = await registering(t);
+  const { status, out, err, systemd } = await registered({
+    tokens: deniedTokens,
+  });
+  assert.equal(status, 0);
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; its service is not running, since a check failed; next:`,
+      `  chuggy-linux doctor --pool ${file}`,
+      `  chuggy-linux install-service --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.equal(err, "FAIL  pool token: the pool was revoked");
+  assert.deepEqual(systemd, []);
+  await assert.rejects(stat(units), { code: "ENOENT" });
+});
+
+test("register stops where the user's service manager cannot be reached, or fails to start the unit, and prints why and what is left", async (t) => {
+  const reloading = await registering(t);
+  const unreached = await reloading.registered({
+    systemd: {
+      "systemctl --user daemon-reload": {
+        code: 1,
+        stderr: "Failed to connect to bus: No medium found\n",
+      },
+    },
+  });
+  assert.equal(unreached.status, 0);
+  assert.equal(
+    unreached.out,
+    [
+      `wrote ${reloading.file}; its service is not running, since systemctl --user daemon-reload failed; next:`,
+      "  systemctl --user daemon-reload",
+      `  systemctl --user enable --now ${reloading.name}`,
+      "  loginctl enable-linger",
+    ].join("\n"),
+  );
+  assert.equal(
+    unreached.err,
+    "systemctl --user daemon-reload: Failed to connect to bus: No medium found",
+  );
+  assert.deepEqual(unreached.systemd, [
+    ["systemctl", "--user", "daemon-reload"],
+  ]);
+  assert.match(await readFile(reloading.unit, "utf8"), /^ExecStart=/mu);
+
+  const starting = await registering(t);
+  const unstarted = await starting.registered({
+    systemd: {
+      [`systemctl --user enable --now ${starting.name}`]: { code: 1 },
+    },
+  });
+  assert.equal(unstarted.status, 0);
+  assert.equal(
+    unstarted.out,
+    [
+      `wrote ${starting.file}; its service is not running, since systemctl --user enable --now ${starting.name} failed; next:`,
+      `  systemctl --user enable --now ${starting.name}`,
+      "  loginctl enable-linger",
+    ].join("\n"),
+  );
+  assert.equal(
+    unstarted.err,
+    `systemctl --user enable --now ${starting.name}: exited 1`,
+  );
+});
+
+test("register leaves lingering on where it is on, and where it cannot turn it on says the service runs only while you are logged in", async (t) => {
+  const lingering = await registering(t);
+  const on = await lingering.registered({
+    systemd: {
+      "loginctl show-user 1000 --property Linger": { stdout: "Linger=yes\n" },
+    },
+  });
+  assert.equal(
+    on.out,
+    `wrote ${lingering.file}; its service is running: started ${lingering.name}`,
+  );
+  assert.deepEqual(on.systemd, startedSystemd(lingering.name).slice(0, 3));
+
+  const refusing = await registering(t);
+  const refused = await refusing.registered({
+    systemd: {
+      "loginctl show-user 1000 --property Linger": { stdout: "Linger=no\n" },
+      "loginctl --no-ask-password enable-linger 1000": {
+        code: 1,
+        stderr:
+          "Could not enable linger: Interactive authentication required.\n",
+      },
+    },
+  });
+  assert.equal(refused.status, 0);
+  assert.equal(
+    refused.out,
+    [
+      `wrote ${refusing.file}; its service is running: started ${refusing.name}`,
+      "it runs only while you are logged in, until you run:",
+      "  loginctl enable-linger",
+    ].join("\n"),
+  );
+  assert.equal(
+    refused.err,
+    "loginctl --no-ask-password enable-linger 1000: Could not enable linger: Interactive authentication required.",
+  );
+  assert.deepEqual(refused.systemd, startedSystemd(refusing.name));
+});
+
+test("where the legacy unit serves the pool, register writes the pool's own unit, starts nothing, and prints what install-service does", async (t) => {
+  const { home, file, units, unit, name, registered } = await registering(t);
+  const legacyFile = await poolFileWritten(
+    join(home, "newtenant-arbbot-shame.json"),
+    registeredFixture,
+  );
+  const legacy = await legacyUnitWritten(units, legacyFile);
+  const before = await readFile(legacy, "utf8");
+  const { status, out, err, systemd } = await registered();
+  assert.equal(status, 0, err);
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; its service is not running, since chuggy-linux.service serves this pool already; next:`,
+      "  systemctl --user disable --now chuggy-linux.service",
+      `  rm ${legacy}`,
+      "  systemctl --user daemon-reload",
+      `  systemctl --user enable --now ${name}`,
+      "  loginctl enable-linger",
+    ].join("\n"),
+  );
+  assert.deepEqual(systemd, []);
+  assert.match(await readFile(unit, "utf8"), /^ExecStart=/mu);
+  assert.equal(await readFile(legacy, "utf8"), before);
+});
+
+test("register refuses, as install-service does, a unit of the file's name serving another pool file, and starts nothing", async (t) => {
+  const { home, file, units, unit, registered } = await registering(t);
+  const elsewhere = join(home, "elsewhere", "newtenant.arbbot.shame.json");
+  await mkdir(units, { recursive: true });
+  const written = serviceUnit({ node: "/n", cli: "/c", poolFile: elsewhere });
+  await writeFile(unit, written);
+  const { status, out, err, systemd } = await registered();
+  assert.equal(status, 0);
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; its service is not running, since its unit could not be written; next:`,
+      `  chuggy-linux install-service --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.equal(
+    err,
+    `${unit} serves ${elsewhere}, not ${file}; remove that unit if it is stale, or rename the pool file`,
+  );
+  assert.deepEqual(systemd, []);
+  assert.equal(await readFile(unit, "utf8"), written);
+});
+
+test("register exits 0 once the file is written, saying why and what is left, whatever it could not read of this machine's units", async (t) => {
+  const { file, unit, registered } = await registering(t);
+  await mkdir(unit, { recursive: true });
+  const { status, out, err, systemd } = await registered();
+  assert.equal(status, 0);
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; its service is not running, since it could not be started; next:`,
+      `  chuggy-linux doctor --pool ${file}`,
+      `  chuggy-linux install-service --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.match(err, /^EISDIR: /u);
+  assert.deepEqual(systemd, []);
 });
 
 test("register asked wrongly exits 2 before the token is spent", async (t) => {
@@ -772,28 +1056,12 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   );
 });
 
-test("registering a pool its service here runs says the service stops until restarted, and how", async (t) => {
-  const { home, environment } = await runnerFixture(t);
-  const units = join(environment.XDG_CONFIG_HOME, "systemd", "user");
-  const file = join(
-    environment.XDG_CONFIG_HOME,
-    "chuggy",
-    "pools",
-    "newtenant.arbbot.shame.json",
-  );
-  const fetch = answeringFetch(201, registeredFixture).fetch;
+test("registering a pool a unit here serves restarts each unit serving exactly its file, and checks nothing", async (t) => {
+  const { home, environment, file, units, name, registered } =
+    await registering(t);
   assert.equal(
-    (await called(registerArgv, { home, environment, fetch })).status,
-    0,
-  );
-  const notInstalled = await called(registerArgv, { home, environment, fetch });
-  assert.equal(
-    notInstalled.out,
-    [
-      `replaced ${file}; next:`,
-      `  chuggy-linux doctor --pool ${file}`,
-      `  chuggy-linux install-service --pool ${file}`,
-    ].join("\n"),
+    (await registered({ tokens: deniedTokens })).out.split("\n")[0],
+    `wrote ${file}; its service is not running, since a check failed; next:`,
   );
   assert.equal(
     (await called(["install-service", "--pool", file], { home, environment }))
@@ -801,25 +1069,28 @@ test("registering a pool its service here runs says the service stops until rest
     0,
   );
   await legacyUnitWritten(units, file);
-  const installed = await called(registerArgv, { home, environment, fetch });
-  assert.equal(installed.status, 0, installed.err);
+  const { status, out, err, systemd } = await registered({
+    tokens: deniedTokens,
+  });
+  assert.equal(status, 0, err);
   assert.equal(
-    installed.out,
-    [
-      `replaced ${file}; chuggy denies the pool's earlier registration, so its service stops until it is restarted:`,
-      `  chuggy-linux doctor --pool ${file}`,
-      "  systemctl --user restart chuggy-linux-newtenant.arbbot.shame.service",
-      "  systemctl --user restart chuggy-linux.service",
-    ].join("\n"),
+    out,
+    `replaced ${file}; its service is running: restarted ${name}, chuggy-linux.service`,
   );
+  assert.equal(err, "");
+  assert.deepEqual(systemd, [
+    ["systemctl", "--user", "restart", name],
+    ["systemctl", "--user", "restart", "chuggy-linux.service"],
+  ]);
 });
 
-test("registering a personal runner its service here runs says so of the runner, and restarts the unit named for its file", async (t) => {
+test("registering a personal runner its service here runs restarts the unit named for its file, and where the restart fails says so of the runner", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const argv = [...registerArgv, "--personal"];
   const fetch = answeringFetch(201, registeredPersonalFixture).fetch;
   const base =
     "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member";
+  const name = `chuggy-linux-${base}.service`;
   const file = join(
     environment.XDG_CONFIG_HOME,
     "chuggy",
@@ -834,17 +1105,36 @@ test("registering a personal runner its service here runs says so of the runner,
   assert.equal(service.status, 0, service.err);
   assert.equal(
     service.out.split("\n")[0],
-    `wrote ${join(environment.XDG_CONFIG_HOME, "systemd", "user", `chuggy-linux-${base}.service`)}; start it with:`,
+    `wrote ${join(environment.XDG_CONFIG_HOME, "systemd", "user", name)}; start it with:`,
   );
   const again = await called(argv, { home, environment, fetch });
   assert.equal(again.status, 0, again.err);
   assert.equal(
     again.out,
+    `replaced ${file}; its service is running: restarted ${name}`,
+  );
+  const failed = await called(argv, {
+    home,
+    environment,
+    fetch,
+    systemd: {
+      [`systemctl --user restart ${name}`]: {
+        code: 5,
+        stderr: `Failed to restart ${name}: Unit ${name} not found.\n`,
+      },
+    },
+  });
+  assert.equal(failed.status, 0);
+  assert.equal(
+    failed.out,
     [
-      `replaced ${file}; chuggy denies this personal runner's earlier registration, so its service stops until it is restarted:`,
-      `  chuggy-linux doctor --pool ${file}`,
-      `  systemctl --user restart chuggy-linux-${base}.service`,
+      `replaced ${file}; its service is not running, since chuggy denies this personal runner's earlier registration and restarting it failed; next:`,
+      `  systemctl --user restart ${name}`,
     ].join("\n"),
+  );
+  assert.equal(
+    failed.err,
+    `systemctl --user restart ${name}: Failed to restart ${name}: Unit ${name} not found.`,
   );
 });
 

@@ -122,9 +122,39 @@ export function shellQuoted(argument) {
 }
 
 /**
- * What the operator runs once a unit is written; lingering keeps it running
- * without a login. Where the legacy unit serves the same pool, it is stopped
- * and removed first, so the two never poll the pool together.
+ * A command as the operator types it, each argument `shellQuoted`.
+ *
+ * @param {readonly string[]} argv
+ */
+export function commandLine(argv) {
+  return argv.map(shellQuoted).join(" ");
+}
+
+/**
+ * What starts a unit once it is written: the user's units read again, then
+ * the unit enabled and started.
+ *
+ * @param {string} unitName
+ */
+export function serviceStartArgvs(unitName) {
+  return [
+    ["systemctl", "--user", "daemon-reload"],
+    ["systemctl", "--user", "enable", "--now", unitName],
+  ];
+}
+
+/** @param {string} unitName */
+export function serviceRestartArgv(unitName) {
+  return ["systemctl", "--user", "restart", unitName];
+}
+
+/** Lingering on, as the operator turns it on; it keeps their services running without a login. */
+export const serviceLingerArgv = ["loginctl", "enable-linger"];
+
+/**
+ * What the operator runs once a unit is written. Where the legacy unit serves
+ * the same pool, it is stopped and removed first, so the two never poll the
+ * pool together.
  *
  * @param {string} unitName
  * @param {string} [legacyUnit] the legacy unit's file, where it serves this pool
@@ -134,11 +164,10 @@ export function serviceCommands(unitName, legacyUnit) {
     ...(legacyUnit === undefined
       ? []
       : [
-          `systemctl --user disable --now ${legacyServiceUnitName}`,
-          `rm ${shellQuoted(legacyUnit)}`,
+          ["systemctl", "--user", "disable", "--now", legacyServiceUnitName],
+          ["rm", legacyUnit],
         ]),
-    "systemctl --user daemon-reload",
-    `systemctl --user enable --now ${shellQuoted(unitName)}`,
-    "loginctl enable-linger",
-  ];
+    ...serviceStartArgvs(unitName),
+    serviceLingerArgv,
+  ].map(commandLine);
 }
