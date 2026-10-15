@@ -107,7 +107,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, whether the pool file's unit runs this copy, the token file, podman's credential helpers, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the token file, podman's credential helpers, whether the pool file's unit runs this copy, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 

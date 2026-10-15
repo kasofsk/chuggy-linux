@@ -1,6 +1,6 @@
 /**
  * What `doctor` checks, in the order a run depends on them, each answered as
- * passed or not with what was found, and beside the files whether the pool
+ * passed or not with what was found, and before the engine whether the pool
  * file's unit runs this copy. It changes nothing: a missing network is
  * reported for a run to make, and its one poll names nothing held and wants
  * nothing, which the plane answers without granting or releasing a lease.
