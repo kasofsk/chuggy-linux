@@ -84,11 +84,11 @@ A project's configuration names the image its jobs run in, by digest or by tag. 
 
 An image that lacks one is refused before any agent starts, and the ticket stops with a reason naming what is missing. An image the registry refuses is refused at once, and one that fails to pull any other way, such as from a host that does not resolve, after two minutes of trying.
 
-A service the project's checks need, such as a database, is yours and never chuggy's: start it from a check inside the image, or run it here on the jobs' network and hand every job its address through `environment`. For PostgreSQL, once the runner has made its network:
+A service the project's checks need, such as a database, is yours and never chuggy's: start it from a check inside the image, or run it here on the jobs' network and hand every job its address through `environment`. For PostgreSQL, once the runner has made its network (`podman run` on podman):
 
 ```sh
 docker run -d --name jobs-postgres --network chuggy-jobs --restart unless-stopped \
-  -e POSTGRES_HOST_AUTH_METHOD=trust postgres:18
+  -e POSTGRES_HOST_AUTH_METHOD=trust docker.io/library/postgres:18
 ```
 
 ```json
