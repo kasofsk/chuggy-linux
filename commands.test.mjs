@@ -264,8 +264,8 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
     out,
     [
       copyLine,
-      `ok    service unit: none yet at ${join(environment.XDG_CONFIG_HOME, "systemd", "user", "chuggy-linux-pool.service")}`,
       `ok    runtime directory: ${join(environment.XDG_RUNTIME_DIR, "chuggy-linux")}`,
+      `ok    service unit: none yet at ${join(environment.XDG_CONFIG_HOME, "systemd", "user", "chuggy-linux-pool.service")}`,
     ].join("\n"),
   );
   assert.match(

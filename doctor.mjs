@@ -300,7 +300,6 @@ export async function doctorFindings(input) {
     const read = await runnerConfig(input.paths.config);
     return [read, `${input.paths.config}: ${runnerConfigLimits(read)}`];
   });
-  findings.push(await serviceUnitFinding(input));
   await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),
@@ -317,6 +316,7 @@ export async function doctorFindings(input) {
     });
   if (config?.engine === "podman")
     findings.push(await podmanHelpersFinding(input.registriesConf));
+  findings.push(await serviceUnitFinding(input));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(

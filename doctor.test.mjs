@@ -100,10 +100,10 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     [
       ["pool file", true],
       ["runner configuration", true],
-      ["service unit", true],
       ["runtime directory", true],
       ["Claude token file", true],
       ["podman credential helpers", true],
+      ["service unit", true],
       ["container engine", true],
       ["job network", true],
       ["pool token", true],
@@ -115,7 +115,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     findings[1].detail,
     /\/chuggy-linux\/runner\.json: concurrencyMax 1, sessionsMax 2$/u,
   );
-  assert.deepEqual(findings[5], {
+  assert.deepEqual(findings[4], {
     check: "podman credential helpers",
     passed: true,
     detail: "none named in the 0 registries.conf files read",
@@ -144,8 +144,8 @@ test("a check that failed says why, and what depends on it is not checked", asyn
     [
       ["pool file", true],
       ["runner configuration", false],
-      ["service unit", true],
       ["runtime directory", true],
+      ["service unit", true],
       ["pool token", false],
     ],
   );
@@ -355,6 +355,7 @@ test("a unit running another install, or this one under another Node, is warned 
       cli: "/usr/lib/node_modules/chuggy-linux/cli.mjs",
     },
     { node: "/usr/bin/node", cli: copy.cli },
+    { node: copy.node, cli: "/usr/lib/node_modules/chuggy-linux/cli.mjs" },
   ]) {
     const { finding, findings, unit, poolFile } = await unitFound(t, (served) =>
       serviceUnit({ ...other, poolFile: served }),
