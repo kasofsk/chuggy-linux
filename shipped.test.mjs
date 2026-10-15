@@ -2,8 +2,8 @@
  * The shipped set, `package.json`'s `files`, against the modules the CLI runs.
  * The tarball carries that set and nothing else of this tree, so a module the
  * entry reaches and the set omits is an install that fails at its first
- * import. Every module is reached by a literal specifier, so the graph is read
- * off the text.
+ * import. Every module is reached by a literal specifier, imported statically
+ * or dynamically, so the graph is read off the text.
  */
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
@@ -13,8 +13,8 @@ import { URL } from "node:url";
 const root = new URL("./", import.meta.url);
 const entry = "cli.mjs";
 
-/** A static import or re-export, or a bare import. */
-const specifierPattern = /\b(?:from|import)\s*["']([^"']+)["']/gu;
+/** A static import or re-export, a bare import, or a dynamic one. */
+const specifierPattern = /\b(?:from|import)\s*\(?\s*["']([^"']+)["']/gu;
 
 async function manifest() {
   return JSON.parse(await readFile(new URL("package.json", root), "utf8"));

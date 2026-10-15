@@ -1,6 +1,7 @@
 /**
  * What `doctor` checks, in the order a run depends on them, each answered as
- * passed or not with what was found. It changes nothing: a missing network is
+ * passed or not with what was found, and before the engine whether the pool
+ * file's unit runs this copy. It changes nothing: a missing network is
  * reported for a run to make, and its one poll names nothing held and wants
  * nothing, which the plane answers without granting or releasing a lease.
  */
@@ -22,12 +23,20 @@ import {
   poolIdentityPersonal,
   poolLabelValue,
 } from "@chuggy/worker-core/poolIdentity.mjs";
+import { serviceUnitText } from "./poolService.mjs";
 import {
   claudeTokenFileRefusal,
   runnerConfig,
   runnerConfigLimits,
 } from "./runnerConfig.mjs";
 import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
+import {
+  commandLine,
+  serviceReloadArgv,
+  serviceRestartArgv,
+  serviceUnitName,
+  unitService,
+} from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
@@ -48,6 +57,8 @@ import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
  * @property {RunnerPaths} paths
  * @property {number} uid this process's
  * @property {readonly string[]} registriesConf podman's registries.conf files and drop-in directories
+ * @property {string} node the Node binary running this
+ * @property {string} cli this CLI's entry, as an absolute path
  * @property {DoctorParts} parts
  */
 
@@ -66,10 +77,14 @@ async function checked(findings, check, probe) {
     findings.push({ check, passed: true, detail });
     return value;
   } catch (failure) {
-    const detail = failure instanceof Error ? failure.message : String(failure);
-    findings.push({ check, passed: false, detail });
+    findings.push({ check, passed: false, detail: failureMessage(failure) });
     return undefined;
   }
+}
+
+/** @param {unknown} failure */
+function failureMessage(failure) {
+  return failure instanceof Error ? failure.message : String(failure);
 }
 
 /**
@@ -209,6 +224,57 @@ async function podmanHelpersFinding(locations) {
   };
 }
 
+/**
+ * Whether the pool file's own unit runs this copy under this Node. One that
+ * runs another is warned of with what makes it run this one, and so is one
+ * serving another file, or whose `ExecStart` this runner cannot read back;
+ * none yet passes.
+ *
+ * @param {DoctorInput} input
+ * @returns {Promise<DoctorFinding>}
+ */
+async function serviceUnitFinding(input) {
+  const check = "service unit";
+  /** @param {string} detail */
+  const warned = (detail) => ({ check, passed: true, warning: true, detail });
+  let name;
+  try {
+    name = serviceUnitName(input.poolFile);
+  } catch (failure) {
+    return warned(failureMessage(failure));
+  }
+  const unit = join(input.paths.units, name);
+  let text;
+  try {
+    text = await serviceUnitText(unit);
+  } catch (failure) {
+    return warned(`${unit} cannot be read: ${failureMessage(failure)}`);
+  }
+  if (text === undefined)
+    return { check, passed: true, detail: `none yet at ${unit}` };
+  const service = unitService(text);
+  if (service === undefined)
+    return warned(
+      `${unit} runs a command this runner cannot read back, so which copy it runs is unknown`,
+    );
+  if (service.poolFile !== input.poolFile)
+    return warned(`${unit} serves ${service.poolFile}, not this pool file`);
+  if (service.node === input.node && service.cli === input.cli)
+    return {
+      check,
+      passed: true,
+      detail: `${unit} runs this copy under this Node`,
+    };
+  const left = [
+    [input.node, input.cli, "install-service", "--pool", input.poolFile],
+    serviceReloadArgv,
+    serviceRestartArgv(name),
+  ].map(commandLine);
+  return warned(
+    `${unit} runs ${service.cli} under ${service.node}, not this copy under this Node; to have it run this one: ${left.join(" && ")}`,
+  );
+}
+
 /** @param {DoctorFinding} finding */
 export function findingLine(finding) {
   const label =
@@ -250,6 +316,7 @@ export async function doctorFindings(input) {
     });
   if (config?.engine === "podman")
     findings.push(await podmanHelpersFinding(input.registriesConf));
+  findings.push(await serviceUnitFinding(input));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(

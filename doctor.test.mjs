@@ -7,16 +7,31 @@ import { doctorFindings, findingLine } from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import { runnerFixture } from "./runner.fixture.mjs";
+import { serviceUnit } from "./systemdUnit.mjs";
+
+/** The copy doctor is run as, and the Node it runs under. */
+const copy = { node: "/opt/node/bin/node", cli: "/opt/chuggy-linux/cli.mjs" };
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, registries?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, and the name of a pool file in the home to ask of in place of the fixture's
  */
 async function doctored(t, options = {}) {
-  const { home, environment, poolFile } = await runnerFixture(t, {
+  const fixture = await runnerFixture(t, {
     ...("runner" in options ? { runner: options.runner } : {}),
     pool: options.pool,
   });
+  const { home, environment } = fixture;
+  const poolFile =
+    options.poolFileName === undefined
+      ? fixture.poolFile
+      : join(home, options.poolFileName);
+  const paths = runnerPaths(environment, home);
+  const unit = join(paths.units, "chuggy-linux-pool.service");
+  if (options.unit !== undefined) {
+    await mkdir(paths.units, { recursive: true });
+    await options.unit(poolFile, unit);
+  }
   const { engine, state } = fakeEngine();
   state.securityOptions = options.securityOptions ?? state.securityOptions;
   state.podmanVersion = options.podmanVersion ?? state.podmanVersion;
@@ -31,7 +46,8 @@ async function doctored(t, options = {}) {
   const polls = [];
   const findings = await doctorFindings({
     poolFile,
-    paths: runnerPaths(environment, home),
+    paths,
+    ...copy,
     registriesConf: [
       join(registries, "registries.conf"),
       join(registries, "registries.conf.d"),
@@ -53,7 +69,7 @@ async function doctored(t, options = {}) {
       }),
     },
   });
-  return { findings, state, polls, poolFile, registries };
+  return { findings, state, polls, poolFile, registries, unit };
 }
 
 test("doctor names a personal runner's file as one, by its tenant and member", async (t) => {
@@ -87,6 +103,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["runtime directory", true],
       ["Claude token file", true],
       ["podman credential helpers", true],
+      ["service unit", true],
       ["container engine", true],
       ["job network", true],
       ["pool token", true],
@@ -104,7 +121,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     detail: "none named in the 0 registries.conf files read",
   });
   assert.equal(
-    findings[6].detail,
+    findings[7].detail,
     "chuggy-jobs is missing, and a run makes it",
   );
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
@@ -128,12 +145,13 @@ test("a check that failed says why, and what depends on it is not checked", asyn
       ["pool file", true],
       ["runner configuration", false],
       ["runtime directory", true],
+      ["service unit", true],
       ["pool token", false],
     ],
   );
   assert.match(findings[1].detail, /ENOENT/u);
   assert.equal(
-    findings[3].detail,
+    findings[4].detail,
     "the issuer refused the pool's client credential",
   );
 });
@@ -291,4 +309,118 @@ test("a remote podman client fails the engine check", async (t) => {
   const finding = findings.find((found) => found.check === "container engine");
   assert.equal(finding?.passed, false);
   assert.match(finding?.detail ?? "", /^podman is a remote client here /u);
+});
+
+/**
+ * The service unit finding of a machine whose pool file's unit holds what
+ * `text` writes, or that has none where there is no `text`.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {(poolFile: string) => string} [text]
+ */
+async function unitFound(t, text) {
+  const found = await doctored(t, {
+    unit:
+      text === undefined
+        ? undefined
+        : (poolFile, unit) => writeFile(unit, text(poolFile)),
+  });
+  return {
+    ...found,
+    finding: found.findings.find((finding) => finding.check === "service unit"),
+  };
+}
+
+test("the pool file's unit passes where it runs this copy under this Node, and where there is none yet", async (t) => {
+  const none = await unitFound(t);
+  assert.deepEqual(none.finding, {
+    check: "service unit",
+    passed: true,
+    detail: `none yet at ${none.unit}`,
+  });
+  const same = await unitFound(t, (poolFile) =>
+    serviceUnit({ ...copy, poolFile }),
+  );
+  assert.deepEqual(same.finding, {
+    check: "service unit",
+    passed: true,
+    detail: `${same.unit} runs this copy under this Node`,
+  });
+});
+
+test("a unit running another install, or this one under another Node, is warned of with what makes it run this one, and passes", async (t) => {
+  for (const other of [
+    {
+      node: "/usr/bin/node",
+      cli: "/usr/lib/node_modules/chuggy-linux/cli.mjs",
+    },
+    { node: "/usr/bin/node", cli: copy.cli },
+    { node: copy.node, cli: "/usr/lib/node_modules/chuggy-linux/cli.mjs" },
+  ]) {
+    const { finding, findings, unit, poolFile } = await unitFound(t, (served) =>
+      serviceUnit({ ...other, poolFile: served }),
+    );
+    assert.deepEqual(finding, {
+      check: "service unit",
+      passed: true,
+      warning: true,
+      detail: `${unit} runs ${other.cli} under ${other.node}, not this copy under this Node; to have it run this one: ${copy.node} ${copy.cli} install-service --pool ${poolFile} && systemctl --user daemon-reload && systemctl --user restart chuggy-linux-pool.service`,
+    });
+    assert.ok(findings.every((found) => found.passed));
+  }
+});
+
+test("a unit this runner cannot read back, one serving another pool file, one that cannot be read, and a pool file whose name makes no unit are each warned of, and pass", async (t) => {
+  const edited = await unitFound(
+    t,
+    (poolFile) =>
+      `[Service]\nExecStart=/usr/bin/node ${copy.cli} run --pool ${poolFile}\n`,
+  );
+  assert.deepEqual(edited.finding, {
+    check: "service unit",
+    passed: true,
+    warning: true,
+    detail: `${edited.unit} runs a command this runner cannot read back, so which copy it runs is unknown`,
+  });
+  const extra = await unitFound(t, (poolFile) =>
+    serviceUnit({ ...copy, poolFile }).replace(
+      /^(ExecStart=.*)$/mu,
+      '$1 "--verbose"',
+    ),
+  );
+  assert.equal(
+    extra.finding?.detail,
+    `${extra.unit} runs a command this runner cannot read back, so which copy it runs is unknown`,
+  );
+  const elsewhere = await unitFound(t, () =>
+    serviceUnit({ ...copy, poolFile: "/elsewhere/pool.json" }),
+  );
+  assert.deepEqual(elsewhere.finding, {
+    check: "service unit",
+    passed: true,
+    warning: true,
+    detail: `${elsewhere.unit} serves /elsewhere/pool.json, not this pool file`,
+  });
+  const { findings, unit } = await doctored(t, {
+    unit: (_, made) => mkdir(made),
+  });
+  const unreadable = findings.find((found) => found.check === "service unit");
+  assert.equal(unreadable?.passed, true);
+  assert.equal(unreadable?.warning, true);
+  assert.ok(
+    unreadable?.detail.startsWith(`${unit} cannot be read: EISDIR: `),
+    unreadable?.detail,
+  );
+  const unnamed = await doctored(t, {
+    poolFileName: `${"a".repeat(256)}.json`,
+  });
+  assert.deepEqual(
+    unnamed.findings.find((found) => found.check === "service unit"),
+    {
+      check: "service unit",
+      passed: true,
+      warning: true,
+      detail: `${unnamed.poolFile} makes a unit name longer than systemd accepts; give the pool file a shorter name`,
+    },
+  );
 });

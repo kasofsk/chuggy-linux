@@ -11,6 +11,7 @@ import {
   shellQuoted,
   systemdQuoted,
   unitPoolFile,
+  unitService,
 } from "./systemdUnit.mjs";
 
 test("the unit runs the runner under this Node, restarting it after any failure but a denial", () => {
@@ -123,6 +124,24 @@ test("a unit this runner did not write serves no pool file it can name", () => {
     "",
   ])
     assert.equal(unitPoolFile(unit), undefined, unit);
+});
+
+test("what a unit runs is read back from an ExecStart exactly as this runner writes one, and from no other", () => {
+  const service = {
+    node: "/home/o p/.nvm/versions/node/v24.8.0/bin/node",
+    cli: '/home/o p/100%/$HOME/"q"\\x/cli.mjs',
+    poolFile: "/home/o p/.config/chuggy/pools/vteng.chuggy.shame.json",
+  };
+  assert.deepEqual(unitService(serviceUnit(service)), service);
+  for (const unit of [
+    "[Service]\nExecStart=/usr/bin/node /c/cli.mjs run --pool /p\n",
+    '[Service]\nExecStart="/n/node" "/c/cli.mjs" "run" "--pool"\n',
+    '[Service]\nExecStart="/n/node" "/c/cli.mjs" "run" "--pool" "/p" "--x"\n',
+    '[Service]\nExecStart="/n/node" "/c/cli.mjs" "once" "--pool" "/p"\n',
+    '[Service]\nExecStart="/usr/bin/env" "node" "/c/cli.mjs" "run" "--pool" "/p"\n',
+    "",
+  ])
+    assert.equal(unitService(unit), undefined, unit);
 });
 
 test("an argument the operator is told is quoted for a shell only where it must be", () => {

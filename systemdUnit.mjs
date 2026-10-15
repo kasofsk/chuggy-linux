@@ -66,6 +66,23 @@ export function systemdQuoted(argument) {
 const quotedExecStartPattern = /^ExecStart=(?:"(?:[^"\\]|\\.)*"(?: |$))+$/u;
 
 /**
+ * The arguments of a unit's `ExecStart`, where `systemdQuoted` wrote every one
+ * of them, or nothing.
+ *
+ * @param {string} unit the unit file's text
+ * @returns {string[] | undefined}
+ */
+function unitExecStartArgv(unit) {
+  const execStart = unit
+    .split("\n")
+    .find((line) => quotedExecStartPattern.test(line));
+  if (execStart === undefined) return undefined;
+  return [...execStart.matchAll(/"((?:[^"\\]|\\.)*)"/gu)].map(([, quoted]) =>
+    quoted.replace(/\\(.)|%%|\$\$/gu, (escape, char) => char ?? escape[0]),
+  );
+}
+
+/**
  * The pool file a unit this runner wrote serves, read back from its
  * `ExecStart`, or nothing for a unit it did not write.
  *
@@ -73,16 +90,24 @@ const quotedExecStartPattern = /^ExecStart=(?:"(?:[^"\\]|\\.)*"(?: |$))+$/u;
  * @returns {string | undefined}
  */
 export function unitPoolFile(unit) {
-  const execStart = unit
-    .split("\n")
-    .find((line) => quotedExecStartPattern.test(line));
-  if (execStart === undefined) return undefined;
-  const argv = [...execStart.matchAll(/"((?:[^"\\]|\\.)*)"/gu)].map(
-    ([, quoted]) =>
-      quoted.replace(/\\(.)|%%|\$\$/gu, (escape, char) => char ?? escape[0]),
-  );
+  const argv = unitExecStartArgv(unit) ?? [];
   const pool = argv.indexOf("--pool");
   return pool < 0 ? undefined : argv[pool + 1];
+}
+
+/**
+ * What a unit runs, read back from an `ExecStart` exactly as `serviceUnit`
+ * writes one, or nothing for any other.
+ *
+ * @param {string} unit the unit file's text
+ * @returns {{node: string, cli: string, poolFile: string} | undefined}
+ */
+export function unitService(unit) {
+  const argv = unitExecStartArgv(unit);
+  if (argv?.length !== 5 || argv[2] !== "run" || argv[3] !== "--pool")
+    return undefined;
+  const [node, cli, , , poolFile] = argv;
+  return { node, cli, poolFile };
 }
 
 /**
