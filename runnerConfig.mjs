@@ -11,7 +11,7 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 import {
-  jobEngineSocketVariables,
+  jobEngineSocketEnvironment,
   jobUid,
   reservedJobVariables,
 } from "@chuggy/worker-core/job.mjs";
@@ -85,12 +85,17 @@ export const runnerConfigSchema = z
     outputBytesMax: positiveSchema,
     environment: environmentSchema.default({}),
     network: networkSchema.default("chuggy-jobs"),
-    /** Whether each job is handed this machine's engine through its socket. */
+    /**
+     * Whether each job is handed this machine's engine through its socket;
+     * while it is, the variables that tell the job of it are the runner's.
+     */
     engineSocket: z.boolean().default(false),
   })
   .superRefine((config, context) => {
     if (!config.engineSocket) return;
-    for (const name of jobEngineSocketVariables)
+    for (const name of Object.keys(
+      jobEngineSocketEnvironment(config.engine, ""),
+    ))
       if (Object.hasOwn(config.environment, name))
         context.addIssue({
           code: "custom",

@@ -93,60 +93,106 @@ function failureMessage(failure) {
 }
 
 /**
- * Why a job could not reach this machine's engine socket, or nothing.
- * Reaching a socket takes leave to write it, which the kernel reads from the
- * owner's bits for its owner, the group's for a member and the rest's for
- * anyone else; an ACL is not read. A docker job is `jobUid` in `jobGid` and
- * the socket's group, unless that is root's, which no job is added to; a
- * podman job is the runner, onto whom keep-id maps it.
+ * What may let a job write an engine's socket that its stat does not show,
+ * and what makes the socket one a job can write.
+ */
+const engineSocketWrites = {
+  docker: {
+    unseen: "an ACL",
+    remedy:
+      "give the socket a group of its own, such as docker's, and mode 660",
+  },
+  podman: {
+    unseen: "its group or an ACL",
+    remedy:
+      "run podman's socket as this runner, as systemctl --user enable --now podman.socket does",
+  },
+};
+
+/**
+ * Whether a job can reach this machine's engine socket, as far as its stat
+ * decides. Reaching a socket takes leave to write it, which the kernel reads
+ * from the owner's bits for its owner, the group's for a member and the
+ * rest's for anyone else. A docker job is `jobUid` in `jobGid` and the
+ * socket's group, unless that is root's, which no job is added to; a podman
+ * job is the runner, onto whom keep-id maps it, in groups not known here.
+ * Where an ACL is set the group's bits are its mask, and an entry the stat
+ * does not show may let in a job that is neither owner nor member, so the
+ * stat does not decide where the rest's bits refuse that job and the
+ * group's allow writing.
  *
  * @param {RunnerConfig["engine"]} engine
  * @param {{uid: number, gid: number, mode: number}} socket the socket's stat
  * @param {number} runnerUid
- * @returns {string | undefined}
+ * @returns {{reach: "Reached"} | {reach: "Unreached" | "Undecided", why: string}}
  */
-export function engineSocketUnreached(engine, socket, runnerUid) {
+export function engineSocketReach(engine, socket, runnerUid) {
   const docker = engine === "docker";
   const uid = docker ? jobUid : runnerUid;
   const groups = docker
     ? [...new Set([jobGid, ...(socket.gid === 0 ? [] : [socket.gid])])]
     : [];
-  const writable =
-    socket.uid === uid ? 0o200 : groups.includes(socket.gid) ? 0o020 : 0o002;
-  if ((socket.mode & writable) !== 0) return undefined;
+  const owner = socket.uid === uid;
+  const member = !owner && groups.includes(socket.gid);
+  const bit = owner ? 0o200 : member ? 0o020 : 0o002;
+  if ((socket.mode & bit) !== 0) return { reach: "Reached" };
+  const held = `it is uid ${String(socket.uid)}'s, group ${String(socket.gid)}'s and mode ${(socket.mode & 0o777).toString(8).padStart(3, "0")}`;
   const job = docker
     ? `uid ${String(uid)} in group ${groups.map(String).join(" and ")}`
     : `uid ${String(uid)}, this runner's`;
-  const root =
-    docker && socket.gid === 0 ? ", and no job is added to root's group" : "";
-  return `it is uid ${String(socket.uid)}'s, group ${String(socket.gid)}'s and mode ${(socket.mode & 0o777).toString(8).padStart(3, "0")}, so a job, ${job}, cannot reach it${root}`;
+  const root = docker && socket.gid === 0 ? " and never in root's" : "";
+  const { unseen, remedy } = engineSocketWrites[engine];
+  if (owner || (socket.mode & 0o020) === 0)
+    return {
+      reach: "Unreached",
+      why: `${held}, so a job, ${job}${root}, cannot reach it; ${remedy}`,
+    };
+  return {
+    reach: "Undecided",
+    why: `${held}, so a job, ${job}${root}, reaches it only if ${unseen} lets it, which doctor cannot see; to be sure, ${remedy}`,
+  };
 }
 
 /**
  * Whether each job is handed this machine's engine socket and, where it is,
- * that the job can reach it.
+ * whether the job can reach it, warned of where the socket's stat does not
+ * decide.
  *
  * @param {Engine} engine
  * @param {RunnerConfig} config
  * @param {string | undefined} endpoint
  * @param {number} uid this process's
- * @returns {Promise<[true, string]>}
+ * @returns {Promise<DoctorFinding>}
  */
-async function engineSocketProbe(engine, config, endpoint, uid) {
-  const socket = await engineSocketHanded(config, engine, endpoint);
-  if (socket === undefined) return [true, "off"];
-  const named = `${config.engine}'s socket ${socket.path}`;
-  const unreached = engineSocketUnreached(
-    config.engine,
-    await stat(socket.path),
-    uid,
-  );
-  if (unreached !== undefined) throw new Error(`${named}: ${unreached}`);
-  const group =
-    config.engine === "docker" && socket.gid !== 0
-      ? `, added to group ${String(socket.gid)}`
-      : "";
-  return [true, `on: each job reaches ${named} at ${jobEngineSocket}${group}`];
+async function engineSocketFinding(engine, config, endpoint, uid) {
+  const check = "engine socket";
+  try {
+    const socket = await engineSocketHanded(config, engine, endpoint);
+    if (socket === undefined) return { check, passed: true, detail: "off" };
+    const group =
+      config.engine === "docker" && socket.gid !== 0
+        ? `, added to group ${String(socket.gid)}`
+        : "";
+    const named = `${config.engine}'s socket ${socket.path}`;
+    const handed = `${named} at ${jobEngineSocket}${group}`;
+    const reach = engineSocketReach(
+      config.engine,
+      await stat(socket.path),
+      uid,
+    );
+    if (reach.reach === "Reached")
+      return { check, passed: true, detail: `on: each job reaches ${handed}` };
+    if (reach.reach === "Undecided")
+      return {
+        check,
+        passed: true,
+        warning: true,
+        detail: `on: each job is handed ${handed}, but ${reach.why}`,
+      };
+    return { check, passed: false, detail: `${named}: ${reach.why}` };
+  } catch (failure) {
+    return { check, passed: false, detail: failureMessage(failure) };
+  }
 }
 
 /**
@@ -168,8 +214,8 @@ async function engineChecks(engine, credentials, config, uid, findings) {
     ];
   });
   if (reachable === undefined) return;
-  await checked(findings, "engine socket", () =>
-    engineSocketProbe(engine, config, reachable.endpoint, uid),
+  findings.push(
+    await engineSocketFinding(engine, config, reachable.endpoint, uid),
   );
   await checked(findings, "job network", async () => {
     const inspected = await engine.exec(networkInspectArgv(config.network));

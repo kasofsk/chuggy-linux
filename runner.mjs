@@ -221,8 +221,11 @@ export async function engineEndpoint(name, engine) {
   return undefined;
 }
 
-/** What starts podman's socket, and starts it again at each login. */
-const podmanSocketStart = "systemctl --user enable --now podman.socket";
+/** What starts each engine's socket. */
+const engineSocketStart = {
+  docker: "sudo systemctl start docker",
+  podman: "systemctl --user enable --now podman.socket",
+};
 
 /**
  * Where podman says its socket is on this machine, which it may name as an
@@ -268,18 +271,20 @@ export async function engineSocketHanded(config, engine, endpoint) {
       : await podmanSocket(engine);
   const socket = `${config.engine}'s socket ${path}`;
   if (!isAbsolute(path) || !bindMountNameable(path))
-    throw new Error(`${socket} cannot be named in a bind mount`);
+    throw new Error(
+      `${socket} cannot be named in a bind mount; serve the engine at an absolute path with no comma or line break, or set engineSocket to false`,
+    );
   const stats = there ? await stat(path).catch(() => undefined) : undefined;
   if (stats === undefined)
     throw new Error(
-      `${socket} is not there${config.engine === "podman" ? `; start it with ${podmanSocketStart}` : ""}`,
+      `${socket} is not there; start it with ${engineSocketStart[config.engine]}`,
     );
   return { path, gid: stats.gid };
 }
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid, where its log lines go, the engine and token source when not those the files name, and the fetch a job's or a session's plane is reached by when not the global one
+ * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean}} host this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, and `places: false` for a run that places nothing, which then asks nothing of the engine's socket
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -287,7 +292,10 @@ export async function runnerParts(setup, host) {
   const runtimeDir = poolRuntimeDirectory(paths, credentials);
   const engine = host.engine ?? runnerEngine(config);
   const dockerHost = await engineEndpoint(config.engine, engine);
-  const engineSocket = await engineSocketHanded(config, engine, dockerHost);
+  const engineSocket =
+    host.places === false
+      ? undefined
+      : await engineSocketHanded(config, engine, dockerHost);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const backend = containerBackend(
     {

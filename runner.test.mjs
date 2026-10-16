@@ -900,6 +900,31 @@ test("a runner whose file hands jobs no engine asks nothing of its socket, and h
   );
 });
 
+test("a run that places nothing asks nothing of the socket a runner whose file hands jobs the engine would hand them, and refuses nothing for it", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { engineSocket: true },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  const { engine, state } = fakeEngine();
+  state.podmanSocket = "/run/user/1000/podman/podman.sock false";
+  await assert.rejects(
+    runnerParts(setup, { uid: ownUid, log: () => undefined, engine }),
+    /is not there; start it with systemctl --user enable --now podman\.socket$/u,
+  );
+  const calls = state.calls.length;
+  await runnerParts(setup, {
+    uid: ownUid,
+    log: () => undefined,
+    engine,
+    places: false,
+  });
+  assert.ok(
+    state.calls
+      .slice(calls)
+      .every(({ argv }) => !argv.join(" ").includes("RemoteSocket")),
+  );
+});
+
 test("podman's socket is taken where podman names it, with or without its scheme, and with the group that owns it", async (t) => {
   const socket = await engineSocketFixture(t);
   const { engine, state } = fakeEngine();
@@ -942,30 +967,35 @@ test("a run refuses to start where podman's socket is not there, naming what sta
   }
 });
 
-test("a socket a bind mount cannot name is refused, and so is a podman that cannot say where its socket is", async (t) => {
+test("a socket a bind mount cannot name is refused, and so is a podman that cannot say where its socket is, each naming what to do", async (t) => {
   const comma = await engineSocketFixture(t, "engine,readonly=false.sock");
+  const unnameable =
+    "cannot be named in a bind mount; serve the engine at an absolute path with no comma or line break, or set engineSocket to false";
   const { engine, state } = fakeEngine();
   const podman = /** @type {any} */ ({ engine: "podman", engineSocket: true });
   const docker = /** @type {any} */ ({ engine: "docker", engineSocket: true });
   state.podmanSocket = `${comma.path} true`;
   await assert.rejects(engineSocketHanded(podman, engine, undefined), {
-    message: `podman's socket ${comma.path} cannot be named in a bind mount`,
+    message: `podman's socket ${comma.path} ${unnameable}`,
   });
   await assert.rejects(
     engineSocketHanded(docker, engine, `unix://${comma.path}`),
     {
-      message: `docker's socket ${comma.path} cannot be named in a bind mount`,
+      message: `docker's socket ${comma.path} ${unnameable}`,
     },
   );
   await assert.rejects(
     engineSocketHanded(docker, engine, "unix://docker.sock"),
     {
-      message: "docker's socket docker.sock cannot be named in a bind mount",
+      message: `docker's socket docker.sock ${unnameable}`,
     },
   );
   await assert.rejects(
     engineSocketHanded(docker, engine, "unix:///nowhere/docker.sock"),
-    { message: "docker's socket /nowhere/docker.sock is not there" },
+    {
+      message:
+        "docker's socket /nowhere/docker.sock is not there; start it with sudo systemctl start docker",
+    },
   );
   for (const answer of [
     "",
