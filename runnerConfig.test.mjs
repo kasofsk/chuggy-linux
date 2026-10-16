@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { jobEngineSocketVariables } from "@chuggy/worker-core/job.mjs";
+
 import {
   claudeTokenFileRefusal,
   runnerConfig,
@@ -51,6 +53,7 @@ test("a minimal file is read with every default", async (t) => {
     sessionsMax: 2,
     environment: {},
     network: "chuggy-jobs",
+    engineSocket: false,
   });
 });
 
@@ -72,6 +75,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         sessionsMax,
         environment: {},
         network: "chuggy-jobs",
+        engineSocket: false,
       },
     );
   for (const [sessionsMax, why] of [
@@ -131,6 +135,10 @@ test("what the file may not say is refused, naming where", async (t) => {
     ],
     [{ ...minimal, concurrencyMax: 0 }, /concurrencyMax /u],
     [
+      { ...minimal, engineSocket: "true" },
+      /engineSocket Invalid input: expected boolean/u,
+    ],
+    [
       { claudeTokenFile: minimal.claudeTokenFile },
       /timeoutSecsMax .*; outputBytesMax /u,
     ],
@@ -142,6 +150,52 @@ test("what the file may not say is refused, naming where", async (t) => {
       why,
       JSON.stringify(document),
     );
+});
+
+test("while engineSocket is true, the environment may name none of the variables a job is then handed, and each it names is refused by name", async (t) => {
+  const directory = await scratch(t);
+  for (const name of jobEngineSocketVariables) {
+    const environment = { [name]: "elsewhere", OTHER: "kept" };
+    assert.deepEqual(
+      (
+        await runnerConfig(
+          await written(directory, { ...minimal, environment }),
+        )
+      ).environment,
+      environment,
+    );
+    const file = await written(directory, {
+      ...minimal,
+      engineSocket: true,
+      environment,
+    });
+    await assert.rejects(runnerConfig(file), {
+      message: `runner configuration ${file}: environment.${name} is the runner's to set while engineSocket is true`,
+    });
+  }
+  const file = await written(directory, {
+    ...minimal,
+    engineSocket: true,
+    environment: Object.fromEntries(
+      jobEngineSocketVariables.map((name) => [name, "elsewhere"]),
+    ),
+  });
+  await assert.rejects(runnerConfig(file), {
+    message: `runner configuration ${file}: ${jobEngineSocketVariables
+      .map(
+        (name) =>
+          `environment.${name} is the runner's to set while engineSocket is true`,
+      )
+      .join("; ")}`,
+  });
+  assert.equal(
+    (
+      await runnerConfig(
+        await written(directory, { ...minimal, engineSocket: true }),
+      )
+    ).engineSocket,
+    true,
+  );
 });
 
 test("a directory is not a runner configuration", async (t) => {

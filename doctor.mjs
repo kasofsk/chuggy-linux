@@ -6,7 +6,7 @@
  * nothing, which the plane answers without granting or releasing a lease.
  */
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
@@ -19,6 +19,7 @@ import {
   engineFailure,
   engineFailureLine,
 } from "@chuggy/worker-core/engineErrors.mjs";
+import { jobEngineSocket, jobGid, jobUid } from "@chuggy/worker-core/job.mjs";
 import {
   poolIdentityPersonal,
   poolLabelValue,
@@ -29,7 +30,11 @@ import {
   runnerConfig,
   runnerConfigLimits,
 } from "./runnerConfig.mjs";
-import { engineEndpoint, runtimeDirectory } from "./runner.mjs";
+import {
+  engineEndpoint,
+  engineSocketHanded,
+  runtimeDirectory,
+} from "./runner.mjs";
 import {
   commandLine,
   serviceReloadArgv,
@@ -88,23 +93,84 @@ function failureMessage(failure) {
 }
 
 /**
+ * Why a job could not reach this machine's engine socket, or nothing.
+ * Reaching a socket takes leave to write it, which the kernel reads from the
+ * owner's bits for its owner, the group's for a member and the rest's for
+ * anyone else; an ACL is not read. A docker job is `jobUid` in `jobGid` and
+ * the socket's group, unless that is root's, which no job is added to; a
+ * podman job is the runner, onto whom keep-id maps it.
+ *
+ * @param {RunnerConfig["engine"]} engine
+ * @param {{uid: number, gid: number, mode: number}} socket the socket's stat
+ * @param {number} runnerUid
+ * @returns {string | undefined}
+ */
+export function engineSocketUnreached(engine, socket, runnerUid) {
+  const docker = engine === "docker";
+  const uid = docker ? jobUid : runnerUid;
+  const groups = docker
+    ? [...new Set([jobGid, ...(socket.gid === 0 ? [] : [socket.gid])])]
+    : [];
+  const writable =
+    socket.uid === uid ? 0o200 : groups.includes(socket.gid) ? 0o020 : 0o002;
+  if ((socket.mode & writable) !== 0) return undefined;
+  const job = docker
+    ? `uid ${String(uid)} in group ${groups.map(String).join(" and ")}`
+    : `uid ${String(uid)}, this runner's`;
+  const root =
+    docker && socket.gid === 0 ? ", and no job is added to root's group" : "";
+  return `it is uid ${String(socket.uid)}'s, group ${String(socket.gid)}'s and mode ${(socket.mode & 0o777).toString(8).padStart(3, "0")}, so a job, ${job}, cannot reach it${root}`;
+}
+
+/**
+ * Whether each job is handed this machine's engine socket and, where it is,
+ * that the job can reach it.
+ *
+ * @param {Engine} engine
+ * @param {RunnerConfig} config
+ * @param {string | undefined} endpoint
+ * @param {number} uid this process's
+ * @returns {Promise<[true, string]>}
+ */
+async function engineSocketProbe(engine, config, endpoint, uid) {
+  const socket = await engineSocketHanded(config, engine, endpoint);
+  if (socket === undefined) return [true, "off"];
+  const named = `${config.engine}'s socket ${socket.path}`;
+  const unreached = engineSocketUnreached(
+    config.engine,
+    await stat(socket.path),
+    uid,
+  );
+  if (unreached !== undefined) throw new Error(`${named}: ${unreached}`);
+  const group =
+    config.engine === "docker" && socket.gid !== 0
+      ? `, added to group ${String(socket.gid)}`
+      : "";
+  return [true, `on: each job reaches ${named} at ${jobEngineSocket}${group}`];
+}
+
+/**
  * @param {Engine} engine
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
+ * @param {number} uid this process's
  * @param {DoctorFinding[]} findings
  */
-async function engineChecks(engine, credentials, config, findings) {
+async function engineChecks(engine, credentials, config, uid, findings) {
   const reachable = await checked(findings, "container engine", async () => {
     const endpoint = await engineEndpoint(config.engine, engine);
     const listed = await engine.exec(listArgv(poolLabelValue(credentials)));
     if (listed.code !== 0) throw new Error(engineFailureLine(listed));
     const count = listed.stdout.split("\n").filter((id) => id.trim()).length;
     return [
-      true,
+      { endpoint },
       `${config.engine}${endpoint === undefined ? "" : ` at ${endpoint}`} lists ${String(count)} of this pool's containers`,
     ];
   });
   if (reachable === undefined) return;
+  await checked(findings, "engine socket", () =>
+    engineSocketProbe(engine, config, reachable.endpoint, uid),
+  );
   await checked(findings, "job network", async () => {
     const inspected = await engine.exec(networkInspectArgv(config.network));
     if (inspected.code === 0) return [true, `${config.network} is present`];
@@ -323,6 +389,7 @@ export async function doctorFindings(input) {
       input.parts.engine(config),
       credentials,
       config,
+      input.uid,
       findings,
     );
   await planeChecks(input, credentials, findings);

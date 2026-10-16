@@ -1,9 +1,10 @@
 /**
  * A machine's worth of files for a suite: a pool registration, the runner's
- * file and a Claude token file, each owner-only, under a home of their own.
+ * file and a Claude token file, each owner-only, under a home of their own,
+ * and a file standing in for the engine's socket.
  */
 
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -72,4 +73,23 @@ export async function runnerFixture(t, documents = {}) {
     );
   }
   return { home, environment, poolFile, tokenFile };
+}
+
+/**
+ * A file standing in for this machine's engine socket, named `name` in a
+ * directory of its own, and the group that owns it.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+export async function engineSocketFixture(
+  t,
+  name = "engine.sock",
+  mode = 0o660,
+) {
+  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-socket-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, name);
+  await writeFile(path, "", { mode });
+  await chmod(path, mode);
+  return { path, gid: (await stat(path)).gid };
 }
