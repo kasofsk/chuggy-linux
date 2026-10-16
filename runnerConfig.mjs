@@ -10,7 +10,11 @@ import { isAbsolute, join } from "node:path";
 
 import { z } from "zod";
 
-import { jobUid, reservedJobVariables } from "@chuggy/worker-core/job.mjs";
+import {
+  jobEngineSocketEnvironment,
+  jobUid,
+  reservedJobVariables,
+} from "@chuggy/worker-core/job.mjs";
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
@@ -30,6 +34,16 @@ const sharedModeBits = 0o077;
 const runnerConfigBytesMax = 64 * 1024;
 
 const positiveSchema = z.number().int().positive().safe();
+
+/**
+ * Whether a bind mount's `source=` can name this absolute path: one with no
+ * comma, which would end it, and no line break.
+ *
+ * @param {string} path
+ */
+export function bindMountNameable(path) {
+  return !/[,\r\n]/u.test(path);
+}
 
 /** A name docker and podman both give a network, less the host's own. */
 const networkSchema = z
@@ -54,23 +68,41 @@ const environmentSchema = z
         });
   });
 
-export const runnerConfigSchema = z.strictObject({
-  engine: z.enum(["docker", "podman"]).default("docker"),
-  concurrencyMax: positiveSchema.default(1),
-  /** The sessions held beside the jobs, none where it is 0. */
-  sessionsMax: z.number().int().nonnegative().safe().default(2),
-  /** Where `claude setup-token`'s output was saved, named in a bind mount. */
-  claudeTokenFile: z
-    .string()
-    .refine((file) => isAbsolute(file), { error: "must be an absolute path" })
-    .refine((file) => !/[,\r\n]/u.test(file), {
-      error: "cannot be named in a bind mount",
-    }),
-  timeoutSecsMax: positiveSchema,
-  outputBytesMax: positiveSchema,
-  environment: environmentSchema.default({}),
-  network: networkSchema.default("chuggy-jobs"),
-});
+export const runnerConfigSchema = z
+  .strictObject({
+    engine: z.enum(["docker", "podman"]).default("docker"),
+    concurrencyMax: positiveSchema.default(1),
+    /** The sessions held beside the jobs, none where it is 0. */
+    sessionsMax: z.number().int().nonnegative().safe().default(2),
+    /** Where `claude setup-token`'s output was saved, named in a bind mount. */
+    claudeTokenFile: z
+      .string()
+      .refine((file) => isAbsolute(file), { error: "must be an absolute path" })
+      .refine((file) => bindMountNameable(file), {
+        error: "cannot be named in a bind mount",
+      }),
+    timeoutSecsMax: positiveSchema,
+    outputBytesMax: positiveSchema,
+    environment: environmentSchema.default({}),
+    network: networkSchema.default("chuggy-jobs"),
+    /**
+     * Whether each job is handed this machine's engine through its socket;
+     * while it is, the variables that tell the job of it are the runner's.
+     */
+    engineSocket: z.boolean().default(false),
+  })
+  .superRefine((config, context) => {
+    if (!config.engineSocket) return;
+    for (const name of Object.keys(
+      jobEngineSocketEnvironment(config.engine, ""),
+    ))
+      if (Object.hasOwn(config.environment, name))
+        context.addIssue({
+          code: "custom",
+          path: ["environment", name],
+          message: "is the runner's to set while engineSocket is true",
+        });
+  });
 
 /**
  * How many jobs and sessions each pool's service holds at once, in the file's

@@ -5,11 +5,13 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { jobEngineSocketVariables } from "@chuggy/worker-core/job.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 
 import { fakeEngine } from "./engine.fixture.mjs";
 import {
   engineEndpoint,
+  engineSocketHanded,
   jobNetwork,
   ownScratchRemoved,
   poolRuntimeDirectory,
@@ -21,7 +23,11 @@ import {
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import { deniedExitStatus } from "./systemdUnit.mjs";
-import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
+import {
+  engineSocketFixture,
+  fixturePool,
+  runnerFixture,
+} from "./runner.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
@@ -740,4 +746,271 @@ test("a job stopped on the plane's word is never ended, though its container out
   });
   assert.equal(state.containers.size, 0);
   assert.deepEqual(asked, []);
+});
+
+/**
+ * What a run over a fake engine `configure` sets up starts for a job and a
+ * session placed beside it: each one's argv, its env file's path left out,
+ * and its env file's lines.
+ *
+ * @param {Awaited<ReturnType<typeof runnerSetup>>} setup
+ * @param {(state: import("./engine.fixture.mjs").FakeEngineState) => void} configure
+ */
+async function ranBeside(setup, configure) {
+  const { engine, state } = fakeEngine();
+  configure(state);
+  state.images.add(registryImage);
+  const runner = await runnerParts(setup, {
+    uid: ownUid,
+    log: () => undefined,
+    engine,
+  });
+  await runner.backend.place(runnerAssignment("asg-1", registryImage), "Job");
+  await runner.backend.place(
+    runnerAssignment("ses-1", registryImage),
+    "Session",
+  );
+  await runner.backend.settled();
+  /** @param {string} assignment */
+  const ran = (assignment) => {
+    const call = state.calls.find(
+      ({ argv }) =>
+        argv[0] === "run" &&
+        argv.includes(`io.chuggy.assignment=${assignment}`),
+    );
+    assert.ok(call !== undefined, assignment);
+    return {
+      argv: call.argv.filter(
+        (_, index) => call.argv[index - 1] !== "--env-file",
+      ),
+      envFile: (call.envFile ?? "").split("\n").filter((line) => line !== ""),
+    };
+  };
+  return { job: ran("asg-1"), session: ran("ses-1"), state };
+}
+
+/**
+ * Checks that a runner whose file hands jobs the engine, over a fake engine
+ * `answered` points at a stand-in socket, runs a job as one whose file hands
+ * none but for the socket's mount, `group` and `variables`, and runs a
+ * session exactly as that one does.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {"docker" | "podman"} engine
+ * @param {(state: import("./engine.fixture.mjs").FakeEngineState, path: string) => void} answered
+ * @param {(gid: number) => string[]} group
+ * @param {(path: string) => string[]} variables
+ */
+async function assertJobsHandedEngineSocket(
+  t,
+  engine,
+  answered,
+  group,
+  variables,
+) {
+  const socket = await engineSocketFixture(t);
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { engine, engineSocket: true },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  /** @param {import("./engine.fixture.mjs").FakeEngineState} state */
+  const configure = (state) => answered(state, socket.path);
+  const handedNone = await ranBeside(
+    { ...setup, config: { ...setup.config, engineSocket: false } },
+    configure,
+  );
+  const handed = await ranBeside(setup, configure);
+  const flags = [
+    "--mount",
+    `type=bind,source=${socket.path},target=/var/run/docker.sock,readonly`,
+    ...group(socket.gid),
+  ];
+  const at = handed.job.argv.indexOf(flags[1]) - 1;
+  assert.deepEqual(handed.job.argv.slice(at, at + flags.length), flags);
+  assert.deepEqual(
+    handed.job.argv.toSpliced(at, flags.length),
+    handedNone.job.argv,
+  );
+  assert.deepEqual(
+    [...handed.job.envFile].sort(),
+    [...handedNone.job.envFile, ...variables(socket.path)].sort(),
+  );
+  assert.deepEqual(handed.session, handedNone.session);
+}
+
+test(
+  "a docker runner whose file hands jobs the engine hands each its context's socket read-only, the socket's group and where the socket is, and a session none of it",
+  {
+    skip:
+      ownUid !== 1000 &&
+      "docker places a job only for a runner that is uid 1000, and this suite is not",
+  },
+  async (t) => {
+    await assertJobsHandedEngineSocket(
+      t,
+      "docker",
+      (state, path) => {
+        state.contextHost = `unix://${path}`;
+      },
+      (gid) => {
+        assert.notEqual(gid, 0);
+        return ["--group-add", String(gid)];
+      },
+      (path) => [
+        "DOCKER_HOST=unix:///var/run/docker.sock",
+        `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=${path}`,
+      ],
+    );
+  },
+);
+
+test("a podman runner whose file hands jobs the engine hands each the socket podman names, read-only and in no group, where the socket is and where what it starts is reached, and a session none of it", async (t) => {
+  await assertJobsHandedEngineSocket(
+    t,
+    "podman",
+    (state, path) => {
+      state.podmanSocket = `unix://${path} true`;
+    },
+    () => [],
+    (path) => [
+      "DOCKER_HOST=unix:///var/run/docker.sock",
+      `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=${path}`,
+      "TESTCONTAINERS_HOST_OVERRIDE=host.containers.internal",
+    ],
+  );
+});
+
+test("a runner whose file hands jobs no engine asks nothing of its socket, and hands a job none of it", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t);
+  const setup = await runnerSetup(poolFile, environment, home);
+  assert.equal(setup.config.engineSocket, false);
+  const { job, state } = await ranBeside(setup, (fake) => {
+    fake.podmanSocket = undefined;
+  });
+  assert.ok(
+    state.calls.every(({ argv }) => !argv.join(" ").includes("RemoteSocket")),
+  );
+  assert.ok(!job.argv.includes("--group-add"));
+  assert.ok(!job.argv.some((flag) => flag.includes("/var/run/docker.sock")));
+  assert.ok(
+    job.envFile.every(
+      (line) =>
+        !jobEngineSocketVariables.some((name) => line.startsWith(`${name}=`)),
+    ),
+  );
+});
+
+test("a run that places nothing asks nothing of the socket a runner whose file hands jobs the engine would hand them, and refuses nothing for it", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { engineSocket: true },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  const { engine, state } = fakeEngine();
+  state.podmanSocket = "/run/user/1000/podman/podman.sock false";
+  await assert.rejects(
+    runnerParts(setup, { uid: ownUid, log: () => undefined, engine }),
+    /is not there; start it with systemctl --user enable --now podman\.socket$/u,
+  );
+  const calls = state.calls.length;
+  await runnerParts(setup, {
+    uid: ownUid,
+    log: () => undefined,
+    engine,
+    places: false,
+  });
+  assert.ok(
+    state.calls
+      .slice(calls)
+      .every(({ argv }) => !argv.join(" ").includes("RemoteSocket")),
+  );
+});
+
+test("podman's socket is taken where podman names it, with or without its scheme, and with the group that owns it", async (t) => {
+  const socket = await engineSocketFixture(t);
+  const { engine, state } = fakeEngine();
+  const config = { engine: "podman", engineSocket: true };
+  for (const named of [socket.path, `unix://${socket.path}`]) {
+    state.podmanSocket = `${named} true`;
+    assert.deepEqual(
+      await engineSocketHanded(/** @type {any} */ (config), engine, undefined),
+      socket,
+    );
+  }
+  assert.deepEqual(
+    await engineSocketHanded(
+      /** @type {any} */ ({ engine: "docker", engineSocket: true }),
+      engine,
+      `unix://${socket.path}`,
+    ),
+    socket,
+  );
+});
+
+test("a run refuses to start where podman's socket is not there, naming what starts it", async (t) => {
+  const socket = await engineSocketFixture(t);
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { engineSocket: true },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  const absent = `${socket.path}.absent`;
+  for (const answer of [`${socket.path} false`, `${absent} true`]) {
+    const { engine, state } = fakeEngine();
+    state.podmanSocket = answer;
+    await assert.rejects(
+      runnerParts(setup, { uid: ownUid, log: () => undefined, engine }),
+      new RegExp(
+        `^Error: podman's socket ${answer.split(" ")[0]} is not there; start it with systemctl --user enable --now podman\\.socket$`,
+        "u",
+      ),
+      answer,
+    );
+  }
+});
+
+test("a socket a bind mount cannot name is refused, and so is a podman that cannot say where its socket is, each naming what to do", async (t) => {
+  const comma = await engineSocketFixture(t, "engine,readonly=false.sock");
+  const unnameable =
+    "cannot be named in a bind mount; serve the engine at an absolute path with no comma or line break, or set engineSocket to false";
+  const { engine, state } = fakeEngine();
+  const podman = /** @type {any} */ ({ engine: "podman", engineSocket: true });
+  const docker = /** @type {any} */ ({ engine: "docker", engineSocket: true });
+  state.podmanSocket = `${comma.path} true`;
+  await assert.rejects(engineSocketHanded(podman, engine, undefined), {
+    message: `podman's socket ${comma.path} ${unnameable}`,
+  });
+  await assert.rejects(
+    engineSocketHanded(docker, engine, `unix://${comma.path}`),
+    {
+      message: `docker's socket ${comma.path} ${unnameable}`,
+    },
+  );
+  await assert.rejects(
+    engineSocketHanded(docker, engine, "unix://docker.sock"),
+    {
+      message: `docker's socket docker.sock ${unnameable}`,
+    },
+  );
+  await assert.rejects(
+    engineSocketHanded(docker, engine, "unix:///nowhere/docker.sock"),
+    {
+      message:
+        "docker's socket /nowhere/docker.sock is not there; start it with sudo systemctl start docker",
+    },
+  );
+  for (const answer of [
+    "",
+    "true",
+    "/run/podman.sock",
+    "/run/podman.sock yes",
+  ]) {
+    state.podmanSocket = answer;
+    await assert.rejects(engineSocketHanded(podman, engine, undefined), {
+      message: `podman answered "${answer}" when asked where its socket is`,
+    });
+  }
+  state.podmanSocket = undefined;
+  await assert.rejects(engineSocketHanded(podman, engine, undefined), {
+    message:
+      "podman could not say where its socket is: Error: cannot connect to Podman",
+  });
 });

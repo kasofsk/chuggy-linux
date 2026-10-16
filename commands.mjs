@@ -108,8 +108,11 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
 
 The pool file is --pool, or ${poolFileVariable}.`;
 
-/** @param {CliCall} call */
-async function started(call) {
+/**
+ * @param {CliCall} call
+ * @param {{places: boolean}} run whether the command places work, which alone needs the engine's socket
+ */
+async function started(call, run = { places: true }) {
   const setup = await runnerSetup(
     call.poolFile,
     call.host.environment,
@@ -120,6 +123,7 @@ async function started(call) {
     log: call.host.out,
     engine: call.host.engine,
     tokens: call.host.tokens,
+    places: run.places,
   });
   return {
     setup,
@@ -197,7 +201,7 @@ function statusKind(workload) {
 
 /** @param {CliCall} call */
 async function status(call) {
-  const { setup, runner, sockets } = await started(call);
+  const { setup, runner, sockets } = await started(call, { places: false });
   const containers = await runner.backend.containers();
   const answered =
     /** @type {{inFlight?: import("@chuggy/worker-core/containerBackend.mjs").InFlightPlacement[]} | undefined} */ (
@@ -225,7 +229,7 @@ async function stop(call) {
     call.host.err(usage);
     return 2;
   }
-  const { runner, sockets } = await started(call);
+  const { runner, sockets } = await started(call, { places: false });
   const answered =
     /** @type {{stopped?: string, evidence?: string, refused?: string} | undefined} */ (
       (await poolServiceAsked(sockets, { op: "stop", assignment })) ??

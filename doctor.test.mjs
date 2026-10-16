@@ -3,10 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { doctorFindings, findingLine } from "./doctor.mjs";
+import { doctorFindings, engineSocketReach, findingLine } from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
-import { runnerFixture } from "./runner.fixture.mjs";
+import { engineSocketFixture, runnerFixture } from "./runner.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
 
 /** The copy doctor is run as, and the Node it runs under. */
@@ -14,7 +14,7 @@ const copy = { node: "/opt/node/bin/node", cli: "/opt/chuggy-linux/cli.mjs" };
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, and the name of a pool file in the home to ask of in place of the fixture's
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, and the name of a pool file in the home to ask of in place of the fixture's
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -37,6 +37,8 @@ async function doctored(t, options = {}) {
   state.podmanVersion = options.podmanVersion ?? state.podmanVersion;
   state.podmanServiceRemote =
     options.podmanServiceRemote ?? state.podmanServiceRemote;
+  state.podmanSocket = options.podmanSocket ?? state.podmanSocket;
+  state.contextHost = options.contextHost ?? state.contextHost;
   const registries = join(home, "registries");
   for (const [file, text] of Object.entries(options.registries ?? {})) {
     await mkdir(dirname(join(registries, file)), { recursive: true });
@@ -105,6 +107,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["podman credential helpers", true],
       ["service unit", true],
       ["container engine", true],
+      ["engine socket", true],
       ["job network", true],
       ["pool token", true],
       ["plane", true],
@@ -120,8 +123,13 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     passed: true,
     detail: "none named in the 0 registries.conf files read",
   });
+  assert.deepEqual(findings[7], {
+    check: "engine socket",
+    passed: true,
+    detail: "off",
+  });
   assert.equal(
-    findings[7].detail,
+    findings[8].detail,
     "chuggy-jobs is missing, and a run makes it",
   );
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
@@ -423,4 +431,165 @@ test("a unit this runner cannot read back, one serving another pool file, one th
       detail: `${unnamed.poolFile} makes a unit name longer than systemd accepts; give the pool file a shorter name`,
     },
   );
+});
+
+/**
+ * The engine socket finding of a machine whose runner hands jobs `engine`'s
+ * socket, a stand-in of `mode` that the fake engine names as `named` makes of
+ * its path.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {"docker" | "podman"} engine
+ * @param {(path: string) => {podmanSocket?: string, contextHost?: string}} named
+ */
+async function engineSocketFound(t, engine, named, mode = 0o660) {
+  const socket = await engineSocketFixture(t, "engine.sock", mode);
+  const { findings, state } = await doctored(t, {
+    runner: { engine, engineSocket: true },
+    uid: 1000,
+    ...named(socket.path),
+  });
+  return {
+    socket,
+    finding: findings.find((found) => found.check === "engine socket"),
+    findings,
+    state,
+  };
+}
+
+test("doctor names the socket each job reaches, at the path a job finds it, and under docker the group it is added to", async (t) => {
+  const docker = await engineSocketFound(t, "docker", (path) => ({
+    contextHost: `unix://${path}`,
+  }));
+  assert.notEqual(docker.socket.gid, 0);
+  assert.deepEqual(docker.finding, {
+    check: "engine socket",
+    passed: true,
+    detail: `on: each job reaches docker's socket ${docker.socket.path} at /var/run/docker.sock, added to group ${String(docker.socket.gid)}`,
+  });
+  assert.deepEqual(
+    docker.state.calls.map((call) => call.argv[0]),
+    ["info", "context", "ps", "network"],
+  );
+  const podman = await engineSocketFound(t, "podman", (path) => ({
+    podmanSocket: `unix://${path} true`,
+  }));
+  assert.deepEqual(podman.finding, {
+    check: "engine socket",
+    passed: true,
+    detail: `on: each job reaches podman's socket ${podman.socket.path} at /var/run/docker.sock`,
+  });
+  assert.ok(podman.findings.every((found) => found.passed));
+});
+
+test("doctor fails a socket that is not there, naming what starts podman's, and one a job cannot reach, and still checks the job network", async (t) => {
+  const missing = await engineSocketFound(t, "podman", (path) => ({
+    podmanSocket: `${path} false`,
+  }));
+  assert.deepEqual(missing.finding, {
+    check: "engine socket",
+    passed: false,
+    detail: `podman's socket ${missing.socket.path} is not there; start it with systemctl --user enable --now podman.socket`,
+  });
+  assert.ok(missing.findings.some((found) => found.check === "job network"));
+  const unreached = await engineSocketFound(
+    t,
+    "docker",
+    (path) => ({ contextHost: `unix://${path}` }),
+    0o000,
+  );
+  assert.deepEqual(unreached.finding, {
+    check: "engine socket",
+    passed: false,
+    detail: `docker's socket ${unreached.socket.path}: it is uid ${String(process.getuid?.())}'s, group ${String(unreached.socket.gid)}'s and mode 000, so a job, uid 1000 in group ${[...new Set([1000, unreached.socket.gid])].join(" and ")}, cannot reach it; give the socket a group of its own, such as docker's, and mode 660`,
+  });
+});
+
+test("a socket whose stat does not decide whether a job reaches it is warned of with what makes it sure, and passes", async (t) => {
+  const uid = (process.getuid?.() ?? -1) + 1;
+  const socket = await engineSocketFixture(t);
+  const { findings } = await doctored(t, {
+    runner: { engine: "podman", engineSocket: true },
+    uid,
+    podmanSocket: `${socket.path} true`,
+  });
+  assert.deepEqual(
+    findings.find((found) => found.check === "engine socket"),
+    {
+      check: "engine socket",
+      passed: true,
+      warning: true,
+      detail: `on: each job is handed podman's socket ${socket.path} at /var/run/docker.sock, but it is uid ${String(uid - 1)}'s, group ${String(socket.gid)}'s and mode 660, so a job, uid ${String(uid)}, this runner's, reaches it only if its group or an ACL lets it, which doctor cannot see; to be sure, run podman's socket as this runner, as systemctl --user enable --now podman.socket does`,
+    },
+  );
+});
+
+test("a job reaches the engine's socket by the bits its uid and groups are read by, under docker its own, its group's and the socket's unless that is root's, and under podman the runner's, and where an ACL could let it in and the bits do not, they do not decide", () => {
+  const docker = /** @type {const} */ ("docker");
+  const podman = /** @type {const} */ ("podman");
+  const socket = (uid = 0, gid = 125, mode = 0o140660) => ({ uid, gid, mode });
+  const reached = { reach: "Reached" };
+  const dockerRemedy =
+    "give the socket a group of its own, such as docker's, and mode 660";
+  const podmanRemedy =
+    "run podman's socket as this runner, as systemctl --user enable --now podman.socket does";
+  for (const [stat, runnerUid] of [
+    [socket(), 1000],
+    [socket(0, 0, 0o140666), 1234],
+    [socket(1000, 0, 0o140600), 1234],
+    [socket(0, 1000, 0o140660), 1234],
+  ])
+    assert.deepEqual(engineSocketReach(docker, stat, runnerUid), reached);
+  for (const [stat, runnerUid] of [
+    [socket(1234, 1234, 0o140600), 1234],
+    [socket(1234, 1234, 0o140666), 1000],
+  ])
+    assert.deepEqual(engineSocketReach(podman, stat, runnerUid), reached);
+  for (const [engine, stat, why] of [
+    [
+      docker,
+      socket(0, 0),
+      `it is uid 0's, group 0's and mode 660, so a job, uid 1000 in group 1000 and never in root's, reaches it only if an ACL lets it, which doctor cannot see; to be sure, ${dockerRemedy}`,
+    ],
+    [
+      podman,
+      socket(1234, 1000),
+      `it is uid 1234's, group 1000's and mode 660, so a job, uid 1000, this runner's, reaches it only if its group or an ACL lets it, which doctor cannot see; to be sure, ${podmanRemedy}`,
+    ],
+  ])
+    assert.deepEqual(engineSocketReach(engine, stat, 1000), {
+      reach: "Undecided",
+      why,
+    });
+  for (const [engine, stat, why] of [
+    [
+      docker,
+      socket(0, 0, 0o140600),
+      `it is uid 0's, group 0's and mode 600, so a job, uid 1000 in group 1000 and never in root's, cannot reach it; ${dockerRemedy}`,
+    ],
+    [
+      docker,
+      socket(1000, 125, 0o140060),
+      `it is uid 1000's, group 125's and mode 060, so a job, uid 1000 in group 1000 and 125, cannot reach it; ${dockerRemedy}`,
+    ],
+    [
+      docker,
+      socket(0, 125, 0o140606),
+      `it is uid 0's, group 125's and mode 606, so a job, uid 1000 in group 1000 and 125, cannot reach it; ${dockerRemedy}`,
+    ],
+    [
+      podman,
+      socket(1000, 1000, 0o140060),
+      `it is uid 1000's, group 1000's and mode 060, so a job, uid 1000, this runner's, cannot reach it; ${podmanRemedy}`,
+    ],
+    [
+      podman,
+      socket(1234, 1000, 0o140600),
+      `it is uid 1234's, group 1000's and mode 600, so a job, uid 1000, this runner's, cannot reach it; ${podmanRemedy}`,
+    ],
+  ])
+    assert.deepEqual(engineSocketReach(engine, stat, 1000), {
+      reach: "Unreached",
+      why,
+    });
 });

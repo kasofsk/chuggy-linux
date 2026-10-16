@@ -603,6 +603,42 @@ test("status and stop reach this pool's service, and status names each workload'
   assert.deepEqual(stopped, ["asg-1"]);
 });
 
+test("status and stop ask nothing of the socket a runner hands jobs, so they answer while podman's is down, and once is refused for it", async (t) => {
+  const { home, environment, poolFile } = await served(t, {
+    runner: { engineSocket: true },
+  });
+  const { engine, state } = fakeEngine();
+  state.podmanSocket = "/run/user/1000/podman/podman.sock false";
+  state.containers.set("chuggy-shame-a", {
+    id: "id-chuggy-shame-a",
+    name: "chuggy-shame-a",
+    status: "running",
+    image: "i",
+    labels: {
+      "io.chuggy.pool": "vteng/chuggy/shame",
+      "io.chuggy.deadline": "1800000000",
+      "io.chuggy.assignment": "asg-2",
+    },
+  });
+  const machine = { home, environment, engine };
+  const status = await called(["status", "--pool", poolFile], machine);
+  assert.equal(status.status, 0);
+  assert.match(status.out, /^chuggy-shame-a {2}job {2}running .* asg-2$/mu);
+  const stop = await called(["stop", "asg-2", "--pool", poolFile], machine);
+  assert.equal(stop.status, 0);
+  assert.match(stop.out, /^stopped asg-2$/mu);
+  assert.ok(!state.containers.has("chuggy-shame-a"));
+  assert.ok(
+    state.calls.every(({ argv }) => !argv.join(" ").includes("RemoteSocket")),
+  );
+  const once = await called(["once", "--pool", poolFile], machine);
+  assert.equal(once.status, 1);
+  assert.match(
+    once.err,
+    /^podman's socket \/run\/user\/1000\/podman\/podman\.sock is not there; start it with systemctl --user enable --now podman\.socket$/u,
+  );
+});
+
 test("status names a job what a service from before sessions answers it is placing, which carries no kind", async (t) => {
   const { home, environment, poolFile, paths } = await served(t);
   const { assignment, name, image, phase, deadlineEpochSecs } = inFlightFixture;

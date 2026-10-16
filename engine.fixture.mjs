@@ -103,6 +103,15 @@ function fakeEngineState() {
      * @type {string | undefined}
      */
     podmanServiceRemote: /** @type {string | undefined} */ ("false"),
+    /**
+     * What podman's `info` answers of its socket, its path and whether it is
+     * there, or nothing when that `info` fails.
+     *
+     * @type {string | undefined}
+     */
+    podmanSocket: /** @type {string | undefined} */ (
+      "/run/user/1000/podman/podman.sock true"
+    ),
     /** What docker's `info` names its security options; rootless adds `name=rootless`. */
     securityOptions: ["name=apparmor", "name=seccomp,profile=builtin"],
     /**
@@ -286,6 +295,13 @@ function answer(state, call) {
     return state.podmanServiceRemote === undefined
       ? failed("Error: cannot connect to Podman")
       : answered(`${state.podmanServiceRemote}\n`);
+  if (
+    verb === "info" &&
+    call.argv[2] === "{{.Host.RemoteSocket.Path}} {{.Host.RemoteSocket.Exists}}"
+  )
+    return state.podmanSocket === undefined
+      ? failed("Error: cannot connect to Podman")
+      : answered(`${state.podmanSocket}\n`);
   if (verb === "info")
     return answered(`${JSON.stringify(state.securityOptions)}\n`);
   if (verb === "context")

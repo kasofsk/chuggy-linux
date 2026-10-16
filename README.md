@@ -57,7 +57,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "timeoutSecsMax": 7200,
   "outputBytesMax": 1048576,
   "environment": {},
-  "network": "chuggy-jobs"
+  "network": "chuggy-jobs",
+  "engineSocket": false
 }
 ```
 
@@ -69,14 +70,19 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `claudeTokenFile` | yes      | The file `claude setup-token`'s output was saved to, mode 600. It is mounted into each job, never read.     |
 | `timeoutSecsMax`  | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
 | `outputBytesMax`  | yes      | The most output a job may report.                                                                          |
-| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's. |
+| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's, and with `engineSocket` so are those it sets. |
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
+| `engineSocket`    | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
 
 A session is a project's chat or lead, run on this machine's Claude login, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same token file, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
 A job runs as uid 1000, the image's user, and reads the token file as that uid, so the file must be yours. Rootless podman maps that uid onto you. Docker runs it as this machine's uid 1000, so docker serves only a runner that is uid 1000, and refuses any other user: use rootless podman there. Rootless docker and docker with userns-remap are refused too, for the same reason: use rootful docker without userns-remap, or rootless podman. Docker must be local, reached through a unix socket by your current docker context.
+
+With `engineSocket` on, each job, and never a session, is handed this machine's engine, so that its checks can start containers of their own, as testcontainers does. The engine's socket is mounted at `/var/run/docker.sock`, read-only, which limits nothing the engine will do; a docker job is added to the socket's group unless that is root's, and the job is told where the socket is by `DOCKER_HOST`, `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` and, on podman, `TESTCONTAINERS_HOST_OVERRIDE`, which `environment` may then not name. Podman's socket must be running: `systemctl --user enable --now podman.socket`. `doctor` names the socket and fails one a job cannot reach; where its owners and mode cannot settle it, as with a socket of root's group that only an ACL could open to a job, it warns.
+
+Every job on this machine, and its agent, can then run anything the engine can; with rootful docker, that is root on this machine. That includes stopping or inspecting this machine's other jobs and sessions, and reading what every container here holds, its own included. Turn it on only on a machine whose every project you trust that far. The containers a job starts are left to testcontainers' own clean-up (Ryuk), so a killed job can leave them running. testcontainers for Rust needs docker: it does not work on rootless podman.
 
 ## The image a job runs in
 
@@ -107,7 +113,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, the token file, podman's credential helpers, whether the pool file's unit runs this copy, the engine, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the token file, podman's credential helpers, whether the pool file's unit runs this copy, the engine, whether jobs are handed its socket, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 

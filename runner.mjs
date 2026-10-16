@@ -5,9 +5,9 @@
  */
 
 import { readdirSync, rmSync } from "node:fs";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
@@ -25,6 +25,7 @@ import {
   networkCreateArgv,
   networkInspectArgv,
   podmanRemoteArgv,
+  podmanSocketArgv,
   podmanVersionArgv,
 } from "@chuggy/worker-core/engineArgv.mjs";
 import {
@@ -35,6 +36,7 @@ import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import {
+  bindMountNameable,
   claudeTokenFileRefusal,
   runnerConfig,
   runnerPaths,
@@ -46,6 +48,7 @@ import { deniedExitStatus } from "./systemdUnit.mjs";
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/containerBackend.mjs").ContainerBackend} ContainerBackend
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
+ * @typedef {import("@chuggy/worker-core/engineArgv.mjs").EngineSocket} EngineSocket
  * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
@@ -116,6 +119,9 @@ export function runnerEngine(config) {
   return containerEngine(config.engine, engineCallTimeoutMs);
 }
 
+/** The scheme a unix socket is named by as an endpoint. */
+const unixScheme = "unix://";
+
 /** How `docker info` names a daemon that maps a job's uid onto another. */
 const remappedDocker = { rootless: "rootless", userns: "with userns-remap" };
 
@@ -145,7 +151,7 @@ async function dockerEndpoint(engine) {
       `docker's context could not be read: ${engineFailureLine(context)}`,
     );
   const endpoint = context.stdout.trim();
-  if (!endpoint.startsWith("unix://"))
+  if (!endpoint.startsWith(unixScheme))
     throw new Error(
       `docker's context names "${endpoint}", and only a local docker, reached by a unix socket, is supported`,
     );
@@ -215,9 +221,70 @@ export async function engineEndpoint(name, engine) {
   return undefined;
 }
 
+/** What starts each engine's socket. */
+const engineSocketStart = {
+  docker: "sudo systemctl start docker",
+  podman: "systemctl --user enable --now podman.socket",
+};
+
+/**
+ * Where podman says its socket is on this machine, which it may name as an
+ * endpoint, and whether it is there.
+ *
+ * @param {Engine} engine
+ */
+async function podmanSocket(engine) {
+  const answer = await engine.exec(podmanSocketArgv());
+  if (answer.code !== 0)
+    throw new Error(
+      `podman could not say where its socket is: ${engineFailureLine(answer)}`,
+    );
+  const said = /^(\S.*) (true|false)$/u.exec(answer.stdout.trim());
+  if (said === null)
+    throw new Error(
+      `podman answered "${answer.stdout.trim()}" when asked where its socket is`,
+    );
+  const [, named, there] = said;
+  const path = named.startsWith(unixScheme)
+    ? named.slice(unixScheme.length)
+    : named;
+  return { path, there: there === "true" };
+}
+
+/**
+ * The socket of this machine's engine each job is handed: docker's at the
+ * endpoint its context names, or podman's where podman says, with the group
+ * that owns it. One a bind mount cannot name is refused, and so is one that
+ * is not there. Where the runner's file hands jobs none, there is none, and
+ * nothing is asked.
+ *
+ * @param {RunnerConfig} config
+ * @param {Engine} engine
+ * @param {string | undefined} endpoint docker's, as `engineEndpoint` answers it
+ * @returns {Promise<EngineSocket | undefined>}
+ */
+export async function engineSocketHanded(config, engine, endpoint) {
+  if (!config.engineSocket) return undefined;
+  const { path, there } =
+    config.engine === "docker"
+      ? { path: (endpoint ?? "").slice(unixScheme.length), there: true }
+      : await podmanSocket(engine);
+  const socket = `${config.engine}'s socket ${path}`;
+  if (!isAbsolute(path) || !bindMountNameable(path))
+    throw new Error(
+      `${socket} cannot be named in a bind mount; serve the engine at an absolute path with no comma or line break, or set engineSocket to false`,
+    );
+  const stats = there ? await stat(path).catch(() => undefined) : undefined;
+  if (stats === undefined)
+    throw new Error(
+      `${socket} is not there; start it with ${engineSocketStart[config.engine]}`,
+    );
+  return { path, gid: stats.gid };
+}
+
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid, where its log lines go, the engine and token source when not those the files name, and the fetch a job's or a session's plane is reached by when not the global one
+ * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean}} host this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, and `places: false` for a run that places nothing, which then asks nothing of the engine's socket
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -225,6 +292,10 @@ export async function runnerParts(setup, host) {
   const runtimeDir = poolRuntimeDirectory(paths, credentials);
   const engine = host.engine ?? runnerEngine(config);
   const dockerHost = await engineEndpoint(config.engine, engine);
+  const engineSocket =
+    host.places === false
+      ? undefined
+      : await engineSocketHanded(config, engine, dockerHost);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const backend = containerBackend(
     {
@@ -244,6 +315,7 @@ export async function runnerParts(setup, host) {
         memoryMib: Math.floor(totalmem() / (1024 * 1024)),
       },
       pullRetryMs,
+      ...(engineSocket === undefined ? {} : { engineSocket }),
     },
     {
       engine,
