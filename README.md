@@ -73,7 +73,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `claudeTokenFile` | yes      | The file `claude setup-token`'s output was saved to, mode 600. It is mounted into each job, never read.     |
 | `timeoutSecsMax`  | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
 | `outputBytesMax`  | yes      | The most output a job may report.                                                                          |
-| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's, and with `engineSocket` so are those it sets. |
+| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE`, `CHUGGY_HOST_JOB` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's, on a pool registered with `--host` so are `HOME` and `TMPDIR`, and with `engineSocket` so are those it sets. |
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 | `engineSocket`    | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`          | no       | The images a job that pins none runs in, below. Default none.                                              |
@@ -102,7 +102,7 @@ A task that pins no image names capabilities instead, and this runner meets them
 "images": [{ "image": "ghcr.io/you/bazel:7", "capabilities": ["Agent:Claude", "Tool:Bazel"] }]
 ```
 
-On a pool registered with `--host`, such a job of this machine's platform runs on this machine instead: as you, in a directory of its own under `~/.local/state/chuggy-linux/jobs/`, with its own `HOME` and temporary directory, the service's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the service's `PATH`. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever this machine reaches; register with `--host` only a machine whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, its log is saved beside a container's, and its directory is removed when it ends.
+On a pool registered with `--host`, such a job of this machine's platform runs on this machine instead: as you, in a directory of its own under `~/.local/state/chuggy-linux/jobs/`, with its own `HOME` and temporary directory, the service's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the service's `PATH`. That is systemd's for your user and not your shell's, so where `claude` is in `~/.local/bin`, name it in a drop-in: `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin` under `[Service]`. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever this machine reaches; register with `--host` only a machine whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, its log is saved beside a container's, and its directory is removed when it ends.
 
 An image that lacks one is refused before any agent starts, and the ticket stops with a reason naming what is missing. An image the registry refuses is refused at once, and one that fails to pull any other way, such as from a host that does not resolve, after two minutes of trying.
 
@@ -145,13 +145,13 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
-| `once`              | One poll, then waits for what it placed to start. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | The runner's limits, this pool's containers and what the service is still pulling or starting, each named a job or a session.           |
-| `stop <assignment>` | Stops one assignment's container, through the service when it is running.                                                               |
+| `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
+| `status`            | The runner's limits, this pool's containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
+| `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
 
-`once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going.
+`once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going. Nor does it while it waits for a job on this machine itself, whose lease lapses as it runs.
 
 ## What it does
 

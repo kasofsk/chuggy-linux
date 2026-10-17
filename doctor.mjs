@@ -9,6 +9,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  hostEnvironmentRefusal,
+  hostTimeoutSecsMax,
+} from "@chuggy/worker-core/hostBackend.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 
 import {
@@ -85,6 +89,22 @@ async function checked(findings, check, probe) {
     findings.push({ check, passed: false, detail: failureMessage(failure) });
     return undefined;
   }
+}
+
+/**
+ * What a pool registered with `--host` runs on this machine, or a throw naming
+ * what in the runner's file no host job can run under.
+ *
+ * @param {RunnerConfig} config
+ */
+function hostJobsChecked(config) {
+  const refusal = hostEnvironmentRefusal(config.environment);
+  if (refusal !== undefined) throw new Error(refusal);
+  if (config.timeoutSecsMax > hostTimeoutSecsMax)
+    throw new Error(
+      `timeoutSecsMax is at most ${String(hostTimeoutSecsMax)} for a job on this machine itself`,
+    );
+  return "a job that pins no image runs on this machine itself, unisolated";
 }
 
 /** @param {unknown} failure */
@@ -426,6 +446,11 @@ export async function doctorFindings(input) {
       if (refusal !== undefined) throw new Error(refusal);
       return [true, `${config.claudeTokenFile}, this runner's own`];
     });
+  if (credentials?.host === true && config !== undefined)
+    await checked(findings, "host jobs", async () => [
+      true,
+      hostJobsChecked(config),
+    ]);
   if (config?.engine === "podman")
     findings.push(await podmanHelpersFinding(input.registriesConf));
   findings.push(await serviceUnitFinding(input));

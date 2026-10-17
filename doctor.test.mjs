@@ -6,7 +6,11 @@ import test from "node:test";
 import { doctorFindings, engineSocketReach, findingLine } from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
-import { engineSocketFixture, runnerFixture } from "./runner.fixture.mjs";
+import {
+  engineSocketFixture,
+  fixturePool,
+  runnerFixture,
+} from "./runner.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
 
 /** The copy doctor is run as, and the Node it runs under. */
@@ -93,6 +97,34 @@ test("doctor names a personal runner's file as one, by its tenant and member", a
     passed: true,
     detail: `${poolFile} names personal runner vteng/28:https:%2F%2Fauth.chuggy.example%2F0f3c9a52-member`,
   });
+});
+
+test("a pool registered with --host fails doctor where the runner's file names what a host job's places set", async (t) => {
+  const pool = { ...fixturePool, host: true };
+  const passed = await doctored(t, { pool });
+  assert.deepEqual(
+    passed.findings.find((finding) => finding.check === "host jobs"),
+    {
+      check: "host jobs",
+      passed: true,
+      detail:
+        "a job that pins no image runs on this machine itself, unisolated",
+    },
+  );
+  const failed = await doctored(t, {
+    pool,
+    runner: { environment: { TMPDIR: "/var/tmp" } },
+  });
+  assert.match(
+    failed.findings.find((finding) => finding.check === "host jobs")?.detail ??
+      "",
+    /^TMPDIR is set for every host job/u,
+  );
+  const unhosted = await doctored(t);
+  assert.equal(
+    unhosted.findings.some((finding) => finding.check === "host jobs"),
+    false,
+  );
 });
 
 test("a machine ready to run passes every check, and doctor changes nothing", async (t) => {

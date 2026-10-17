@@ -3,8 +3,7 @@
  * the container backend beside the worker core's pool runner, which passes
  * until the plane denies the pool. Where the pool was registered with
  * `--host`, a job that pins no image runs on this machine itself, beside the
- * containers. Every
- * command starts here.
+ * containers. Every command starts here.
  */
 
 import { readdirSync, rmSync } from "node:fs";

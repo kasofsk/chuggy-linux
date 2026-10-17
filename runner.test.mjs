@@ -259,10 +259,36 @@ test("a pool registered with --host takes a job that pins no image on this machi
   );
   assert.match(
     contained.evidence ?? "",
-    /no image this pool's owner listed declares every capability it names/u,
+    /no image this pool's owner listed meets it/u,
   );
   assert.equal(state.calls.length, calls);
   assert.deepEqual(runner.backend.inFlight(), []);
+});
+
+test("a pool registered without --host runs no job on this machine, even one naming its platform", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    pool: { ...fixturePool, capabilities: ["Platform:Linux:Amd64"] },
+  });
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid: ownUid + 1, log: () => undefined, engine },
+  );
+  const calls = state.calls.length;
+  const placed = await runner.backend.place(
+    {
+      assignment: "asg-1",
+      capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
+      cpuMillis: 1,
+      memoryMib: 1,
+      deadlineSecs: 60,
+      callbackUrl: "https://chuggy.example/worker",
+      bearer: "attempt-bearer",
+    },
+    "Job",
+  );
+  assert.match(placed.evidence ?? "", /no image this pool's owner listed/u);
+  assert.equal(state.calls.length, calls);
 });
 
 test("a runner whose file sets sessionsMax to 0 is given no room for a session", async (t) => {
