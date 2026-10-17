@@ -97,12 +97,6 @@ export const runnerConfigSchema = z
      * owner declares it meets: the first meeting every one the job names.
      */
     images: ownerImagesSchema.default([]),
-    /**
-     * Whether a job that pins no image runs on this machine itself rather
-     * than in one of `images`: as this runner's user, with nothing isolating
-     * it from what that user can reach.
-     */
-    host: z.boolean().default(false),
   })
   .superRefine((config, context) => {
     if (!config.engineSocket) return;

@@ -55,25 +55,18 @@ test("a minimal file is read with every default", async (t) => {
     network: "chuggy-jobs",
     engineSocket: false,
     images: [],
-    host: false,
   });
 });
 
-test("a job that pins no image is run in an image its owner lists, or on this machine itself", async (t) => {
+test("a job that pins no image is run in an image its owner lists", async (t) => {
   const images = [
     {
       image: "ghcr.io/owner/bazel:7",
       capabilities: ["Agent:Claude", "Tool:Bazel"],
     },
   ];
-  const file = await written(await scratch(t), {
-    ...minimal,
-    images,
-    host: true,
-  });
-  const read = await runnerConfig(file);
-  assert.deepEqual(read.images, images);
-  assert.equal(read.host, true);
+  const file = await written(await scratch(t), { ...minimal, images });
+  assert.deepEqual((await runnerConfig(file)).images, images);
 });
 
 test("sessionsMax is a whole number of none or more, read apart from concurrencyMax", async (t) => {
@@ -96,7 +89,6 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         network: "chuggy-jobs",
         engineSocket: false,
         images: [],
-        host: false,
       },
     );
   for (const [sessionsMax, why] of [
@@ -174,7 +166,7 @@ test("what the file may not say is refused, naming where", async (t) => {
       { ...minimal, images: [{ image: "", capabilities: [] }] },
       /images\.0\.image /u,
     ],
-    [{ ...minimal, host: "yes" }, /host Invalid input: expected boolean/u],
+    [{ ...minimal, host: true }, /Unrecognized key: "host"/u],
     ["{", /is not JSON/u],
   ];
   for (const [document, why] of refused)

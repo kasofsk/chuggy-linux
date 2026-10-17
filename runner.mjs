@@ -1,8 +1,9 @@
 /**
  * The runner composed: the pool's credentials and the runner's file read, and
  * the container backend beside the worker core's pool runner, which passes
- * until the plane denies the pool. Where the file says `host`, a job that
- * pins no image runs on this machine itself, beside the containers. Every
+ * until the plane denies the pool. Where the pool was registered with
+ * `--host`, a job that pins no image runs on this machine itself, beside the
+ * containers. Every
  * command starts here.
  */
 
@@ -22,6 +23,7 @@ import {
 import { containerBackend } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   hostBackend,
+  hostPlatformsDeclared,
   hostRoutedBackend,
 } from "@chuggy/worker-core/hostBackend.mjs";
 import { containerEngine } from "@chuggy/worker-core/engine.mjs";
@@ -335,9 +337,7 @@ export async function runnerParts(setup, host) {
         claudeTokenFileRefusal(file, config.engine, host.uid),
     },
   );
-  const backend = config.host
-    ? runnerHostRouted(setup, container, machine, host)
-    : container;
+  const backend = runnerHostRouted(setup, container, machine, host);
   const client = poolRunnerClient(
     credentials,
     backend,
@@ -348,8 +348,9 @@ export async function runnerParts(setup, host) {
 }
 
 /**
- * The container backend with this machine beside it, taking each job that
- * pins no image and names the platform the pool declared it is.
+ * The container backend, with this machine beside it where the pool was
+ * registered with `--host`, taking each job that pins no image and names the
+ * platform the pool declared it is.
  *
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
@@ -359,9 +360,8 @@ export async function runnerParts(setup, host) {
  */
 function runnerHostRouted(setup, container, machine, host) {
   const { credentials, config, paths } = setup;
-  const platforms = credentials.capabilities.filter((capability) =>
-    capability.startsWith("Platform:Linux:"),
-  );
+  const platforms = hostPlatformsDeclared(credentials, "Linux");
+  if (platforms.length === 0) return container;
   return hostRoutedBackend(
     container,
     hostBackend(

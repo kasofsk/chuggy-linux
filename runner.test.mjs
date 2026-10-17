@@ -219,10 +219,13 @@ test("a run's backend refuses an assignment while the token file is not this run
   assert.equal(state.calls.length, calls);
 });
 
-test("a runner whose file says host takes a job that pins no image on this machine, and leaves every other to its containers", async (t) => {
+test("a pool registered with --host takes a job that pins no image on this machine, and leaves every other to its containers", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t, {
-    runner: { host: true },
-    pool: { ...fixturePool, capabilities: ["Platform:Linux:Amd64"] },
+    pool: {
+      ...fixturePool,
+      capabilities: ["Platform:Linux:Amd64"],
+      host: true,
+    },
   });
   const { engine, state } = fakeEngine();
   const uid = ownUid + 1;
