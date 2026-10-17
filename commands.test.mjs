@@ -1216,6 +1216,47 @@ test("register says the token is spent where chuggy answered but the pool file c
   assert.ok(!err.includes(registeredFixture.clientSecret));
 });
 
+test("register declares each --capability after this machine's platform, and refuses one that is not a capability before spending the token", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const declared = {
+    ...registeredFixture,
+    capabilities: ["Platform:Linux:Amd64", "Agent:Claude", "Tool:Bazel"],
+  };
+  const { fetch, requests } = answeringFetch(201, declared);
+  await called(
+    [
+      ...registerArgv,
+      "--capability",
+      "Agent:Claude",
+      "--capability",
+      "Tool:Bazel",
+    ],
+    { home, environment, fetch },
+  );
+  assert.deepEqual(
+    JSON.parse(String(requests[0].init.body)).capabilities,
+    declared.capabilities,
+  );
+  for (const [capability, why] of [
+    ["Platform:Linux:Arm64", /names a platform, which register finds/u],
+    ["has space", /is not a capability/u],
+  ]) {
+    const refused = answeringFetch(201, declared);
+    const { status, err } = await called(
+      [...registerArgv, "--capability", capability],
+      { home, environment, fetch: refused.fetch },
+    );
+    assert.equal(status, 2);
+    assert.match(err, why);
+    assert.deepEqual(refused.requests, []);
+  }
+  assert.equal(
+    (await called(["status", "--pool", "x", "--capability", "Tool:Bazel"]))
+      .status,
+    2,
+  );
+});
+
 test("a token beginning with a dash is taken as --token=<token>, as usage says, and the space form keeps working for one that does not", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const dashed = `-${"a".repeat(42)}`;
@@ -1241,7 +1282,7 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   assert.deepEqual(requests, []);
   assert.match(
     (await called(["help"])).out,
-    /^ {7}chuggy-linux register --api <origin> --token=<token> \[--pool <name> \| --personal\]$/mu,
+    /^ {7}chuggy-linux register --api <origin> --token=<token> \[--pool <name> \| --personal\]\n {29}\[--capability <token>\]\.\.\.$/mu,
   );
 });
 
