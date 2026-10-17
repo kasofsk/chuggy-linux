@@ -104,7 +104,7 @@ function hostJobsChecked(config) {
     throw new Error(
       `timeoutSecsMax is at most ${String(hostTimeoutSecsMax)} for a job on this machine itself`,
     );
-  return "a job that pins no image runs on this machine itself, unisolated";
+  return "a job that pins no image and names this machine's platform runs on the machine itself, unisolated";
 }
 
 /** @param {unknown} failure */

@@ -108,7 +108,7 @@ test("a pool registered with --host fails doctor where the runner's file names w
       check: "host jobs",
       passed: true,
       detail:
-        "a job that pins no image runs on this machine itself, unisolated",
+        "a job that pins no image and names this machine's platform runs on the machine itself, unisolated",
     },
   );
   const failed = await doctored(t, {

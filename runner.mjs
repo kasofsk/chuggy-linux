@@ -460,14 +460,14 @@ export function ownScratchRemoved(runtime, pid = process.pid) {
 }
 
 /**
- * Has a SIGTERM or SIGINT remove this process's own scratch, then end the
+ * Has a SIGTERM, SIGINT or SIGHUP remove this process's own scratch, then end the
  * process by that signal as it would have ended anyway. Its containers are
  * left for the next run to pick up.
  *
  * @param {string} runtime
  */
 export function scratchRemovedOnSignal(runtime) {
-  for (const signal of ["SIGTERM", "SIGINT"])
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
     process.once(signal, () => {
       try {
         ownScratchRemoved(runtime);

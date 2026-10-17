@@ -559,7 +559,7 @@ test("a process removes only the pull credentials and env files it made", async 
   ]);
 });
 
-for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT"]))
+for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT", "SIGHUP"]))
   test(`a ${signal} removes the process's own scratch and still ends it by that signal`, async (t) => {
     const { home, environment } = await runnerFixture(t);
     const runtime = /** @type {string} */ (
