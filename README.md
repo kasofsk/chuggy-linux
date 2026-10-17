@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.8.0/chuggy-linux-0.8.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.9.0/chuggy-linux-0.9.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout.
@@ -25,6 +25,8 @@ chuggy-linux register --api <chuggy's origin> --token=<token>
 Give the token with `=`: a token can begin with `-`, which `--token <token>` would read as an option.
 
 This spends the token, declaring the machine's platform, `Platform:Linux:Amd64` or `Platform:Linux:Arm64`, and writes the pool file chuggy answers with to `~/.config/chuggy/pools/`, named for its tenant, project and pool: `vteng.chuggy.shame.json`. `--api` must be https unless it is this machine's loopback. The secret goes only into the file, mode 600.
+
+A project's task can require capabilities rather than pin an image, such as `Agent:Claude` or `Tool:Bazel`, and is offered only to a pool declaring every one. Declare each this machine meets with `--capability <token>`, as often as needed; a token is letters, digits, `_`, `:` and `-`, and the platform is never one, since `register` finds it. The registration token must permit each, or chuggy refuses it and the token stays unspent. `--host` has jobs that pin no image run on this machine itself, which the pool file then says. How a job is then met is yours: see [The image a job runs in](#the-image-a-job-runs-in).
 
 The pool takes the hostname's first label unless `--pool <name>` names it; a name is lowercase letters, digits and hyphens. A pool is one per name in a project, so a second machine of the same name registering in the same project displaces the first: give one a `--pool`.
 
@@ -58,7 +60,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "outputBytesMax": 1048576,
   "environment": {},
   "network": "chuggy-jobs",
-  "engineSocket": false
+  "engineSocket": false,
+  "images": []
 }
 ```
 
@@ -70,9 +73,10 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `claudeTokenFile` | yes      | The file `claude setup-token`'s output was saved to, mode 600. It is mounted into each job, never read.     |
 | `timeoutSecsMax`  | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
 | `outputBytesMax`  | yes      | The most output a job may report.                                                                          |
-| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's, and with `engineSocket` so are those it sets. |
+| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE`, `CHUGGY_HOST_JOB` and `CLAUDE_CODE_OAUTH_TOKEN` are the runner's, on a pool registered with `--host` so are `HOME` and `TMPDIR`, and with `engineSocket` so are those it sets. |
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 | `engineSocket`    | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
+| `images`          | no       | The images a job that pins none runs in, below. Default none.                                              |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
 
@@ -91,6 +95,14 @@ A project's configuration names the image its jobs run in, by digest or by tag. 
 - `/bin/sh`, and `git` on `PATH`;
 - glibc 2.28 or later with libstdc++, as a current Debian or Ubuntu has: an Alpine or other musl image cannot load the runtime;
 - a `$HOME` and a temporary directory uid 1000 can write. The workspace is a volume this runner provides.
+
+A task that pins no image names capabilities instead, and this runner meets them with what you give it in `runner.json`. With `images`, such a job runs in the first image listed declaring every capability it names, its platform aside, and is otherwise refused:
+
+```json
+"images": [{ "image": "ghcr.io/you/bazel:7", "capabilities": ["Agent:Claude", "Tool:Bazel"] }]
+```
+
+On a pool registered with `--host`, such a job of this machine's platform runs on this machine instead: as you, in a directory of its own under `~/.local/state/chuggy-linux/jobs/`, with its own `HOME` and temporary directory, the service's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the service's `PATH`. That is systemd's for your user and not your shell's, so where `claude` is in `~/.local/bin`, name it in a drop-in: `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin` under `[Service]`. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever this machine reaches; register with `--host` only a machine whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, or when the runner is stopped; its log is saved beside a container's, and its directory is removed when it ends. A runner killed outright, by `SIGKILL` or the kernel, leaves its host jobs running until they end.
 
 An image that lacks one is refused before any agent starts, and the ticket stops with a reason naming what is missing. An image the registry refuses is refused at once, and one that fails to pull any other way, such as from a host that does not resolve, after two minutes of trying.
 
@@ -133,17 +145,17 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
-| `once`              | One poll, then waits for what it placed to start. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | The runner's limits, this pool's containers and what the service is still pulling or starting, each named a job or a session.           |
-| `stop <assignment>` | Stops one assignment's container, through the service when it is running.                                                               |
+| `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
+| `status`            | The runner's limits, this pool's containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
+| `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
 
-`once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going.
+`once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going. Nor does it while it waits for a job on this machine itself, whose lease lapses as it runs.
 
 ## What it does
 
-- Places an assignment only if this machine has the CPU and memory it asks for, counted for that assignment alone, it pins an image, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
+- Places an assignment only if this machine has the CPU and memory it asks for, counted for that assignment alone, it pins an image, or one `images` lists or `--host` meets it, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
 - Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once with no credential.
 - Runs each job as uid 1000 through chuggy's runtime, mounted read-only, with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the token file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
@@ -153,7 +165,8 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 
 ## What it does not do
 
-- Run an assignment that names capabilities rather than an image: this runner has no image of its own.
+- Run an assignment that pins no image unless `images` or `--host` meets it: this runner has no image of its own.
+- Check that a capability it declares is met: that is yours.
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
 - Install docker or podman, or upgrade itself.

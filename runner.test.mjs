@@ -219,6 +219,78 @@ test("a run's backend refuses an assignment while the token file is not this run
   assert.equal(state.calls.length, calls);
 });
 
+test("a pool registered with --host takes a job that pins no image on this machine, and leaves every other to its containers", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    pool: {
+      ...fixturePool,
+      capabilities: ["Platform:Linux:Amd64"],
+      host: true,
+    },
+  });
+  const { engine, state } = fakeEngine();
+  const uid = ownUid + 1;
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid, log: () => undefined, engine },
+  );
+  const assignment = {
+    assignment: "asg-1",
+    capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
+    cpuMillis: 1,
+    memoryMib: 1,
+    deadlineSecs: 60,
+    callbackUrl: "https://chuggy.example/worker",
+    bearer: "attempt-bearer",
+  };
+  const calls = state.calls.length;
+  const hosted = await runner.backend.place(assignment, "Job");
+  assert.equal(hosted.placed, "Refused");
+  assert.match(
+    hosted.evidence ?? "",
+    new RegExp(`not by this runner's uid ${String(uid)}$`, "u"),
+  );
+  const contained = await runner.backend.place(
+    {
+      ...assignment,
+      assignment: "asg-2",
+      capabilities: ["Platform:Linux:Arm64", "Agent:Claude"],
+    },
+    "Job",
+  );
+  assert.match(
+    contained.evidence ?? "",
+    /no image this pool's owner listed meets it/u,
+  );
+  assert.equal(state.calls.length, calls);
+  assert.deepEqual(runner.backend.inFlight(), []);
+});
+
+test("a pool registered without --host runs no job on this machine, even one naming its platform", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    pool: { ...fixturePool, capabilities: ["Platform:Linux:Amd64"] },
+  });
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid: ownUid + 1, log: () => undefined, engine },
+  );
+  const calls = state.calls.length;
+  const placed = await runner.backend.place(
+    {
+      assignment: "asg-1",
+      capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
+      cpuMillis: 1,
+      memoryMib: 1,
+      deadlineSecs: 60,
+      callbackUrl: "https://chuggy.example/worker",
+      bearer: "attempt-bearer",
+    },
+    "Job",
+  );
+  assert.match(placed.evidence ?? "", /no image this pool's owner listed/u);
+  assert.equal(state.calls.length, calls);
+});
+
 test("a runner whose file sets sessionsMax to 0 is given no room for a session", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t, {
     runner: { sessionsMax: 0 },
@@ -487,7 +559,7 @@ test("a process removes only the pull credentials and env files it made", async 
   ]);
 });
 
-for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT"]))
+for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT", "SIGHUP"]))
   test(`a ${signal} removes the process's own scratch and still ends it by that signal`, async (t) => {
     const { home, environment } = await runnerFixture(t);
     const runtime = /** @type {string} */ (

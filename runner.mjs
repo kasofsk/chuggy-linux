@@ -1,7 +1,9 @@
 /**
  * The runner composed: the pool's credentials and the runner's file read, and
  * the container backend beside the worker core's pool runner, which passes
- * until the plane denies the pool. Every command starts here.
+ * until the plane denies the pool. Where the pool was registered with
+ * `--host`, a job that pins no image runs on this machine itself, beside the
+ * containers. Every command starts here.
  */
 
 import { readdirSync, rmSync } from "node:fs";
@@ -18,6 +20,11 @@ import {
 } from "@chuggy/worker-core/poolRunner.mjs";
 
 import { containerBackend } from "@chuggy/worker-core/containerBackend.mjs";
+import {
+  hostBackend,
+  hostPlatformsDeclared,
+  hostRoutedBackend,
+} from "@chuggy/worker-core/hostBackend.mjs";
 import { containerEngine } from "@chuggy/worker-core/engine.mjs";
 import {
   dockerContextArgv,
@@ -297,7 +304,11 @@ export async function runnerParts(setup, host) {
       ? undefined
       : await engineSocketHanded(config, engine, dockerHost);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
-  const backend = containerBackend(
+  const machine = {
+    cpuMillis: availableParallelism() * 1000,
+    memoryMib: Math.floor(totalmem() / (1024 * 1024)),
+  };
+  const container = containerBackend(
     {
       engine: config.engine,
       pool: credentials,
@@ -310,11 +321,9 @@ export async function runnerParts(setup, host) {
       network: config.network,
       runtimeDir,
       logDir: paths.logs,
-      machine: {
-        cpuMillis: availableParallelism() * 1000,
-        memoryMib: Math.floor(totalmem() / (1024 * 1024)),
-      },
+      machine,
       pullRetryMs,
+      images: config.images,
       ...(engineSocket === undefined ? {} : { engineSocket }),
     },
     {
@@ -327,6 +336,7 @@ export async function runnerParts(setup, host) {
         claudeTokenFileRefusal(file, config.engine, host.uid),
     },
   );
+  const backend = runnerHostRouted(setup, container, machine, host);
   const client = poolRunnerClient(
     credentials,
     backend,
@@ -334,6 +344,44 @@ export async function runnerParts(setup, host) {
     { tokens, fetch: host.fetch },
   );
   return { runtime: runtimeDir, engine, backend, client };
+}
+
+/**
+ * The container backend, with this machine beside it where the pool was
+ * registered with `--host`, taking each job that pins no image and names the
+ * platform the pool declared it is.
+ *
+ * @param {RunnerSetup} setup
+ * @param {ContainerBackend} container
+ * @param {{cpuMillis: number, memoryMib: number}} machine
+ * @param {{uid: number, log: (line: string) => void}} host
+ * @returns {ContainerBackend}
+ */
+function runnerHostRouted(setup, container, machine, host) {
+  const { credentials, config, paths } = setup;
+  const platforms = hostPlatformsDeclared(credentials, "Linux");
+  if (platforms.length === 0) return container;
+  return hostRoutedBackend(
+    container,
+    hostBackend(
+      {
+        platforms,
+        directory: join(paths.jobs, poolIdentityDigest(credentials)),
+        logDir: paths.logs,
+        tokenFile: config.claudeTokenFile,
+        timeoutSecsMax: config.timeoutSecsMax,
+        outputBytesMax: config.outputBytesMax,
+        environment: config.environment,
+        machine,
+      },
+      {
+        log: host.log,
+        tokenFileRefusal: (file) =>
+          claudeTokenFileRefusal(file, "host", host.uid),
+      },
+    ),
+    platforms,
+  );
 }
 
 /**
@@ -412,14 +460,14 @@ export function ownScratchRemoved(runtime, pid = process.pid) {
 }
 
 /**
- * Has a SIGTERM or SIGINT remove this process's own scratch, then end the
+ * Has a SIGTERM, SIGINT or SIGHUP remove this process's own scratch, then end the
  * process by that signal as it would have ended anyway. Its containers are
  * left for the next run to pick up.
  *
  * @param {string} runtime
  */
 export function scratchRemovedOnSignal(runtime) {
-  for (const signal of ["SIGTERM", "SIGINT"])
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
     process.once(signal, () => {
       try {
         ownScratchRemoved(runtime);

@@ -54,7 +54,19 @@ test("a minimal file is read with every default", async (t) => {
     environment: {},
     network: "chuggy-jobs",
     engineSocket: false,
+    images: [],
   });
+});
+
+test("a job that pins no image is run in an image its owner lists", async (t) => {
+  const images = [
+    {
+      image: "ghcr.io/owner/bazel:7",
+      capabilities: ["Agent:Claude", "Tool:Bazel"],
+    },
+  ];
+  const file = await written(await scratch(t), { ...minimal, images });
+  assert.deepEqual((await runnerConfig(file)).images, images);
 });
 
 test("sessionsMax is a whole number of none or more, read apart from concurrencyMax", async (t) => {
@@ -76,6 +88,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         environment: {},
         network: "chuggy-jobs",
         engineSocket: false,
+        images: [],
       },
     );
   for (const [sessionsMax, why] of [
@@ -142,6 +155,18 @@ test("what the file may not say is refused, naming where", async (t) => {
       { claudeTokenFile: minimal.claudeTokenFile },
       /timeoutSecsMax .*; outputBytesMax /u,
     ],
+    [
+      {
+        ...minimal,
+        images: [{ image: "x", capabilities: ["Platform:Linux:Amd64"] }],
+      },
+      /images\.0\.capabilities\.0 names a platform, which is the engine's/u,
+    ],
+    [
+      { ...minimal, images: [{ image: "", capabilities: [] }] },
+      /images\.0\.image /u,
+    ],
+    [{ ...minimal, host: true }, /Unrecognized key: "host"/u],
     ["{", /is not JSON/u],
   ];
   for (const [document, why] of refused)
@@ -234,6 +259,7 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
     units: "/home/op/.config/systemd/user",
     pools: "/home/op/.config/chuggy/pools",
     logs: "/home/op/.local/state/chuggy-linux/logs",
+    jobs: "/home/op/.local/state/chuggy-linux/jobs",
     runtime: undefined,
   });
   assert.deepEqual(
@@ -250,6 +276,7 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
       units: "/etc/op/systemd/user",
       pools: "/etc/op/chuggy/pools",
       logs: "/home/op/.local/state/chuggy-linux/logs",
+      jobs: "/home/op/.local/state/chuggy-linux/jobs",
       runtime: "/run/user/1000/chuggy-linux",
     },
   );
@@ -286,6 +313,10 @@ test("under docker only a runner that is uid 1000 can hand a job its token file"
   );
   assert.match(
     (await claudeTokenFileRefusal(file, "docker", 1000)) ?? "",
+    /cannot be found/u,
+  );
+  assert.match(
+    (await claudeTokenFileRefusal(file, "host", 1234)) ?? "",
     /cannot be found/u,
   );
 });

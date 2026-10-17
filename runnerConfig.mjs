@@ -10,6 +10,7 @@ import { isAbsolute, join } from "node:path";
 
 import { z } from "zod";
 
+import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   jobEngineSocketEnvironment,
   jobUid,
@@ -24,6 +25,7 @@ import {
  * @property {string} units where systemd reads the user's units
  * @property {string} pools where `register` writes a pool file
  * @property {string} logs where an ended job's logs are saved
+ * @property {string} jobs where a job run on this machine itself has its directory
  * @property {string | undefined} runtime where each pool's pull credentials, env files and control socket live; absent without XDG_RUNTIME_DIR
  */
 
@@ -90,6 +92,11 @@ export const runnerConfigSchema = z
      * while it is, the variables that tell the job of it are the runner's.
      */
     engineSocket: z.boolean().default(false),
+    /**
+     * The images a job that pins none runs in, each with the capabilities its
+     * owner declares it meets: the first meeting every one the job names.
+     */
+    images: ownerImagesSchema.default([]),
   })
   .superRefine((config, context) => {
     if (!config.engineSocket) return;
@@ -153,6 +160,7 @@ export function runnerPaths(environment, home) {
     units: join(configHome, "systemd", "user"),
     pools: join(configHome, "chuggy", "pools"),
     logs: join(stateHome, "chuggy-linux", "logs"),
+    jobs: join(stateHome, "chuggy-linux", "jobs"),
     runtime:
       runtimeHome === undefined ? undefined : join(runtimeHome, "chuggy-linux"),
   };
@@ -258,11 +266,12 @@ export async function runnerConfig(file) {
  * file is its owner's alone and a job reads it as the image's user. Docker
  * runs that user as the same uid on this machine, so only a runner that is
  * that uid can hand the file over; rootless podman maps it onto the runner
- * itself. Only the file's metadata is read: the token reaches the job by mount
+ * itself. A job run on this machine itself reads it as this runner. Only the
+ * file's metadata is read: the token reaches the job by mount or by its path,
  * and never this process.
  *
  * @param {string} file
- * @param {"docker" | "podman"} engine
+ * @param {"docker" | "podman" | "host"} engine what runs the job that reads it
  * @param {number} runnerUid this process's uid, which must own the file
  * @returns {Promise<string | undefined>}
  */

@@ -91,13 +91,17 @@ export const poolFileVariable = "CHUGGY_LINUX_POOL";
 
 const usage = `usage: chuggy-linux <command> [--pool <file>]
        chuggy-linux register --api <origin> --token=<token> [--pool <name> | --personal]
+                             [--host] [--capability <token>]...
        chuggy-linux --version
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
                           their personal runner's file, and start its service
-                          where it can
+                          where it can; it declares this machine's platform
+                          and each --capability, which the token must permit,
+                          and with --host runs a job that pins no image on
+                          this machine itself
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -588,10 +592,13 @@ async function registerServed(host, pool, file, written) {
  * whatever became of the service, since a rerun would spend another token.
  *
  * @param {CliHost} host
- * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
+ * @param {Omit<import("@chuggy/worker-core/register.mjs").RegisterAsked, "capabilities"> & {capability?: string[] | undefined}} asked each `--capability` once per token
  */
-async function register(host, asked) {
-  const requested = registerRequest(asked, host);
+async function register(host, { capability, ...asked }) {
+  const requested = registerRequest(
+    { ...asked, capabilities: capability },
+    host,
+  );
   if ("refused" in requested) {
     host.err(requested.refused);
     return 2;
@@ -642,6 +649,8 @@ export async function cliMain(argv, host) {
         api: { type: "string" },
         token: { type: "string" },
         personal: { type: "boolean" },
+        host: { type: "boolean" },
+        capability: { type: "string", multiple: true },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
       },
@@ -670,7 +679,9 @@ export async function cliMain(argv, host) {
       (command === undefined ||
         values.api !== undefined ||
         values.token !== undefined ||
-        values.personal !== undefined)) ||
+        values.personal !== undefined ||
+        values.host !== undefined ||
+        values.capability !== undefined)) ||
     (name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);
