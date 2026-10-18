@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { ownerVolumeTargetsRefused } from "@chuggy/worker-core/containerBackend.mjs";
 import { jobEngineSocketVariables } from "@chuggy/worker-core/job.mjs";
 
 import {
@@ -55,6 +56,7 @@ test("a minimal file is read with every default", async (t) => {
     network: "chuggy-jobs",
     engineSocket: false,
     images: [],
+    volumes: [],
   });
 });
 
@@ -67,6 +69,83 @@ test("a job that pins no image is run in an image its owner lists", async (t) =>
   ];
   const file = await written(await scratch(t), { ...minimal, images });
   assert.deepEqual((await runnerConfig(file)).images, images);
+});
+
+test("the volumes a job mounts are read as listed, each one a job may write unless it is marked read-only", async (t) => {
+  const volumes = [
+    { source: "cargo", target: "/home/runner/.cargo" },
+    { source: "/srv/npm-cache", target: "/cache/npm", readonly: true },
+  ];
+  const file = await written(await scratch(t), { ...minimal, volumes });
+  assert.deepEqual((await runnerConfig(file)).volumes, [
+    { ...volumes[0], readonly: false },
+    volumes[1],
+  ]);
+});
+
+test("a volume at or in any path chuggy keeps in a job's container is refused, naming the volume", async (t) => {
+  const directory = await scratch(t);
+  for (const path of ownerVolumeTargetsRefused)
+    for (const [target, why] of [
+      [path, `is ${path}`],
+      [`${path}/cache`, `is in ${path}`],
+    ]) {
+      const file = await written(directory, {
+        ...minimal,
+        volumes: [
+          { source: "/srv/cache", target: "/cache" },
+          { source: "cargo", target },
+        ],
+      });
+      await assert.rejects(runnerConfig(file), {
+        message: `runner configuration ${file}: volumes.1.target ${why}, chuggy's own`,
+      });
+    }
+});
+
+test("a volume no mount can make as it is written is refused, naming the volume", async (t) => {
+  const directory = await scratch(t);
+  const refused = [
+    [
+      { ...minimal, volumes: [{ source: "cargo", target: "/" }] },
+      /volumes\.0\.target may not be the container's root/u,
+    ],
+    [
+      { ...minimal, volumes: [{ source: "cargo", target: "/cache/" }] },
+      /volumes\.0\.target must be an absolute path in its normal form/u,
+    ],
+    [
+      {
+        ...minimal,
+        volumes: [
+          { source: "cargo", target: "/cache" },
+          { source: "npm-cache", target: "/cache" },
+        ],
+      },
+      /volumes\.1\.target is volume 0's target too/u,
+    ],
+    [
+      { ...minimal, volumes: [{ source: "./cache", target: "/cache" }] },
+      /volumes\.0\.source names neither a volume/u,
+    ],
+    [
+      { ...minimal, volumes: [{ source: "/srv/a,b", target: "/cache" }] },
+      /volumes\.0\.source cannot be named in a bind mount/u,
+    ],
+    [
+      {
+        ...minimal,
+        volumes: [{ source: "cargo", target: "/cache", type: "volume" }],
+      },
+      /volumes\.0 Unrecognized key: "type"/u,
+    ],
+  ];
+  for (const [document, why] of refused)
+    await assert.rejects(
+      runnerConfig(await written(directory, document)),
+      why,
+      JSON.stringify(document),
+    );
 });
 
 test("sessionsMax is a whole number of none or more, read apart from concurrencyMax", async (t) => {
@@ -89,6 +168,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         network: "chuggy-jobs",
         engineSocket: false,
         images: [],
+        volumes: [],
       },
     );
   for (const [sessionsMax, why] of [

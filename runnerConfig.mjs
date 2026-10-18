@@ -10,7 +10,11 @@ import { isAbsolute, join } from "node:path";
 
 import { z } from "zod";
 
-import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
+import {
+  ownerImagesSchema,
+  ownerVolumesSchema,
+} from "@chuggy/worker-core/containerBackend.mjs";
+import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
 import {
   jobEngineSocketEnvironment,
   jobUid,
@@ -36,16 +40,6 @@ const sharedModeBits = 0o077;
 const runnerConfigBytesMax = 64 * 1024;
 
 const positiveSchema = z.number().int().positive().safe();
-
-/**
- * Whether a bind mount's `source=` can name this absolute path: one with no
- * comma, which would end it, and no line break.
- *
- * @param {string} path
- */
-export function bindMountNameable(path) {
-  return !/[,\r\n]/u.test(path);
-}
 
 /** A name docker and podman both give a network, less the host's own. */
 const networkSchema = z
@@ -97,6 +91,11 @@ export const runnerConfigSchema = z
      * owner declares it meets: the first meeting every one the job names.
      */
     images: ownerImagesSchema.default([]),
+    /**
+     * The named volumes and directories of this machine mounted into every
+     * job, each field named as `--mount` names it on docker and podman alike.
+     */
+    volumes: ownerVolumesSchema.default([]),
   })
   .superRefine((config, context) => {
     if (!config.engineSocket) return;

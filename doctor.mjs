@@ -18,6 +18,8 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import {
   listArgv,
   networkInspectArgv,
+  ownerVolumeDirectory,
+  volumeInspectArgv,
 } from "@chuggy/worker-core/engineArgv.mjs";
 import {
   engineFailure,
@@ -216,6 +218,57 @@ async function engineSocketFinding(engine, config, endpoint, uid) {
 }
 
 /**
+ * Whether a job may write in an owner's directory by its mode, which takes
+ * the write and search bits its uid and groups are read by, as
+ * `engineSocketReach` reads a socket's: under docker `jobUid` in `jobGid`,
+ * under podman the runner, in groups not known here.
+ *
+ * @param {RunnerConfig["engine"]} engine
+ * @param {{uid: number, gid: number, mode: number}} directory the directory's stat
+ * @param {number} runnerUid
+ */
+export function volumeDirectoryWritable(engine, directory, runnerUid) {
+  const docker = engine === "docker";
+  const owner = directory.uid === (docker ? jobUid : runnerUid);
+  const member = !owner && docker && directory.gid === jobGid;
+  const bits = owner ? 0o300 : member ? 0o030 : 0o003;
+  return (directory.mode & bits) === bits;
+}
+
+/**
+ * What a job is given of one of its owner's volumes, or a throw naming why it
+ * cannot be given it: a directory that is there, and whether a job may write
+ * it, or a named volume, there or for the first job to make.
+ *
+ * @param {Engine} engine
+ * @param {RunnerConfig} config
+ * @param {RunnerConfig["volumes"][number]} volume
+ * @param {number} uid this process's
+ */
+async function ownerVolumeFound(engine, config, volume, uid) {
+  const { source, target, readonly } = volume;
+  const mounted = `${source} at ${target}${readonly ? ", read-only" : ""}`;
+  if (ownerVolumeDirectory(source)) {
+    const directory = await stat(source);
+    if (!directory.isDirectory())
+      throw new Error(`${source} is not a directory`);
+    if (readonly) return mounted;
+    if (volumeDirectoryWritable(config.engine, directory, uid))
+      return `${mounted}, which a job may write`;
+    const job =
+      config.engine === "docker"
+        ? `uid ${String(jobUid)} in group ${String(jobGid)}`
+        : `uid ${String(uid)}, this runner's`;
+    return `${mounted}, which a job, ${job}, may not write: it is uid ${String(directory.uid)}'s, group ${String(directory.gid)}'s and mode ${(directory.mode & 0o777).toString(8).padStart(3, "0")}`;
+  }
+  const inspected = await engine.exec(volumeInspectArgv([source]));
+  if (inspected.code === 0) return `${mounted}, present`;
+  if (engineFailure(inspected) === "NoSuchVolume")
+    return `${mounted}, missing until the first job started through chuggy's runtime makes it`;
+  throw new Error(`${source}: ${engineFailureLine(inspected)}`);
+}
+
+/**
  * @param {Engine} engine
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
@@ -243,6 +296,13 @@ async function engineChecks(engine, credentials, config, uid, findings) {
     if (engineFailure(inspected) === "NotFound")
       return [true, `${config.network} is missing, and a run makes it`];
     throw new Error(engineFailureLine(inspected));
+  });
+  await checked(findings, "volumes", async () => {
+    /** @type {string[]} */
+    const found = [];
+    for (const volume of config.volumes)
+      found.push(await ownerVolumeFound(engine, config, volume, uid));
+    return [true, found.length === 0 ? "none" : found.join("; ")];
   });
 }
 

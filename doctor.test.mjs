@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { doctorFindings, engineSocketReach, findingLine } from "./doctor.mjs";
+import {
+  doctorFindings,
+  engineSocketReach,
+  findingLine,
+  volumeDirectoryWritable,
+} from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import {
@@ -18,7 +23,7 @@ const copy = { node: "/opt/node/bin/node", cli: "/opt/chuggy-linux/cli.mjs" };
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, and the name of a pool file in the home to ask of in place of the fixture's
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, volumes?: string[], volumesUnanswered?: boolean}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, and the named volumes the engine has
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -43,6 +48,8 @@ async function doctored(t, options = {}) {
     options.podmanServiceRemote ?? state.podmanServiceRemote;
   state.podmanSocket = options.podmanSocket ?? state.podmanSocket;
   state.contextHost = options.contextHost ?? state.contextHost;
+  for (const volume of options.volumes ?? []) state.volumes.set(volume, {});
+  state.volumesUnanswered = options.volumesUnanswered ?? false;
   const registries = join(home, "registries");
   for (const [file, text] of Object.entries(options.registries ?? {})) {
     await mkdir(dirname(join(registries, file)), { recursive: true });
@@ -141,6 +148,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["container engine", true],
       ["engine socket", true],
       ["job network", true],
+      ["volumes", true],
       ["pool token", true],
       ["plane", true],
     ],
@@ -164,6 +172,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     findings[8].detail,
     "chuggy-jobs is missing, and a run makes it",
   );
+  assert.equal(findings[9].detail, "none");
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
@@ -624,4 +633,121 @@ test("a job reaches the engine's socket by the bits its uid and groups are read 
       reach: "Unreached",
       why,
     });
+});
+
+/**
+ * A directory of `mode` in a scratch directory of its own.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {number} mode
+ */
+async function volumeDirectory(t, mode) {
+  const { home } = await runnerFixture(t, { runner: undefined });
+  const directory = join(home, `cache-${mode.toString(8)}`);
+  await mkdir(directory);
+  await chmod(directory, mode);
+  return directory;
+}
+
+test("doctor finds each volume a job mounts: a directory that is there, read-only or whether a job may write it, and a named volume there or for the first job to make", async (t) => {
+  const uid = process.getuid?.() ?? -1;
+  const writable = await volumeDirectory(t, 0o755);
+  const readable = await volumeDirectory(t, 0o555);
+  const { findings, state } = await doctored(t, {
+    runner: {
+      volumes: [
+        { source: writable, target: "/cache/shared" },
+        { source: readable, target: "/cache/read", readonly: true },
+        { source: readable, target: "/cache/unwritable" },
+        { source: "cargo", target: "/cache/cargo" },
+        { source: "npm-cache", target: "/cache/npm", readonly: true },
+      ],
+    },
+    uid,
+    volumes: ["cargo"],
+  });
+  const gid = process.getgid?.() ?? -1;
+  assert.deepEqual(
+    findings.find((found) => found.check === "volumes"),
+    {
+      check: "volumes",
+      passed: true,
+      detail: [
+        `${writable} at /cache/shared, which a job may write`,
+        `${readable} at /cache/read, read-only`,
+        `${readable} at /cache/unwritable, which a job, uid ${String(uid)}, this runner's, may not write: it is uid ${String(uid)}'s, group ${String(gid)}'s and mode 555`,
+        "cargo at /cache/cargo, present",
+        "npm-cache at /cache/npm, read-only, missing until the first job started through chuggy's runtime makes it",
+      ].join("; "),
+    },
+  );
+  assert.deepEqual(
+    state.calls
+      .filter(({ argv }) => argv[0] === "volume")
+      .map(({ argv }) => argv),
+    [
+      ["volume", "inspect", "cargo"],
+      ["volume", "inspect", "npm-cache"],
+    ],
+  );
+});
+
+test("doctor fails a volume whose directory is not there or is no directory, or whose engine could not say whether it is there", async (t) => {
+  const { home } = await runnerFixture(t, { runner: undefined });
+  const file = join(home, "cache-file");
+  await writeFile(file, "");
+  /** @type {[Record<string, unknown>, RegExp][]} */
+  const cases = [
+    [
+      { source: join(home, "absent"), target: "/cache" },
+      /^ENOENT: no such file or directory, stat '.*\/absent'$/u,
+    ],
+    [
+      { source: file, target: "/cache" },
+      /^\S+\/cache-file is not a directory$/u,
+    ],
+  ];
+  for (const [volume, why] of cases) {
+    const { findings } = await doctored(t, { runner: { volumes: [volume] } });
+    const found = findings.find((finding) => finding.check === "volumes");
+    assert.equal(found?.passed, false);
+    assert.match(found?.detail ?? "", why);
+  }
+  const unanswered = await doctored(t, {
+    runner: { volumes: [{ source: "cargo", target: "/cache" }] },
+    volumesUnanswered: true,
+  });
+  assert.deepEqual(
+    unanswered.findings.find((found) => found.check === "volumes"),
+    {
+      check: "volumes",
+      passed: false,
+      detail: "cargo: Error response from daemon: i/o timeout",
+    },
+  );
+});
+
+test("a job may write an owner's directory by the write and search bits its uid and groups are read by, under docker its own and its group's, and under podman the runner's", () => {
+  const runnerUid = 1234;
+  /** @type {["docker" | "podman", {uid: number, gid: number, mode: number}, boolean][]} */
+  const cases = [
+    ["docker", { uid: 1000, gid: 0, mode: 0o700 }, true],
+    ["docker", { uid: 1000, gid: 0, mode: 0o600 }, false],
+    ["docker", { uid: 1000, gid: 1000, mode: 0o500 }, false],
+    ["docker", { uid: 1000, gid: 1000, mode: 0o077 }, false],
+    ["docker", { uid: 0, gid: 1000, mode: 0o770 }, true],
+    ["docker", { uid: 0, gid: 1000, mode: 0o750 }, false],
+    ["docker", { uid: 0, gid: 0, mode: 0o773 }, true],
+    ["docker", { uid: 0, gid: 0, mode: 0o775 }, false],
+    ["docker", { uid: runnerUid, gid: 0, mode: 0o700 }, false],
+    ["podman", { uid: runnerUid, gid: 0, mode: 0o700 }, true],
+    ["podman", { uid: 1000, gid: 1000, mode: 0o770 }, false],
+    ["podman", { uid: 0, gid: 0, mode: 0o1777 }, true],
+  ];
+  for (const [engine, directory, writable] of cases)
+    assert.equal(
+      volumeDirectoryWritable(engine, directory, runnerUid),
+      writable,
+      `${engine} ${JSON.stringify(directory)}`,
+    );
 });
