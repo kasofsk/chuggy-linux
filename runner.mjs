@@ -192,8 +192,8 @@ async function podmanVersionChecked(engine) {
 }
 
 /**
- * Refuses a remote podman client, whose service mounts a job's paths from its
- * own machine rather than this one.
+ * Refuses a remote podman client, whose service may be on another machine and
+ * mounts a job's paths from there rather than from this one.
  *
  * @param {Engine} engine
  */
@@ -206,7 +206,7 @@ async function podmanLocalChecked(engine) {
   const remote = answer.stdout.trim();
   if (remote === "true")
     throw new Error(
-      "podman is a remote client here (CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf), whose service mounts a job's paths from its own machine; run the runner beside a local podman",
+      "podman is a remote client here (CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf), whose service may be on another machine and mounts a job's paths from there; run the runner beside a local podman",
     );
   if (remote !== "false")
     throw new Error(

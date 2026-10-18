@@ -351,7 +351,7 @@ test("a remote podman client is refused, and so is one that cannot say whether i
   state.podmanServiceRemote = "true";
   await assert.rejects(
     engineEndpoint("podman", engine),
-    /^Error: podman is a remote client here \(CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf\), whose service mounts a job's paths from its own machine; run the runner beside a local podman$/u,
+    /^Error: podman is a remote client here \(CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf\), whose service may be on another machine and mounts a job's paths from there; run the runner beside a local podman$/u,
   );
   for (const answer of ["", "True", "yes", "false true", "<no value>"]) {
     state.podmanServiceRemote = answer;
