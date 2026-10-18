@@ -61,7 +61,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "environment": {},
   "network": "chuggy-jobs",
   "engineSocket": false,
-  "images": []
+  "images": [],
+  "volumes": []
 }
 ```
 
@@ -77,6 +78,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 | `engineSocket`    | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`          | no       | The images a job that pins none runs in, below. Default none.                                              |
+| `volumes`         | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
 
@@ -87,6 +89,16 @@ A job runs as uid 1000, the image's user, and reads the token file as that uid, 
 With `engineSocket` on, each job, and never a session, is handed this machine's engine, so that its checks can start containers of their own, as testcontainers does. The engine's socket is mounted at `/var/run/docker.sock`, read-only, which limits nothing the engine will do; a docker job is added to the socket's group unless that is root's, and the job is told where the socket is by `DOCKER_HOST`, `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` and, on podman, `TESTCONTAINERS_HOST_OVERRIDE`, which `environment` may then not name. Podman's socket must be running: `systemctl --user enable --now podman.socket`. `doctor` names the socket and fails one a job cannot reach; where its owners and mode cannot settle it, as with a socket of root's group that only an ACL could open to a job, it warns.
 
 Every job on this machine, and its agent, can then run anything the engine can; with rootful docker, that is root on this machine. That includes stopping or inspecting this machine's other jobs and sessions, and reading what every container here holds, its own included. Turn it on only on a machine whose every project you trust that far. The containers a job starts are left to testcontainers' own clean-up (Ryuk), so a killed job can leave them running. testcontainers for Rust needs docker: it does not work on rootless podman.
+
+With `volumes`, every job, and never a session, mounts each one listed at its `target`, read-only where `readonly` is `true`. Each is named as `docker run --mount` names it: a `source` that is an absolute path is a directory here, which must exist; any other is a named volume. A named volume that is missing is made by the first job started through chuggy's runtime, which opens it to uid 1000; one you made is mounted as it is. Nothing removes one. A `target` at, in or above `/opt/chuggy`, `/workspace`, `/var/run/chuggy` or `/var/run/docker.sock` is refused. `doctor` checks each source, and says whether a job can write each directory. A cache npm keeps between jobs:
+
+```json
+"volumes": [{ "source": "npm-cache", "target": "/cache/npm" }]
+```
+
+and in the image, `ENV npm_config_cache=/cache/npm`.
+
+A volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change.
 
 ## The image a job runs in
 
@@ -125,7 +137,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, the token file, podman's credential helpers, whether the pool file's unit runs this copy, the engine, whether jobs are handed its socket, the job network, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the token file, podman's credential helpers, whether the pool file's unit runs this copy, the engine, whether jobs are handed its socket, the job network, each volume's source, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 
