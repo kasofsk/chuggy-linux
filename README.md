@@ -151,6 +151,14 @@ This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng
 
 chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-linux.service`, and it keeps working after an upgrade. Where it serves the pool being installed, `install-service` prints the commands that stop and remove it before starting the pool's own. A pool's service refuses to start while another service of the pool runs, or while the old unit's service runs a pool file this runner cannot read, which may be the same pool. It cannot see a 0.1 runner started by hand rather than by that unit. Where the old unit serves another pool, it runs on beside the new unit. The containers it started are found by their labels, so `status` and `stop` still see them.
 
+## Tools for your coding agent
+
+```sh
+claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace> --project <project>
+```
+
+`mcp` serves a coding agent on this machine the `chuggy` tools a session pod has, for one project: it reads, drafts and releases tickets under your own sign-in, and decides nothing. It takes no pool file. The first call with no sign-in answers with the site's sign-in address for the agent to hand you; the sign-in returns to a page `mcp` holds on `127.0.0.1`, so it is opened in a browser on this machine. Once you sign in, calls go through, and the token is renewed ahead of its expiry. The renewal token is kept in `$XDG_CONFIG_HOME/chuggy/sign-ins` (`~/.config/chuggy/sign-ins` by default), in a file only you can read, one per site, shared by every chat on the machine.
+
 ## Commands
 
 | Command             | What it does                                                                                                                            |
@@ -162,6 +170,7 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 | `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
+| `mcp`               | Serves the `chuggy` tools for one project to your own coding agent on stdio. |
 
 `once` renews nothing after it exits, so with no service running, the lease on what it placed lapses while the container keeps going. Nor does it while it waits for a job on this machine itself, whose lease lapses as it runs.
 
