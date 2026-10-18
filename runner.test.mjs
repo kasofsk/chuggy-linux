@@ -304,10 +304,11 @@ test("a runner whose file sets sessionsMax to 0 is given no room for a session",
   assert.equal(runner.client.settings.sessionsMax, 0);
 });
 
-test("podman has no endpoint, and is taken only from the first version whose --authfile is all it reads", async () => {
+test("podman has no endpoint, and is taken only from the first version whose keep-id maps its user onto a job's", async () => {
   const { engine, state } = fakeEngine();
   for (const version of [
-    "4.4.0",
+    "4.3.0",
+    "4.3.1",
     "4.9.3-dev",
     "4.10.1",
     "5.0.0-rc1",
@@ -317,21 +318,21 @@ test("podman has no endpoint, and is taken only from the first version whose --a
     state.podmanVersion = version;
     assert.equal(await engineEndpoint("podman", engine), undefined, version);
   }
-  for (const version of ["4.3.1", "3.9.9", "4.3.99-dev"]) {
+  for (const version of ["4.2.1", "3.9.9", "4.2.99-dev"]) {
     state.podmanVersion = version;
     await assert.rejects(
       engineEndpoint("podman", engine),
       new RegExp(
-        `^Error: podman ${version.replaceAll(".", "\\.")} reads this machine's stored logins even when told not to; podman 4\\.4 or later is required$`,
+        `^Error: podman ${version.replaceAll(".", "\\.")} cannot map its user onto a job's with --userns=keep-id:uid=,gid=; podman 4\\.3 or later is required$`,
         "u",
       ),
     );
   }
-  for (const version of ["garbage", "", "4.4", "v4.4.0", "4.4.0 extra"]) {
+  for (const version of ["garbage", "", "4.3", "v4.3.0", "4.3.0 extra"]) {
     state.podmanVersion = version;
     await assert.rejects(
       engineEndpoint("podman", engine),
-      /^Error: podman answered ".*", not a version; podman 4\.4 or later is required$/u,
+      /^Error: podman answered ".*", not a version; podman 4\.3 or later is required$/u,
       version,
     );
   }
@@ -350,7 +351,7 @@ test("a remote podman client is refused, and so is one that cannot say whether i
   state.podmanServiceRemote = "true";
   await assert.rejects(
     engineEndpoint("podman", engine),
-    /^Error: podman is a remote client here \(CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf\), where its service reads its own stored logins; run the runner beside a local podman$/u,
+    /^Error: podman is a remote client here \(CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf\), whose service mounts a job's paths from its own machine; run the runner beside a local podman$/u,
   );
   for (const answer of ["", "True", "yes", "false true", "<no value>"]) {
     state.podmanServiceRemote = answer;
@@ -412,22 +413,22 @@ test("a run refuses rootless docker", async (t) => {
   );
 });
 
-test("a run refuses a podman that reads this machine's stored logins", async (t) => {
+test("a run refuses a podman whose keep-id cannot map its user onto a job's", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t);
   const { engine, state } = fakeEngine();
-  state.podmanVersion = "4.3.1";
+  state.podmanVersion = "4.2.1";
   await assert.rejects(
     runnerParts(await runnerSetup(poolFile, environment, home), {
       uid: 1000,
       log: () => undefined,
       engine,
     }),
-    /^Error: podman 4\.3\.1 reads this machine's stored logins/u,
+    /^Error: podman 4\.2\.1 cannot map its user onto a job's/u,
   );
 });
 
 test(
-  "a docker pull is made at the endpoint the user's docker context names, under docker's own empty credential",
+  "a docker pull of the pool's registry is made under the pool's token at the endpoint the user's docker context names, and any other is docker's own",
   {
     skip:
       ownUid !== 1000 &&
@@ -435,41 +436,60 @@ test(
   },
   async (t) => {
     const { home, environment, poolFile } = await runnerFixture(t, {
+      pool: { ...fixturePool, registryHost: "registry.chuggy.example" },
       runner: { engine: "docker" },
     });
     const { engine, state } = fakeEngine();
     state.contextHost = "unix:///run/user/1000/docker.sock";
     const runner = await runnerParts(
       await runnerSetup(poolFile, environment, home),
-      { uid: ownUid, log: () => undefined, engine },
-    );
-    const placed = await runner.backend.place(
       {
-        assignment: "asg-1",
-        capabilities: ["container"],
-        image: `busybox@sha256:${"a".repeat(64)}`,
-        cpuMillis: 1000,
-        memoryMib: 512,
-        deadlineSecs: 600,
-        callbackUrl: "https://chuggy.example/worker",
-        bearer: "attempt-bearer",
+        uid: ownUid,
+        log: () => undefined,
+        engine,
+        tokens: {
+          acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+          invalidate: () => undefined,
+        },
       },
-      "Job",
     );
-    assert.deepEqual(placed, { placed: "Placed" });
-    await runner.backend.settled();
-    const pull = state.calls.find((call) => call.argv[0] === "pull");
-    assert.equal(
-      pull?.environment.DOCKER_HOST,
-      "unix:///run/user/1000/docker.sock",
-    );
-    assert.deepEqual(JSON.parse(pull?.authFile ?? ""), {
-      auths: {},
-      credHelpers: { "chuggy.invalid": "" },
+    const images = [
+      `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`,
+      `ghcr.io/someone/private@sha256:${"b".repeat(64)}`,
+    ];
+    for (const [index, image] of images.entries()) {
+      const placed = await runner.backend.place(
+        {
+          assignment: `asg-${String(index)}`,
+          capabilities: ["container"],
+          image,
+          cpuMillis: 1000,
+          memoryMib: 512,
+          deadlineSecs: 600,
+          callbackUrl: "https://chuggy.example/worker",
+          bearer: "attempt-bearer",
+        },
+        "Job",
+      );
+      assert.deepEqual(placed, { placed: "Placed" });
+      await runner.backend.settled();
+    }
+    const [pool, other] = state.calls.filter((call) => call.argv[0] === "pull");
+    assert.deepEqual(pool.argv, ["pull", "--quiet", images[0]]);
+    assert.deepEqual(pool.environment, {
+      DOCKER_CONFIG: pool.authDirectory,
+      DOCKER_HOST: "unix:///run/user/1000/docker.sock",
+      DOCKER_AUTH_CONFIG: "",
     });
+    assert.deepEqual(Object.keys(JSON.parse(pool.authFile ?? "").auths), [
+      "registry.chuggy.example",
+    ]);
+    assert.deepEqual(other.argv, ["pull", "--quiet", images[1]]);
+    assert.deepEqual(other.environment, {});
+    assert.equal(other.authFile, undefined);
     assert.deepEqual(
       state.calls.map((call) => call.argv[0]),
-      ["info", "context", "image", "pull", "run"],
+      ["info", "context", "image", "pull", "run", "image", "pull", "run"],
     );
   },
 );

@@ -161,7 +161,8 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(findings[4], {
     check: "podman credential helpers",
     passed: true,
-    detail: "none named in the 0 registries.conf files read",
+    detail:
+      "none named ahead of the auth file in the 0 registries.conf files read",
   });
   assert.deepEqual(findings[7], {
     check: "engine socket",
@@ -249,7 +250,7 @@ test("under docker, a runner that is not uid 1000 fails the Claude token file ch
   );
 });
 
-test("a credential helper podman's registries.conf sets is warned of, and passes", async (t) => {
+test("a credential helper podman's registries.conf names ahead of the auth file is warned of, and passes, and one after it is not", async (t) => {
   const { findings, registries } = await doctored(t, {
     registries: {
       "registries.conf":
@@ -262,6 +263,8 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
         'credential-helpers = ["containers-auth.json"]\n',
       "registries.conf.d/40-quoted.conf":
         "\"credential-helpers\" = ['containers-auth.json', 'pass']\n",
+      "registries.conf.d/45-ahead.conf":
+        'credential-helpers = ["pass", "containers-auth.json"]\n',
       "registries.conf.d/50-literal.conf":
         "'credential-helpers' = [\"pass\"]\n",
       "registries.conf.d/60-commented.conf":
@@ -278,7 +281,7 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
   );
   const warned = [
     "10-helper",
-    "40-quoted",
+    "45-ahead",
     "50-literal",
     "60-commented",
     "80-hash",
@@ -287,7 +290,7 @@ test("a credential helper podman's registries.conf sets is warned of, and passes
     check: "podman credential helpers",
     passed: true,
     warning: true,
-    detail: `${warned.join(", ")} name a credential helper, whose logins podman presents on every pull, the pool's token notwithstanding`,
+    detail: `${warned.join(", ")} name a credential helper ahead of containers-auth.json, which podman asks in place of the pool's token on a pull of the pool's registry; name containers-auth.json first`,
   });
   assert.ok(findings.every((found) => found.passed));
   assert.match(
@@ -315,15 +318,15 @@ test("docker has no podman credential helpers to check", async (t) => {
   );
 });
 
-test("a podman that reads this machine's stored logins fails the engine check", async (t) => {
-  const { findings, state } = await doctored(t, { podmanVersion: "4.3.1" });
+test("a podman whose keep-id cannot map its user onto a job's fails the engine check", async (t) => {
+  const { findings, state } = await doctored(t, { podmanVersion: "4.2.1" });
   assert.deepEqual(
     findings.find((found) => found.check === "container engine"),
     {
       check: "container engine",
       passed: false,
       detail:
-        "podman 4.3.1 reads this machine's stored logins even when told not to; podman 4.4 or later is required",
+        "podman 4.2.1 cannot map its user onto a job's with --userns=keep-id:uid=,gid=; podman 4.3 or later is required",
     },
   );
   assert.ok(!findings.some((found) => found.check === "job network"));
@@ -334,7 +337,7 @@ test("the registries.conf files read are counted, and podman's own default helpe
   for (const [registries, detail] of [
     [
       { "registries.conf": 'credential-helpers = ["containers-auth.json"]\n' },
-      "none named in the 1 registries.conf file read",
+      "none named ahead of the auth file in the 1 registries.conf file read",
     ],
     [
       {
@@ -342,7 +345,7 @@ test("the registries.conf files read are counted, and podman's own default helpe
         "registries.conf.d/10-search.conf":
           'unqualified-search-registries = ["docker.io"]\n',
       },
-      "none named in the 2 registries.conf files read",
+      "none named ahead of the auth file in the 2 registries.conf files read",
     ],
   ]) {
     const { findings } = await doctored(t, { registries });

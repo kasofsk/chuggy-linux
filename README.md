@@ -2,7 +2,7 @@
 
 Runs a chuggy worker pool's jobs on a Linux machine. Registered as a pool, the machine runs `chuggy-linux run` as a systemd user service: it polls chuggy for assignments and runs each one as a docker or podman container of the image the assignment pins.
 
-It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman 4.4 or later. Podman must be local: a remote client, set by `CONTAINER_HOST`, `CONTAINER_CONNECTION` or `remote = true` in `containers.conf`, is refused, since its service presents its own stored logins.
+It needs Linux with a systemd user session, Node 24 or later, and rootful docker or rootless podman 4.3 or later. Podman must be local: a remote client, set by `CONTAINER_HOST`, `CONTAINER_CONNECTION` or `remote = true` in `containers.conf`, is refused, since its service would mount a job's files from its own machine.
 
 ## Install
 
@@ -118,6 +118,8 @@ On a pool registered with `--host`, such a job of this machine's platform runs o
 
 An image that lacks one is refused before any agent starts, and the ticket stops with a reason naming what is missing. An image the registry refuses is refused at once, and one that fails to pull any other way, such as from a host that does not resolve, after two minutes of trying.
 
+A private image is pulled with this machine's own login for its registry. Log in once on each machine, as the user the service runs as and not under `sudo`: `docker login ghcr.io`, or for podman `podman login --authfile ~/.config/containers/auth.json ghcr.io`, since podman's own default file is under `XDG_RUNTIME_DIR`, which a reboot empties. The service reads that user's files, and runs with systemd's environment rather than your shell's (`systemctl --user show-environment`), so a `DOCKER_CONFIG` or `REGISTRY_AUTH_FILE` set only in your shell does not reach it. The registry the pool was registered for is the exception: a pull from it presents the pool's own token, unless podman's `registries.conf` names a credential helper ahead of `containers-auth.json`, which podman then asks first and `doctor` warns of.
+
 A service the project's checks need, such as a database, is yours and never chuggy's: start it from a check inside the image, or run it here on the jobs' network and hand every job its address through `environment`. For PostgreSQL, once the runner has made its network (`podman run` on podman):
 
 ```sh
@@ -177,7 +179,7 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 ## What it does
 
 - Places an assignment only if this machine has the CPU and memory it asks for, counted for that assignment alone, it pins an image, or one `images` lists or `--host` meets it, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
-- Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once with no credential.
+- Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once, as docker or podman pulls it with your own logins.
 - Runs each job as uid 1000 through chuggy's runtime, mounted read-only, with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the token file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
 - Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job that is stopped, or past its deadline, is killed first.
@@ -191,5 +193,4 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
 - Install docker or podman, or upgrade itself.
-- Pull with your own registry logins: an image not from the pool's registry is pulled with none. The exception is a credential helper you set in podman's `registries.conf`, which podman still asks; `doctor` warns of one. It reads the `registries.conf` your shell's environment names, while the service runs with systemd's (`systemctl --user show-environment`).
 - Limit a job's workspace: its volume has no size limit.
