@@ -952,6 +952,39 @@ test("a podman runner whose file hands jobs the engine hands each the socket pod
   );
 });
 
+test("a runner whose file lists volumes mounts each into a job, a directory bound and a named volume uncopied, and none into a session", async (t) => {
+  const volumes = [
+    { source: "/srv/cache", target: "/cache/shared", readonly: true },
+    { source: "cargo", target: "/cache/cargo" },
+  ];
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { volumes },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  /** @param {import("./engine.fixture.mjs").FakeEngineState} state */
+  const configure = (state) => {
+    state.volumes.set("cargo", {});
+  };
+  const listed = await ranBeside(setup, configure);
+  const unlisted = await ranBeside(
+    { ...setup, config: { ...setup.config, volumes: [] } },
+    configure,
+  );
+  const flags = [
+    "--mount",
+    "type=bind,source=/srv/cache,target=/cache/shared,readonly",
+    "--volume",
+    "cargo:/cache/cargo:nocopy",
+  ];
+  const at = listed.job.argv.indexOf(flags[1]) - 1;
+  assert.deepEqual(listed.job.argv.slice(at, at + flags.length), flags);
+  assert.deepEqual(
+    listed.job.argv.toSpliced(at, flags.length),
+    unlisted.job.argv,
+  );
+  assert.deepEqual(listed.session, unlisted.session);
+});
+
 test("a runner whose file hands jobs no engine asks nothing of its socket, and hands a job none of it", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t);
   const setup = await runnerSetup(poolFile, environment, home);

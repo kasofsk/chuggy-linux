@@ -27,6 +27,7 @@ import {
 } from "@chuggy/worker-core/hostBackend.mjs";
 import { containerEngine } from "@chuggy/worker-core/engine.mjs";
 import {
+  bindMountNameable,
   dockerContextArgv,
   dockerInfoArgv,
   networkCreateArgv,
@@ -43,7 +44,6 @@ import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import {
-  bindMountNameable,
   claudeTokenFileRefusal,
   runnerConfig,
   runnerPaths,
@@ -324,6 +324,7 @@ export async function runnerParts(setup, host) {
       machine,
       pullRetryMs,
       images: config.images,
+      volumes: config.volumes,
       ...(engineSocket === undefined ? {} : { engineSocket }),
     },
     {

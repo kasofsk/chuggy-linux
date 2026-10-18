@@ -86,6 +86,14 @@ function fakeEngineState() {
     containers: new Map(),
     images: new Set(),
     networks: new Set(),
+    /**
+     * The named volumes there, each by its labels.
+     *
+     * @type {Map<string, Record<string, string>>}
+     */
+    volumes: new Map(),
+    /** Whether an inspection of a volume times out. */
+    volumesUnanswered: false,
     /** @type {FakeCall[]} */
     calls: [],
     unreachable: false,
@@ -277,6 +285,23 @@ function networked(state, network, verb) {
 }
 
 /**
+ * A `volume inspect` of one volume.
+ *
+ * @param {FakeEngineState} state
+ * @param {string} name
+ */
+function volumeInspected(state, name) {
+  if (state.volumesUnanswered)
+    return failed("Error response from daemon: i/o timeout");
+  const labels = state.volumes.get(name);
+  return labels === undefined
+    ? failed(`Error response from daemon: get ${name}: no such volume`)
+    : answered(
+        `${JSON.stringify([{ Driver: "local", Labels: labels, Name: name }])}\n`,
+      );
+}
+
+/**
  * @param {FakeEngineState} state
  * @param {FakeCall} call
  * @returns {EngineAnswer | Promise<EngineAnswer>}
@@ -330,6 +355,8 @@ function answer(state, call) {
       state.containers.delete(container.name);
     });
   if (verb === "network") return networked(state, last, second);
+  if (verb === "volume" && second === "inspect")
+    return volumeInspected(state, last);
   return failed(`unknown command: ${call.argv.join(" ")}`);
 }
 
