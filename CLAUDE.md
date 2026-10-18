@@ -10,7 +10,7 @@ A Linux machine's worker pool for chuggy: a background service and a CLI that ru
 
 ## Layout
 
-Every module sits at the root. `cli.mjs` is the entry: it refuses a Node below the floor `nodeFloor.mjs` holds before importing anything that Node may not parse, and otherwise holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core's backend and this machine's policy, and the service answering for a pool, the configuration with the token file's uid rule, `doctor`'s checks, the systemd unit and systemd's own commands each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
+Every module sits at the root. `cli.mjs` is the entry: it refuses a Node below the floor `nodeFloor.mjs` holds before importing anything that Node may not parse, and otherwise holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` composes a run from the core's backend and this machine's policy, and the service answering for a pool, the configuration with the token file's uid rule, `doctor`'s checks, the systemd unit, systemd's own commands and `mcp`'s MCP SDK, each have a module of their own. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract, zod and the MCP SDK inside the tarball, so an install needs neither git nor the contract's release.
 
 ## Checks
 

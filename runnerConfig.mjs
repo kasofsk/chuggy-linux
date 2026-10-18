@@ -28,6 +28,7 @@ import {
  * @property {string} config
  * @property {string} units where systemd reads the user's units
  * @property {string} pools where `register` writes a pool file
+ * @property {string} signIns where `mcp` keeps each site's sign-in
  * @property {string} logs where an ended job's logs are saved
  * @property {string} jobs where a job run on this machine itself has its directory
  * @property {string | undefined} runtime where each pool's pull credentials, env files and control socket live; absent without XDG_RUNTIME_DIR
@@ -158,6 +159,7 @@ export function runnerPaths(environment, home) {
     config: join(configHome, "chuggy-linux", "runner.json"),
     units: join(configHome, "systemd", "user"),
     pools: join(configHome, "chuggy", "pools"),
+    signIns: join(configHome, "chuggy", "sign-ins"),
     logs: join(stateHome, "chuggy-linux", "logs"),
     jobs: join(stateHome, "chuggy-linux", "jobs"),
     runtime:
