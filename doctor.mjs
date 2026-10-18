@@ -342,26 +342,31 @@ function commentsStripped(text) {
 }
 
 /**
- * The credential helpers a registries.conf names beyond the auth file, from
- * each `credential-helpers` array it sets, its key bare or quoted.
+ * The credential helpers a registries.conf names ahead of the auth file, from
+ * each `credential-helpers` array it sets, its key bare or quoted: all of an
+ * array that names no auth file.
  *
  * @param {string} text
  */
-function credentialHelpersNamed(text) {
+function helpersAheadOfAuthFile(text) {
   /** @type {string[]} */
-  const named = [];
+  const ahead = [];
   for (const [, list] of commentsStripped(text).matchAll(
     /^\s*(?:credential-helpers|"credential-helpers"|'credential-helpers')\s*=\s*\[([^\]]*)\]/gmu,
-  ))
-    for (const [, basic, literal] of list.matchAll(/"([^"]*)"|'([^']*)'/gu))
-      named.push(basic ?? literal);
-  return named.filter((helper) => helper !== authFileHelper);
+  )) {
+    const named = [...list.matchAll(/"([^"]*)"|'([^']*)'/gu)].map(
+      ([, basic, literal]) => basic ?? literal,
+    );
+    const authFile = named.indexOf(authFileHelper);
+    ahead.push(...(authFile < 0 ? named : named.slice(0, authFile)));
+  }
+  return ahead;
 }
 
 /**
  * The registries.conf files at these locations, each a file or a drop-in
- * directory of `.conf` files, and which of them name a credential helper.
- * One that cannot be read is not counted.
+ * directory of `.conf` files, and which of them name a credential helper
+ * ahead of the auth file. One that cannot be read is not counted.
  *
  * @param {readonly string[]} locations
  */
@@ -386,15 +391,17 @@ async function registriesConfRead(locations) {
     const text = await readFile(file, "utf8").catch(() => undefined);
     if (text === undefined) continue;
     read += 1;
-    if (credentialHelpersNamed(text).length > 0) helpered.push(file);
+    if (helpersAheadOfAuthFile(text).length > 0) helpered.push(file);
   }
   return { read, helpered };
 }
 
 /**
- * Podman asks a credential helper registries.conf names whatever
- * `--authfile` says, so a pull outside the pool's registry can present a
- * login of this machine's. That is the operator's to configure, and warned of.
+ * Podman asks the credential helpers registries.conf names in the order it
+ * names them, and reads `--authfile` only as the auth file's turn comes, so
+ * a helper ahead of it, or a list without it, answers a pull of the pool's
+ * registry in place of the pool's token. That is the operator's to
+ * configure, and warned of.
  *
  * @param {readonly string[]} locations
  * @returns {Promise<DoctorFinding>}
@@ -406,13 +413,13 @@ async function podmanHelpersFinding(locations) {
     return {
       check,
       passed: true,
-      detail: `none named in the ${String(read)} registries.conf ${read === 1 ? "file" : "files"} read`,
+      detail: `none named ahead of the auth file in the ${String(read)} registries.conf ${read === 1 ? "file" : "files"} read`,
     };
   return {
     check,
     passed: true,
     warning: true,
-    detail: `${helpered.join(", ")} ${helpered.length === 1 ? "names" : "name"} a credential helper, whose logins podman presents on every pull, the pool's token notwithstanding`,
+    detail: `${helpered.join(", ")} ${helpered.length === 1 ? "names" : "name"} a credential helper ahead of ${authFileHelper}, which podman asks in place of the pool's token on a pull of the pool's registry; name ${authFileHelper} first`,
   };
 }
 

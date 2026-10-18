@@ -132,13 +132,15 @@ const unixScheme = "unix://";
 /** How `docker info` names a daemon that maps a job's uid onto another. */
 const remappedDocker = { rootless: "rootless", userns: "with userns-remap" };
 
-/** The first podman whose `--authfile` is the only login file it reads. */
-const podmanVersionMin = /** @type {const} */ ([4, 4]);
+/** The first podman whose keep-id maps its user onto a uid and gid it is given. */
+const podmanVersionMin = /** @type {const} */ ([4, 3]);
 
 /**
  * Refuses rootless docker and userns-remap, because each maps a job's uid onto
  * one that cannot read the Claude token file, and any context but a unix
- * socket, since a remote context's certificates would not reach the pull.
+ * socket: a job mounts this machine's paths, which a remote daemon would find
+ * on its own, and a pull of the pool's registry is told the endpoint alone,
+ * without a context's certificates.
  *
  * @param {Engine} engine
  * @returns {Promise<string>} the endpoint docker's context names
@@ -166,9 +168,9 @@ async function dockerEndpoint(engine) {
 }
 
 /**
- * Refuses a podman older than the first whose `--authfile` is the only login
- * file it reads, since an older one presents this machine's stored logins
- * too, and a podman whose version cannot be read.
+ * Refuses a podman older than the first whose keep-id maps its user onto the
+ * job's, which every job is run with, and a podman whose version cannot be
+ * read.
  *
  * @param {Engine} engine
  */
@@ -185,13 +187,13 @@ async function podmanVersionChecked(engine) {
   const [majorMin, minorMin] = podmanVersionMin;
   if (major < majorMin || (major === majorMin && minor < minorMin))
     throw new Error(
-      `podman ${version} reads this machine's stored logins even when told not to; ${required}`,
+      `podman ${version} cannot map its user onto a job's with --userns=keep-id:uid=,gid=; ${required}`,
     );
 }
 
 /**
- * Refuses a remote podman client: an empty `--authfile` sends its service
- * nothing, and the service falls back on its own stored logins.
+ * Refuses a remote podman client, whose service may be on another machine and
+ * mounts a job's paths from there rather than from this one.
  *
  * @param {Engine} engine
  */
@@ -204,7 +206,7 @@ async function podmanLocalChecked(engine) {
   const remote = answer.stdout.trim();
   if (remote === "true")
     throw new Error(
-      "podman is a remote client here (CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf), where its service reads its own stored logins; run the runner beside a local podman",
+      "podman is a remote client here (CONTAINER_HOST, CONTAINER_CONNECTION or remote = true in containers.conf), whose service may be on another machine and mounts a job's paths from there; run the runner beside a local podman",
     );
   if (remote !== "false")
     throw new Error(
@@ -213,9 +215,10 @@ async function podmanLocalChecked(engine) {
 }
 
 /**
- * The endpoint a pull is told, of an engine checked to be one a job can be
- * run by: docker's, from its context, which a pull made under a configuration
- * directory of its own would otherwise lose. Podman has none.
+ * The endpoint a pull of the pool's registry is told, of an engine checked to
+ * be one a job can be run by: docker's, from its context, which that pull,
+ * made under a configuration directory of its own, would otherwise lose.
+ * Podman has none.
  *
  * @param {RunnerConfig["engine"]} name
  * @param {Engine} engine
