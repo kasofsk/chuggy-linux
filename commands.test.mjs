@@ -274,6 +274,60 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   );
 });
 
+test("doctor on a pool registered with --host names the claude a job there runs and the version it says, on the PATH its unit sets ahead of the service manager's", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    pool: { ...fixturePool, host: true },
+  });
+  const own = join(home, "own-bin");
+  const manager = join(home, "manager-bin");
+  for (const [directory, version] of [
+    [own, "2.1.282 (Claude Code)"],
+    [manager, "1.0.0 (Claude Code)"],
+  ]) {
+    await mkdir(directory);
+    await writeFile(
+      join(directory, "claude"),
+      `#!/bin/sh\necho '${version}'\n`,
+      { mode: 0o700 },
+    );
+  }
+  const unit =
+    "systemctl --user show chuggy-linux-pool.service --property Environment --value";
+  const managed = "systemctl --user show-environment";
+  /** @param {NonNullable<Parameters<typeof called>[1]>["systemd"]} systemd */
+  const said = async (systemd) => {
+    const { out, err } = await called(["doctor", "--pool", poolFile], {
+      home,
+      environment,
+      ...ready,
+      systemd,
+    });
+    return `${out}\n${err}`
+      .split("\n")
+      .find((line) => line.includes(" Claude credential: "));
+  };
+  const runs = (
+    /** @type {string} */ directory,
+    /** @type {string} */ version,
+  ) =>
+    `; a job on this machine itself runs ${join(directory, "claude")}, ${version} (Claude Code), found on the PATH the service manager starts the runner with`;
+  const unitSet = await said({
+    [unit]: { stdout: `LANG=C.UTF-8 PATH=${own}:/usr/bin\n` },
+    [managed]: { stdout: `HOME=${home}\nPATH=${manager}\n` },
+  });
+  assert.ok(unitSet?.startsWith("ok    "), unitSet);
+  assert.ok(unitSet?.endsWith(runs(own, "2.1.282")), unitSet);
+  const managerSet = await said({
+    [managed]: { stdout: `HOME=${home}\nPATH=${manager}\n` },
+  });
+  assert.ok(managerSet?.endsWith(runs(manager, "1.0.0")), managerSet);
+  assert.ok(
+    (await said({ [unit]: { code: 1 }, [managed]: { code: 1 } }))?.endsWith(
+      "; no claude is on doctor's own PATH, which is empty, so a job on this machine itself runs no Claude Code",
+    ),
+  );
+});
+
 test("doctor prints a warning with the failures, on stderr and never on stdout, of the user's registries.conf and one the environment names", async (t) => {
   const { home, environment, poolFile } = await runnerFixture(t, {
     pool: { tenant: "vteng" },

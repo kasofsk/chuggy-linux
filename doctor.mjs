@@ -6,8 +6,17 @@
  * nothing, which the plane answers without granting or releasing a lease.
  */
 
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { constants } from "node:fs";
+import { access, readdir, readFile, stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+
+import {
+  claudeCredentialDescribed,
+  claudeCredentialFile,
+  claudeCredentialRefusal,
+  claudeCredentialSetting,
+} from "@chuggy/worker-core/claudeCredential.mjs";
 
 import {
   hostEnvironmentRefusal,
@@ -32,7 +41,8 @@ import {
 } from "@chuggy/worker-core/poolIdentity.mjs";
 import { serviceUnitText } from "./poolService.mjs";
 import {
-  claudeTokenFileRefusal,
+  claudeCredentialFileRefusal,
+  runnerClaudeCredential,
   runnerConfig,
   runnerConfigLimits,
 } from "./runnerConfig.mjs";
@@ -70,6 +80,9 @@ import {
  * @property {readonly string[]} registriesConf podman's registries.conf files and drop-in directories
  * @property {string} node the Node binary running this
  * @property {string} cli this CLI's entry, as an absolute path
+ * @property {string | undefined} path this process's PATH
+ * @property {() => Promise<string | undefined>} servicePath the PATH the service manager starts the runner with, where it can be read
+ * @property {(file: string) => Promise<string | undefined>} claudeVersion what a `claude` says its version is
  * @property {DoctorParts} parts
  */
 
@@ -107,6 +120,129 @@ function hostJobsChecked(config) {
       `timeoutSecsMax is at most ${String(hostTimeoutSecsMax)} for a job on this machine itself`,
     );
   return "a job that pins no image and names this machine's platform runs on the machine itself, unisolated";
+}
+
+/** The cap on asking a `claude` its version, which guards a hung one and not a slow one. */
+const claudeVersionTimeoutMs = 30_000;
+
+/**
+ * What a `claude` says its version is, the first line it prints, or nothing
+ * where it prints none. It is run with `execFile`, never a shell.
+ *
+ * @param {string} file
+ * @returns {Promise<string | undefined>}
+ */
+export function claudeVersionAsked(file) {
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      ["--version"],
+      { timeout: claudeVersionTimeoutMs, encoding: "utf8" },
+      (error, stdout) => {
+        const line = stdout.split("\n")[0].trim();
+        resolve(error === null && line !== "" ? line : undefined);
+      },
+    );
+  });
+}
+
+/**
+ * The PATH a job on this machine itself is started with, and whose it is: the
+ * runner's file's, or the one the service manager starts the runner with, or
+ * where that cannot be read this process's own.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @returns {Promise<[string, string]>}
+ */
+async function hostJobPath(input, config) {
+  if (config.environment.PATH !== undefined)
+    return [config.environment.PATH, "the PATH the runner's file sets"];
+  const service = await input.servicePath();
+  if (service !== undefined)
+    return [service, "the PATH the service manager starts the runner with"];
+  return [input.path ?? "", "doctor's own PATH"];
+}
+
+/**
+ * The `claude` a job on this machine itself runs, as the PATH it is started
+ * with finds it, or why there is none: a warning, which passes, since a job
+ * that runs no Claude Code needs none.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @returns {Promise<{found: string} | {missing: string}>}
+ */
+async function hostClaudeFound(input, config) {
+  const [path, whose] = await hostJobPath(input, config);
+  for (const directory of path.split(":")) {
+    if (!isAbsolute(directory)) continue;
+    const file = join(directory, "claude");
+    try {
+      await access(file, constants.X_OK);
+      if (!(await stat(file)).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const version = await input.claudeVersion(file);
+    return {
+      found: `a job on this machine itself runs ${file}, ${version ?? "which says no version"}, found on ${whose}`,
+    };
+  }
+  return {
+    missing: `no claude is on ${whose}, ${path === "" ? "which is empty" : path}, so a job on this machine itself runs no Claude Code`,
+  };
+}
+
+/**
+ * The Claude credential the runner's file names, its file held to the rule a
+ * run holds it to and then read, as only doctor reads it, and held to what a
+ * file of its kind says. It names the kind and its settings and never what
+ * the file holds, and on a pool registered with `--host` the `claude` a job
+ * on this machine itself runs.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @param {boolean} host whether a job may run on this machine itself
+ * @returns {Promise<DoctorFinding>}
+ */
+async function claudeCredentialFinding(input, config, host) {
+  const check = "Claude credential";
+  const credential = runnerClaudeCredential(config);
+  const file = claudeCredentialFile(credential);
+  const setting = claudeCredentialSetting(credential);
+  const { label } = claudeCredentialDescribed(setting);
+  let refusal = await claudeCredentialFileRefusal(
+    setting,
+    file,
+    config.engine,
+    input.uid,
+  );
+  if (refusal === undefined)
+    try {
+      const text = (await readFile(file, "utf8")).trim();
+      refusal = claudeCredentialRefusal(setting, text, file);
+    } catch {
+      refusal = `the ${label} ${file} cannot be read`;
+    }
+  if (refusal !== undefined) return { check, passed: false, detail: refusal };
+  const named = [
+    setting.kind,
+    ...Object.entries(setting).flatMap(([key, value]) =>
+      key === "kind" ? [] : [`${key} ${String(value)}`],
+    ),
+  ].join(", ");
+  const detail = `${named}, from the ${label} ${file}, this runner's own`;
+  if (!host) return { check, passed: true, detail };
+  const claude = await hostClaudeFound(input, config);
+  return "found" in claude
+    ? { check, passed: true, detail: `${detail}; ${claude.found}` }
+    : {
+        check,
+        passed: true,
+        warning: true,
+        detail: `${detail}; ${claude.missing}`,
+      };
 }
 
 /** @param {unknown} failure */
@@ -504,15 +640,9 @@ export async function doctorFindings(input) {
     runtimeDirectory(input.paths),
   ]);
   if (config !== undefined)
-    await checked(findings, "Claude token file", async () => {
-      const refusal = await claudeTokenFileRefusal(
-        config.claudeTokenFile,
-        config.engine,
-        input.uid,
-      );
-      if (refusal !== undefined) throw new Error(refusal);
-      return [true, `${config.claudeTokenFile}, this runner's own`];
-    });
+    findings.push(
+      await claudeCredentialFinding(input, config, credentials?.host === true),
+    );
   if (credentials?.host === true && config !== undefined)
     await checked(findings, "host jobs", async () => [
       true,

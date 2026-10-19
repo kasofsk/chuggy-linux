@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import {
@@ -23,7 +24,7 @@ const copy = { node: "/opt/node/bin/node", cli: "/opt/chuggy-linux/cli.mjs" };
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, volumes?: string[], volumesUnanswered?: boolean}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, and the named volumes the engine has
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, volumes?: string[], volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, the named volumes the engine has, doctor's own PATH and the service manager's, and what each `claude` says its version is
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -66,6 +67,9 @@ async function doctored(t, options = {}) {
       join(registries, "registries.conf.d"),
     ],
     uid: options.uid ?? process.getuid?.() ?? -1,
+    path: options.path,
+    servicePath: async () => options.servicePath,
+    claudeVersion: async (file) => options.claudeVersions?.[file],
     parts: {
       engine: () => engine,
       tokens: () => ({
@@ -142,7 +146,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["pool file", true],
       ["runner configuration", true],
       ["runtime directory", true],
-      ["Claude token file", true],
+      ["Claude credential", true],
       ["podman credential helpers", true],
       ["service unit", true],
       ["container engine", true],
@@ -237,12 +241,12 @@ test("under docker, doctor names the endpoint its context names, and fails rootl
   assert.deepEqual(rootless.verbs, ["info"]);
 });
 
-test("under docker, a runner that is not uid 1000 fails the Claude token file check", async (t) => {
+test("under docker, a runner that is not uid 1000 fails the Claude credential check", async (t) => {
   const { findings } = await doctored(t, {
     runner: { engine: "docker" },
     uid: 1234,
   });
-  const finding = findings.find((found) => found.check === "Claude token file");
+  const finding = findings.find((found) => found.check === "Claude credential");
   assert.equal(finding?.passed, false);
   assert.match(
     finding?.detail ?? "",
@@ -753,4 +757,259 @@ test("a job may write an owner's directory by the write and search bits its uid 
       writable,
       `${engine} ${JSON.stringify(directory)}`,
     );
+});
+
+/**
+ * Files a suite writes, owner-only, in a directory of their own.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {Record<string, string>} files each one's text, by name
+ * @param {number} mode
+ */
+async function filesWritten(t, files, mode = 0o600) {
+  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-doctor-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const [name, text] of Object.entries(files)) {
+    await writeFile(join(directory, name), text, { mode });
+    await chmod(join(directory, name), mode);
+  }
+  return directory;
+}
+
+/** What each fixture file holds that is secret, which no finding may print. */
+const claudeSecrets = {
+  "claude-token": "sk-ant-oat01-fixture-token",
+  "api-key": "sk-ant-api03-fixture-key",
+  "bedrock-key": "ABSKfixturebedrockkey",
+  aws: "fixtureAwsSecretAccessKey",
+  aws_id: "AKIAFIXTUREACCESSKEY",
+  google: "fixture-private-key-body",
+  google_id: "fixture-private-key-id",
+};
+
+/** Each kind's file, its text holding the secrets above. */
+const claudeFiles = {
+  "claude-token": `${claudeSecrets["claude-token"]}\n`,
+  "api-key": claudeSecrets["api-key"],
+  "bedrock-key": claudeSecrets["bedrock-key"],
+  aws: `[default]\naws_access_key_id = AKIAOTHERPROFILE\naws_secret_access_key = other\n[chuggy]\naws_access_key_id = ${claudeSecrets.aws_id}\naws_secret_access_key = ${claudeSecrets.aws}\n`,
+  "google.json": JSON.stringify({
+    type: "service_account",
+    project_id: "chuggy-jobs",
+    private_key_id: claudeSecrets.google_id,
+    private_key: `-----BEGIN PRIVATE KEY-----\n${claudeSecrets.google}\n-----END PRIVATE KEY-----\n`,
+    client_email: "jobs@chuggy-jobs.iam.gserviceaccount.com",
+  }),
+};
+
+test("the Claude credential check names the kind and its settings, and never what its file holds", async (t) => {
+  const directory = await filesWritten(t, claudeFiles);
+  const at = (/** @type {string} */ name) => join(directory, name);
+  for (const [runner, detail] of [
+    [
+      { claudeTokenFile: at("claude-token") },
+      `Subscription, from the Claude token file ${at("claude-token")}, this runner's own`,
+    ],
+    [
+      { claudeCredential: { kind: "ApiKey", apiKeyFile: at("api-key") } },
+      `ApiKey, from the Anthropic API key file ${at("api-key")}, this runner's own`,
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Bedrock",
+          region: "us-west-2",
+          apiKeyFile: at("bedrock-key"),
+        },
+      },
+      `Bedrock, region us-west-2, from the Bedrock API key file ${at("bedrock-key")}, this runner's own`,
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Bedrock",
+          region: "us-west-2",
+          credentialsFile: at("aws"),
+          profile: "chuggy",
+        },
+      },
+      `Bedrock, region us-west-2, profile chuggy, from the AWS credentials file ${at("aws")}, this runner's own`,
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Vertex",
+          region: "us-east5",
+          project: "chuggy-jobs",
+          credentialsFile: at("google.json"),
+        },
+      },
+      `Vertex, region us-east5, project chuggy-jobs, from the Google service account key file ${at("google.json")}, this runner's own`,
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Foundry",
+          resource: "chuggy-jobs",
+          apiKeyFile: at("api-key"),
+        },
+      },
+      `Foundry, resource chuggy-jobs, from the Foundry API key file ${at("api-key")}, this runner's own`,
+    ],
+  ]) {
+    const { findings } = await doctored(t, {
+      runner: { claudeTokenFile: undefined, ...runner },
+    });
+    assert.deepEqual(
+      findings.find((found) => found.check === "Claude credential"),
+      { check: "Claude credential", passed: true, detail },
+    );
+    const said = findings.map(findingLine).join("\n");
+    for (const secret of Object.values(claudeSecrets))
+      assert.equal(said.includes(secret), false, secret);
+  }
+});
+
+test("a Claude credential's file that is no credential of its kind fails the check, saying what it lacks and never what it holds", async (t) => {
+  const secret = "sk-ant-fixture-never-printed";
+  const directory = await filesWritten(t, {
+    "two-lines": `${secret}\n${secret}\n`,
+    blank: " \n\n",
+    "no-profile": `[default]\naws_access_key_id = ${secret}\naws_secret_access_key = ${secret}\n`,
+    "no-secret": `[chuggy]\naws_access_key_id = ${secret}\n`,
+    "not-json": `{"private_key": "${secret}"`,
+    "not-service-account": JSON.stringify({
+      type: "authorized_user",
+      refresh_token: secret,
+    }),
+    "no-private-key": JSON.stringify({
+      type: "service_account",
+      private_key_id: secret,
+    }),
+  });
+  const at = (/** @type {string} */ name) => join(directory, name);
+  /** @param {string} name */
+  const bedrock = (name) => ({
+    kind: "Bedrock",
+    region: "us-west-2",
+    credentialsFile: at(name),
+    profile: "chuggy",
+  });
+  /** @param {string} name */
+  const vertex = (name) => ({
+    kind: "Vertex",
+    region: "us-east5",
+    project: "chuggy-jobs",
+    credentialsFile: at(name),
+  });
+  for (const [claudeCredential, detail] of [
+    [
+      { kind: "Subscription", tokenFile: at("two-lines") },
+      `the Claude token file ${at("two-lines")} holds more than one line; save \`claude setup-token\`'s output there, alone`,
+    ],
+    [
+      { kind: "ApiKey", apiKeyFile: at("blank") },
+      `the Anthropic API key file ${at("blank")} is empty; save a key from the Claude Console there, alone`,
+    ],
+    [
+      bedrock("no-profile"),
+      `the AWS credentials file ${at("no-profile")} has no [chuggy] profile; name the profile its keys are under, or give its [chuggy] profile an access key's aws_access_key_id and aws_secret_access_key`,
+    ],
+    [
+      bedrock("no-secret"),
+      `the AWS credentials file ${at("no-secret")} gives its [chuggy] profile no aws_secret_access_key; give its [chuggy] profile an access key's aws_access_key_id and aws_secret_access_key`,
+    ],
+    [
+      vertex("not-json"),
+      `the Google service account key file ${at("not-json")} is not JSON; save the JSON key Google Cloud made for a service account there`,
+    ],
+    [
+      vertex("not-service-account"),
+      `the Google service account key file ${at("not-service-account")} is not a service account's key; save the JSON key Google Cloud made for a service account there`,
+    ],
+    [
+      vertex("no-private-key"),
+      `the Google service account key file ${at("no-private-key")} holds no private_key; save the JSON key Google Cloud made for a service account there`,
+    ],
+  ]) {
+    const { findings } = await doctored(t, {
+      runner: { claudeTokenFile: undefined, claudeCredential },
+    });
+    assert.deepEqual(
+      findings.find((found) => found.check === "Claude credential"),
+      { check: "Claude credential", passed: false, detail },
+    );
+    assert.equal(findings.map(findingLine).join("\n").includes(secret), false);
+  }
+});
+
+test("on a pool registered with --host, the Claude credential check names the claude a job on this machine itself runs, on the PATH it is started with, and warns, passing, where there is none", async (t) => {
+  const bin = await filesWritten(t, { claude: "#!/bin/sh\n" }, 0o700);
+  const empty = await filesWritten(t, {});
+  await mkdir(join(empty, "claude"));
+  const claude = join(bin, "claude");
+  const pool = { ...fixturePool, host: true };
+  const claudeVersions = { [claude]: "2.1.282 (Claude Code)" };
+  /**
+   * Whether the check passed or warned, and what it says past the credential.
+   *
+   * @param {Parameters<typeof doctored>[1]} options
+   */
+  const found = async (options) => {
+    const { findings } = await doctored(t, {
+      pool,
+      claudeVersions,
+      ...options,
+    });
+    const finding = findings.find(
+      (found) => found.check === "Claude credential",
+    );
+    const [credential, ...rest] = (finding?.detail ?? "").split("; ");
+    assert.match(
+      credential,
+      /^Subscription, from the Claude token file \/.*\/claude-token, this runner's own$/u,
+    );
+    return {
+      passed: finding?.passed,
+      warning: finding?.warning ?? false,
+      host: rest.join("; "),
+    };
+  };
+  for (const [options, whose] of [
+    [
+      { runner: { environment: { PATH: `${empty}:relative:${bin}` } } },
+      "the PATH the runner's file sets",
+    ],
+    [
+      { servicePath: `${empty}:${bin}`, path: empty },
+      "the PATH the service manager starts the runner with",
+    ],
+    [{ path: bin }, "doctor's own PATH"],
+  ])
+    assert.deepEqual(await found(options), {
+      passed: true,
+      warning: false,
+      host: `a job on this machine itself runs ${claude}, 2.1.282 (Claude Code), found on ${whose}`,
+    });
+  assert.deepEqual(await found({ path: bin, claudeVersions: {} }), {
+    passed: true,
+    warning: false,
+    host: `a job on this machine itself runs ${claude}, which says no version, found on doctor's own PATH`,
+  });
+  assert.deepEqual(await found({ servicePath: empty, path: bin }), {
+    passed: true,
+    warning: true,
+    host: `no claude is on the PATH the service manager starts the runner with, ${empty}, so a job on this machine itself runs no Claude Code`,
+  });
+  assert.equal(
+    (await found({ path: relative(process.cwd(), bin) })).warning,
+    true,
+  );
+  await chmod(claude, 0o600);
+  assert.equal((await found({ path: bin })).warning, true);
+  assert.deepEqual(await found({ pool: fixturePool, path: bin }), {
+    passed: true,
+    warning: false,
+    host: "",
+  });
 });

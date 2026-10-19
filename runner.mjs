@@ -4,6 +4,11 @@
  * until the plane denies the pool. Where the pool was registered with
  * `--host`, a job that pins no image runs on this machine itself, beside the
  * containers. Every command starts here.
+ *
+ * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
+ * the runner's file names `claudeTokenFile`. The core withholds what would
+ * choose another credential only from a workload told one, so a run that told
+ * none would let a variable its jobs inherit outrank the token.
  */
 
 import { readdirSync, rmSync } from "node:fs";
@@ -44,7 +49,8 @@ import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import {
-  claudeTokenFileRefusal,
+  claudeCredentialFileRefusal,
+  runnerClaudeHanded,
   runnerConfig,
   runnerPaths,
 } from "./runnerConfig.mjs";
@@ -137,7 +143,7 @@ const podmanVersionMin = /** @type {const} */ ([4, 3]);
 
 /**
  * Refuses rootless docker and userns-remap, because each maps a job's uid onto
- * one that cannot read the Claude token file, and any context but a unix
+ * one that cannot read the Claude credential's file, and any context but a unix
  * socket: a job mounts this machine's paths, which a remote daemon would find
  * on its own, and a pull of the pool's registry is told the endpoint alone,
  * without a context's certificates.
@@ -152,7 +158,7 @@ async function dockerEndpoint(engine) {
   const remapped = /\bname=(rootless|userns)\b/u.exec(info.stdout)?.[1];
   if (remapped !== undefined)
     throw new Error(
-      `docker is running ${remappedDocker[remapped]}, where a job cannot read the Claude token file; use rootful docker without userns-remap, or rootless podman ("engine": "podman")`,
+      `docker is running ${remappedDocker[remapped]}, where a job cannot read the Claude credential's file; use rootful docker without userns-remap, or rootless podman ("engine": "podman")`,
     );
   const context = await engine.exec(dockerContextArgv());
   if (context.code !== 0)
@@ -293,8 +299,12 @@ export async function engineSocketHanded(config, engine, endpoint) {
 }
 
 /**
+ * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket, and what starts a job on this machine itself when not Node's own `spawn`
+ */
+
+/**
  * @param {RunnerSetup} setup
- * @param {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean}} host this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, and `places: false` for a run that places nothing, which then asks nothing of the engine's socket
+ * @param {RunnerHost} host
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -311,11 +321,12 @@ export async function runnerParts(setup, host) {
     cpuMillis: availableParallelism() * 1000,
     memoryMib: Math.floor(totalmem() / (1024 * 1024)),
   };
+  const claude = runnerClaudeHanded(config);
   const container = containerBackend(
     {
       engine: config.engine,
       pool: credentials,
-      tokenFile: config.claudeTokenFile,
+      ...claude,
       registryHost: credentials.registryHost,
       dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
@@ -337,7 +348,12 @@ export async function runnerParts(setup, host) {
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
       tokenFileRefusal: (file) =>
-        claudeTokenFileRefusal(file, config.engine, host.uid),
+        claudeCredentialFileRefusal(
+          claude.claudeCredential,
+          file,
+          config.engine,
+          host.uid,
+        ),
     },
   );
   const backend = runnerHostRouted(setup, container, machine, host);
@@ -358,13 +374,14 @@ export async function runnerParts(setup, host) {
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
  * @param {{cpuMillis: number, memoryMib: number}} machine
- * @param {{uid: number, log: (line: string) => void}} host
+ * @param {RunnerHost} host
  * @returns {ContainerBackend}
  */
 function runnerHostRouted(setup, container, machine, host) {
   const { credentials, config, paths } = setup;
   const platforms = hostPlatformsDeclared(credentials, "Linux");
   if (platforms.length === 0) return container;
+  const claude = runnerClaudeHanded(config);
   return hostRoutedBackend(
     container,
     hostBackend(
@@ -372,7 +389,7 @@ function runnerHostRouted(setup, container, machine, host) {
         platforms,
         directory: join(paths.jobs, poolIdentityDigest(credentials)),
         logDir: paths.logs,
-        tokenFile: config.claudeTokenFile,
+        ...claude,
         timeoutSecsMax: config.timeoutSecsMax,
         outputBytesMax: config.outputBytesMax,
         environment: config.environment,
@@ -380,8 +397,14 @@ function runnerHostRouted(setup, container, machine, host) {
       },
       {
         log: host.log,
+        ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
         tokenFileRefusal: (file) =>
-          claudeTokenFileRefusal(file, "host", host.uid),
+          claudeCredentialFileRefusal(
+            claude.claudeCredential,
+            file,
+            "host",
+            host.uid,
+          ),
       },
     ),
     platforms,
