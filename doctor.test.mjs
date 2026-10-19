@@ -948,6 +948,7 @@ test("on a pool registered with --host, the Claude credential check names the cl
   const empty = await filesWritten(t, {});
   await mkdir(join(empty, "claude"));
   const claude = join(bin, "claude");
+  const serviceBin = await filesWritten(t, { claude: "#!/bin/sh\n" }, 0o700);
   const pool = { ...fixturePool, host: true };
   const claudeVersions = { [claude]: "2.1.282 (Claude Code)" };
   /**
@@ -977,7 +978,10 @@ test("on a pool registered with --host, the Claude credential check names the cl
   };
   for (const [options, whose] of [
     [
-      { runner: { environment: { PATH: `${empty}:relative:${bin}` } } },
+      {
+        runner: { environment: { PATH: `${empty}:relative:${bin}` } },
+        servicePath: serviceBin,
+      },
       "the PATH the runner's file sets",
     ],
     [
