@@ -66,25 +66,45 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 }
 ```
 
-| Key               | Required | Meaning                                                                                                    |
-| ----------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `engine`          | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`  | no       | Jobs each pool's service runs at once. Default 1.                                                          |
-| `sessionsMax`     | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. Default 2.                        |
-| `claudeTokenFile` | yes      | The file `claude setup-token`'s output was saved to, mode 600. It is mounted into each job, never read.     |
-| `timeoutSecsMax`  | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
-| `outputBytesMax`  | yes      | The most output a job may report.                                                                          |
-| `environment`     | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE`, `CHUGGY_HOST_JOB`, `CLAUDE_CODE_OAUTH_TOKEN`, and the job's `CHUG_TENANT`, `CHUG_PROJECT`, `CHUG_REPOSITORY`, `CHUG_TICKET`, `CHUG_ATTEMPT` and `CHUG_STAGE` are the runner's, on a pool registered with `--host` so are `HOME` and `TMPDIR`, and with `engineSocket` so are those it sets. |
-| `network`         | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
-| `engineSocket`    | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
-| `images`          | no       | The images a job that pins none runs in, below. Default none.                                              |
-| `volumes`         | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
+| Key                | Required | Meaning                                                                                                    |
+| ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `engine`           | no       | `docker` (the default) or `podman`.                                                                        |
+| `concurrencyMax`   | no       | Jobs each pool's service runs at once. Default 1.                                                          |
+| `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. Default 2.                        |
+| `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
+| `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, below, in place of `claudeTokenFile`.                     |
+| `timeoutSecsMax`   | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
+| `outputBytesMax`   | yes      | The most output a job may report.                                                                          |
+| `environment`      | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE`, `CHUGGY_HOST_JOB`, and the job's `CHUG_TENANT`, `CHUG_PROJECT`, `CHUG_REPOSITORY`, `CHUG_TICKET`, `CHUG_ATTEMPT` and `CHUG_STAGE` are the runner's, and so is every variable that chooses Claude Code's credential or where it is sent, such as `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`; while `claudeCredential` is Bedrock or Vertex so are the `AWS_` or `GOOGLE_` variables its provider reads, on a pool registered with `--host` so are `HOME` and `TMPDIR`, and with `engineSocket` so are those it sets. |
+| `network`          | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
+| `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
+| `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
+| `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
 
-A session is a project's chat or lead, run on this machine's Claude login, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same token file, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
+A session is a project's chat or lead, run on this machine's Claude credential, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same credential, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
-A job runs as uid 1000, the image's user, and reads the token file as that uid, so the file must be yours. Rootless podman maps that uid onto you. Docker runs it as this machine's uid 1000, so docker serves only a runner that is uid 1000, and refuses any other user: use rootless podman there. Rootless docker and docker with userns-remap are refused too, for the same reason: use rootful docker without userns-remap, or rootless podman. Docker must be local, reached through a unix socket by your current docker context.
+**The Claude credential** is one file, mode 600 and yours, and the settings its kind needs. `claudeTokenFile` names a subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other:
+
+```json
+"claudeCredential": { "kind": "Subscription", "tokenFile": "/home/you/.config/chuggy-linux/claude-token" }
+"claudeCredential": { "kind": "ApiKey", "apiKeyFile": "/home/you/.config/chuggy-linux/anthropic-api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "apiKeyFile": "/home/you/.config/chuggy-linux/bedrock-api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "credentialsFile": "/home/you/.config/chuggy-linux/aws-credentials", "profile": "chuggy" }
+"claudeCredential": { "kind": "Vertex", "region": "us-east5", "project": "your-project", "credentialsFile": "/home/you/.config/chuggy-linux/vertex-key.json" }
+"claudeCredential": { "kind": "Foundry", "resource": "your-resource", "apiKeyFile": "/home/you/.config/chuggy-linux/foundry-api-key" }
+```
+
+- **Subscription**: `claude setup-token`'s output, alone. Jobs share your Claude plan's limits.
+- **ApiKey**: a key from the Claude Console, alone. It must be scoped to a workspace: the API refuses an unscoped key unless the request names a workspace in an `anthropic-workspace-id` header, and a job's Claude Code is never handed `ANTHROPIC_CUSTOM_HEADERS`, the variable that could add one.
+- **Bedrock**: the AWS region, and a Bedrock API key alone, or an AWS credentials file whose `profile`, `default` where none is named, holds an access key's `aws_access_key_id` and `aws_secret_access_key`. SSO, role and `credential_process` profiles are not read.
+- **Vertex**: the region, the Google Cloud project, and the JSON key Google Cloud made for a service account.
+- **Foundry**: the Foundry resource and one of its keys, alone. Name its deployments in `environment`, as `ANTHROPIC_DEFAULT_SONNET_MODEL` and its like.
+
+Every job and session is told the kind, and handed the file, mounted read-only into a container or read where it is by a job on this machine itself. The service never reads it, `doctor` alone does, and every secret in it is scrubbed from what a job or session reports. Claude Code is told its credential is the runner's, so a checkout's own settings choose no other provider and send the credential nowhere else. Every kind but Subscription is billed by its provider.
+
+A job runs as uid 1000, the image's user, and reads the credential's file as that uid, so the file must be yours. Rootless podman maps that uid onto you. Docker runs it as this machine's uid 1000, so docker serves only a runner that is uid 1000, and refuses any other user: use rootless podman there. Rootless docker and docker with userns-remap are refused too, for the same reason: use rootful docker without userns-remap, or rootless podman. Docker must be local, reached through a unix socket by your current docker context.
 
 With `engineSocket` on, each job, and never a session, is handed this machine's engine, so that its checks can start containers of their own, as testcontainers does. The engine's socket is mounted at `/var/run/docker.sock`, read-only, which limits nothing the engine will do; a docker job is added to the socket's group unless that is root's, and the job is told where the socket is by `DOCKER_HOST`, `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` and, on podman, `TESTCONTAINERS_HOST_OVERRIDE`, which `environment` may then not name. Podman's socket must be running: `systemctl --user enable --now podman.socket`. `doctor` names the socket and fails one a job cannot reach; where its owners and mode cannot settle it, as with a socket of root's group that only an ACL could open to a job, it warns.
 
@@ -114,7 +134,7 @@ A task that pins no image names capabilities instead, and this runner meets them
 "images": [{ "image": "ghcr.io/you/bazel:7", "capabilities": ["Agent:Claude", "Tool:Bazel"] }]
 ```
 
-On a pool registered with `--host`, such a job of this machine's platform runs on this machine instead: as you, in a directory of its own under `~/.local/state/chuggy-linux/jobs/`, with its own `HOME` and temporary directory, the service's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the service's `PATH`. That is systemd's for your user and not your shell's, so where `claude` is in `~/.local/bin`, name it in a drop-in: `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin` under `[Service]`. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever this machine reaches; register with `--host` only a machine whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, or when the runner is stopped; its log is saved beside a container's, and its directory is removed when it ends. A runner killed outright, by `SIGKILL` or the kernel, leaves its host jobs running until they end.
+On a pool registered with `--host`, such a job of this machine's platform runs on this machine instead: as you, in a directory of its own under `~/.local/state/chuggy-linux/jobs/`, with its own `HOME` and temporary directory, the service's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the service's `PATH`. That is systemd's for your user and not your shell's, so where `claude` is in `~/.local/bin`, name it in a drop-in: `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin` under `[Service]`. `doctor` names the `claude` such a job runs, and its version. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever this machine reaches; register with `--host` only a machine whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, or when the runner is stopped; its log is saved beside a container's, and its directory is removed when it ends. A runner killed outright, by `SIGKILL` or the kernel, leaves its host jobs running until they end.
 
 An image that lacks one is refused before any agent starts, and the ticket stops with a reason naming what is missing. An image the registry refuses is refused at once, and one that fails to pull any other way, such as from a host that does not resolve, after two minutes of trying.
 
@@ -139,7 +159,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, the token file, podman's credential helpers, whether the pool file's unit runs this copy, the engine, whether jobs are handed its socket, the job network, each volume's source, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, podman's credential helpers, whether the pool file's unit runs this copy, the engine, whether jobs are handed its socket, the job network, each volume's source, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 
@@ -178,9 +198,9 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 
 ## What it does
 
-- Places an assignment only if this machine has the CPU and memory it asks for, counted for that assignment alone, it pins an image, or one `images` lists or `--host` meets it, and the token file is usable; otherwise it refuses it, and chuggy sees the reason.
+- Places an assignment only if this machine has the CPU and memory it asks for, counted for that assignment alone, it pins an image, or one `images` lists or `--host` meets it, and the Claude credential's file is usable; otherwise it refuses it, and chuggy sees the reason.
 - Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once, as docker or podman pulls it with your own logins.
-- Runs each job as uid 1000 through chuggy's runtime, mounted read-only, with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the token file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
+- Runs each job as uid 1000 through chuggy's runtime, mounted read-only, with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the Claude credential's file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
 - Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job that is stopped, or past its deadline, is killed first.
 - Tells chuggy at once when a job ends without being stopped: its container exited, was killed at its deadline, or never started. chuggy is given the runner's own reason, such as `its container exited with status 1`, never the job's log, and a job that already reported keeps its report. Nothing is sent for a job stopped by chuggy or by `stop`.
