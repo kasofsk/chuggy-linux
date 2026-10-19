@@ -20,7 +20,7 @@ import {
 
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
-import { doctorFindings, findingLine } from "./doctor.mjs";
+import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
   legacyService,
@@ -258,6 +258,43 @@ function failureMessage(failure) {
 }
 
 /**
+ * The PATH a pool file's service is started with: the one its unit's own
+ * drop-ins set, or else the user's service manager's, or nothing where
+ * neither can be read.
+ *
+ * @param {CliHost} host
+ * @param {string} poolFile
+ * @returns {Promise<string | undefined>}
+ */
+async function servicePath(host, poolFile) {
+  let name;
+  try {
+    name = serviceUnitName(poolFile);
+  } catch {
+    return undefined;
+  }
+  const unit = await host.systemd([
+    "systemctl",
+    "--user",
+    "show",
+    name,
+    "--property",
+    "Environment",
+    "--value",
+  ]);
+  const own =
+    unit.code === 0 ? /(?:^|\s)PATH=(\S+)/u.exec(unit.stdout)?.[1] : undefined;
+  if (own !== undefined) return own;
+  const manager = await host.systemd([
+    "systemctl",
+    "--user",
+    "show-environment",
+  ]);
+  if (manager.code !== 0) return undefined;
+  return /^PATH=(.*)$/mu.exec(manager.stdout)?.[1];
+}
+
+/**
  * doctor's findings for a pool file, reaching the engine, issuer and plane
  * the host names, or else those the files do.
  *
@@ -272,6 +309,9 @@ function doctorFound(host, poolFile) {
     registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
     node: host.node,
     cli: host.cli,
+    path: host.environment.PATH,
+    servicePath: () => servicePath(host, poolFile),
+    claudeVersion: claudeVersionAsked,
     parts: {
       engine: (config) => host.engine ?? runnerEngine(config),
       tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),

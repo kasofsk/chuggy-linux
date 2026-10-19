@@ -3,6 +3,9 @@
  * writes. The file is refused unless only its owner can read or write it, and
  * is read strictly, so a misspelt key is an error rather than a default. The
  * pool's credentials are the worker core's to read.
+ *
+ * THE FILE NAMES ONE CLAUDE CREDENTIAL, by `claudeCredential` of any kind the
+ * core takes or by `claudeTokenFile`, a subscription's.
  */
 
 import { open, stat } from "node:fs/promises";
@@ -10,6 +13,12 @@ import { isAbsolute, join } from "node:path";
 
 import { z } from "zod";
 
+import {
+  claudeCredentialDescribed,
+  claudeCredentialFile,
+  claudeCredentialSchema,
+  claudeCredentialSetting,
+} from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   ownerImagesSchema,
   ownerVolumesSchema,
@@ -23,6 +32,8 @@ import {
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
+ * @typedef {import("@chuggy/worker-core/claudeCredential.mjs").ClaudeCredential} ClaudeCredential
+ * @typedef {import("@chuggy/worker-core/claudeCredential.mjs").ClaudeCredentialSetting} ClaudeCredentialSetting
  *
  * @typedef {object} RunnerPaths
  * @property {string} config
@@ -65,19 +76,48 @@ const environmentSchema = z
         });
   });
 
+/** A credential's file, which each job is handed by a bind mount. */
+const credentialFileSchema = z
+  .string()
+  .refine((file) => isAbsolute(file), { error: "must be an absolute path" })
+  .refine((file) => bindMountNameable(file), {
+    error: "cannot be named in a bind mount",
+  });
+
+/** The keys a credential of any kind names its file under. */
+const credentialFileKeys = /** @type {const} */ ([
+  "tokenFile",
+  "apiKeyFile",
+  "credentialsFile",
+]);
+
+/** The core's credential, its file held to what a bind mount names. */
+const credentialSchema = claudeCredentialSchema.superRefine(
+  (credential, context) => {
+    for (const key of credentialFileKeys) {
+      const file = /** @type {Record<string, unknown>} */ (credential)[key];
+      if (file === undefined) continue;
+      for (const issue of credentialFileSchema.safeParse(file).error?.issues ??
+        [])
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: issue.message,
+        });
+    }
+  },
+);
+
 export const runnerConfigSchema = z
   .strictObject({
     engine: z.enum(["docker", "podman"]).default("docker"),
     concurrencyMax: positiveSchema.default(1),
     /** The sessions held beside the jobs, none where it is 0. */
     sessionsMax: z.number().int().nonnegative().safe().default(2),
-    /** Where `claude setup-token`'s output was saved, named in a bind mount. */
-    claudeTokenFile: z
-      .string()
-      .refine((file) => isAbsolute(file), { error: "must be an absolute path" })
-      .refine((file) => bindMountNameable(file), {
-        error: "cannot be named in a bind mount",
-      }),
+    /** Where `claude setup-token`'s output was saved, a subscription's credential. */
+    claudeTokenFile: credentialFileSchema.optional(),
+    /** The credential Claude Code runs on, of any kind, in place of `claudeTokenFile`. */
+    claudeCredential: credentialSchema.optional(),
     timeoutSecsMax: positiveSchema,
     outputBytesMax: positiveSchema,
     environment: environmentSchema.default({}),
@@ -98,7 +138,12 @@ export const runnerConfigSchema = z
      */
     volumes: ownerVolumesSchema.default([]),
   })
+  // Beside whatever else the file gets wrong, as a missing key always was.
+  .superRefine(configCredentialNamed, {
+    when: ({ value }) => typeof value === "object" && value !== null,
+  })
   .superRefine((config, context) => {
+    configCredentialChecked(config, context);
     if (!config.engineSocket) return;
     for (const name of Object.keys(
       jobEngineSocketEnvironment(config.engine, ""),
@@ -110,6 +155,73 @@ export const runnerConfigSchema = z
           message: "is the runner's to set while engineSocket is true",
         });
   });
+
+/**
+ * Holds the file to naming a Claude credential, telling one that names
+ * neither key what one that named no token file always was.
+ *
+ * @param {Partial<RunnerConfig>} config
+ * @param {z.core.$RefinementCtx} context
+ */
+function configCredentialNamed(config, context) {
+  if (
+    config.claudeTokenFile === undefined &&
+    config.claudeCredential === undefined
+  )
+    context.addIssue({
+      code: "invalid_type",
+      expected: "string",
+      input: undefined,
+      path: ["claudeTokenFile"],
+    });
+}
+
+/**
+ * Holds the file to naming one Claude credential.
+ *
+ * @param {RunnerConfig} config
+ * @param {z.core.$RefinementCtx} context
+ */
+function configCredentialChecked(config, context) {
+  const { claudeTokenFile, claudeCredential } = config;
+  if (claudeTokenFile !== undefined && claudeCredential !== undefined)
+    context.addIssue({
+      code: "custom",
+      path: ["claudeCredential"],
+      message:
+        "names a Claude credential, and so does claudeTokenFile; keep one",
+    });
+}
+
+/**
+ * The Claude credential a checked file names: its `claudeCredential`, or a
+ * subscription's token where it names `claudeTokenFile`.
+ *
+ * @param {RunnerConfig} config
+ * @returns {ClaudeCredential}
+ */
+export function runnerClaudeCredential(config) {
+  if (config.claudeCredential !== undefined) return config.claudeCredential;
+  if (config.claudeTokenFile === undefined)
+    throw new Error("the runner's file names no Claude credential");
+  return { kind: "Subscription", tokenFile: config.claudeTokenFile };
+}
+
+/**
+ * What each workload is handed of a checked file's Claude credential: the
+ * file, and the setting that names its kind, which every run names so that
+ * the core withholds what would choose another.
+ *
+ * @param {RunnerConfig} config
+ * @returns {{tokenFile: string, claudeCredential: ClaudeCredentialSetting}}
+ */
+export function runnerClaudeHanded(config) {
+  const credential = runnerClaudeCredential(config);
+  return {
+    tokenFile: claudeCredentialFile(credential),
+    claudeCredential: claudeCredentialSetting(credential),
+  };
+}
 
 /**
  * How many jobs and sessions each pool's service holds at once, in the file's
@@ -263,33 +375,40 @@ export async function runnerConfig(file) {
 }
 
 /**
- * Why this runner cannot hand its jobs the Claude token file, or nothing. The
- * file is its owner's alone and a job reads it as the image's user. Docker
- * runs that user as the same uid on this machine, so only a runner that is
- * that uid can hand the file over; rootless podman maps it onto the runner
- * itself. A job run on this machine itself reads it as this runner. Only the
- * file's metadata is read: the token reaches the job by mount or by its path,
- * and never this process.
+ * Why this runner cannot hand its jobs its Claude credential's file, or
+ * nothing. The file is its owner's alone and a job reads it as the image's
+ * user. Docker runs that user as the same uid on this machine, so only a
+ * runner that is that uid can hand the file over; rootless podman maps it onto
+ * the runner itself. A job run on this machine itself reads it as this
+ * runner. Only the file's metadata is read: the credential reaches the job by
+ * mount or by its path, and never this process.
  *
+ * @param {ClaudeCredentialSetting} setting the kind the file is, which names it
  * @param {string} file
  * @param {"docker" | "podman" | "host"} engine what runs the job that reads it
  * @param {number} runnerUid this process's uid, which must own the file
  * @returns {Promise<string | undefined>}
  */
-export async function claudeTokenFileRefusal(file, engine, runnerUid) {
+export async function claudeCredentialFileRefusal(
+  setting,
+  file,
+  engine,
+  runnerUid,
+) {
+  const { label, remedy } = claudeCredentialDescribed(setting);
   if (engine === "docker" && runnerUid !== jobUid)
-    return `docker runs a job as uid ${String(jobUid)}, and this runner is uid ${String(runnerUid)}, so no job could read a token file only this runner can; use rootless podman ("engine": "podman")`;
+    return `docker runs a job as uid ${String(jobUid)}, and this runner is uid ${String(runnerUid)}, so no job could read the ${label} ${file}, which only this runner can; use rootless podman ("engine": "podman")`;
   let stats;
   try {
     stats = await stat(file);
   } catch {
-    return `the Claude token file ${file} cannot be found; save \`claude setup-token\`'s output there`;
+    return `the ${label} ${file} cannot be found; ${remedy}`;
   }
-  if (!stats.isFile()) return `the Claude token file ${file} is not a file`;
+  if (!stats.isFile()) return `the ${label} ${file} is not a file`;
   if ((stats.mode & sharedModeBits) !== 0)
-    return `the Claude token file ${file} is mode ${(stats.mode & 0o777).toString(8)}; only its owner may read or write it (chmod 600)`;
-  if (stats.size === 0) return `the Claude token file ${file} is empty`;
+    return `the ${label} ${file} is mode ${(stats.mode & 0o777).toString(8)}; only its owner may read or write it (chmod 600)`;
+  if (stats.size === 0) return `the ${label} ${file} is empty; ${remedy}`;
   if (stats.uid !== runnerUid)
-    return `the Claude token file ${file} is owned by uid ${String(stats.uid)}, not by this runner's uid ${String(runnerUid)}`;
+    return `the ${label} ${file} is owned by uid ${String(stats.uid)}, not by this runner's uid ${String(runnerUid)}`;
   return undefined;
 }

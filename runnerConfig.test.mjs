@@ -4,11 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import {
+  claudeCredentialProviderVariables,
+  claudeCredentialVariables,
+} from "@chuggy/worker-core/claudeCredential.mjs";
 import { ownerVolumeTargetsRefused } from "@chuggy/worker-core/containerBackend.mjs";
-import { jobEngineSocketVariables } from "@chuggy/worker-core/job.mjs";
+import {
+  jobEngineSocketVariables,
+  reservedJobVariables,
+} from "@chuggy/worker-core/job.mjs";
 
 import {
-  claudeTokenFileRefusal,
+  claudeCredentialFileRefusal,
   runnerConfig,
   podmanRegistriesConf,
   runnerPaths,
@@ -23,11 +30,47 @@ async function scratch(t) {
   return directory;
 }
 
+/** A file's limits, which name no Claude credential. */
+const unnamed = { timeoutSecsMax: 3600, outputBytesMax: 65536 };
+
 const minimal = {
   claudeTokenFile: "/home/op/.config/chuggy-linux/claude-token",
-  timeoutSecsMax: 3600,
-  outputBytesMax: 65536,
+  ...unnamed,
 };
+
+/** A Claude credential of each kind, as a runner's file names one. */
+const credentials = [
+  {
+    kind: "Subscription",
+    tokenFile: "/home/op/.config/chuggy-linux/claude-token",
+  },
+  {
+    kind: "ApiKey",
+    apiKeyFile: "/home/op/.config/chuggy-linux/anthropic-api-key",
+  },
+  {
+    kind: "Bedrock",
+    region: "us-west-2",
+    apiKeyFile: "/home/op/.config/chuggy-linux/bedrock-api-key",
+  },
+  {
+    kind: "Bedrock",
+    region: "us-west-2",
+    credentialsFile: "/home/op/.aws/credentials",
+    profile: "chuggy",
+  },
+  {
+    kind: "Vertex",
+    region: "us-east5",
+    project: "chuggy-jobs",
+    credentialsFile: "/home/op/.config/gcloud/chuggy-jobs.json",
+  },
+  {
+    kind: "Foundry",
+    resource: "chuggy-jobs",
+    apiKeyFile: "/home/op/.config/chuggy-linux/foundry-api-key",
+  },
+];
 
 /**
  * @param {string} directory
@@ -212,6 +255,10 @@ test("what the file may not say is refused, naming where", async (t) => {
       /environment\.CLAUDE_CODE_OAUTH_TOKEN is the runner's to set/u,
     ],
     [
+      { ...minimal, environment: { CHUG_WORKER_CLAUDE_CREDENTIAL: "{}" } },
+      /environment\.CHUG_WORKER_CLAUDE_CREDENTIAL is the runner's to set/u,
+    ],
+    [
       { ...minimal, environment: { NAME: "a\nB=c" } },
       /environment\.NAME may not break a line/u,
     ],
@@ -364,17 +411,25 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
   );
 });
 
-test("a Claude token file a job cannot be handed is refused", async (t) => {
+test("a Claude credential's file a job cannot be handed is refused, naming the file its kind is and what to save there", async (t) => {
   const directory = await scratch(t);
   const file = join(directory, "claude-token");
+  const subscription = { kind: /** @type {const} */ ("Subscription") };
   /** @param {string} path */
   const refusal = async (path, uid = ownUid) =>
-    (await claudeTokenFileRefusal(path, "podman", uid)) ?? "";
-  assert.match(await refusal(file), /cannot be found/u);
+    (await claudeCredentialFileRefusal(subscription, path, "podman", uid)) ??
+    "";
+  assert.equal(
+    await refusal(file),
+    `the Claude token file ${file} cannot be found; save \`claude setup-token\`'s output there, alone`,
+  );
   await writeFile(file, "", { mode: 0o600 });
-  assert.match(await refusal(file), /is empty/u);
+  assert.match(await refusal(file), /is empty; save `claude setup-token`/u);
   await writeFile(file, "claude-token-fixture");
-  assert.equal(await claudeTokenFileRefusal(file, "podman", ownUid), undefined);
+  assert.equal(
+    await claudeCredentialFileRefusal(subscription, file, "podman", ownUid),
+    undefined,
+  );
   assert.match(
     await refusal(file, ownUid + 1),
     new RegExp(
@@ -385,22 +440,138 @@ test("a Claude token file a job cannot be handed is refused", async (t) => {
   await chmod(file, 0o640);
   assert.match(await refusal(file), /is mode 640/u);
   assert.match(await refusal(directory), /is not a file/u);
+  const missing = join(directory, "missing");
+  for (const [setting, said] of [
+    [
+      { kind: "ApiKey" },
+      `the Anthropic API key file ${missing} cannot be found; save a key from the Claude Console there, alone`,
+    ],
+    [
+      { kind: "Bedrock", region: "us-west-2", profile: "chuggy" },
+      `the AWS credentials file ${missing} cannot be found; give its [chuggy] profile an access key's aws_access_key_id and aws_secret_access_key`,
+    ],
+  ])
+    assert.equal(
+      await claudeCredentialFileRefusal(
+        /** @type {any} */ (setting),
+        missing,
+        "podman",
+        ownUid,
+      ),
+      said,
+    );
 });
 
-test("under docker only a runner that is uid 1000 can hand a job its token file", async (t) => {
-  const file = join(await scratch(t), "claude-token");
-  assert.match(
-    (await claudeTokenFileRefusal(file, "docker", 1234)) ?? "",
-    /docker runs a job as uid 1000, and this runner is uid 1234.*use rootless podman/u,
+test("under docker only a runner that is uid 1000 can hand a job its Claude credential's file", async (t) => {
+  const file = join(await scratch(t), "anthropic-api-key");
+  const apiKey = { kind: /** @type {const} */ ("ApiKey") };
+  assert.equal(
+    await claudeCredentialFileRefusal(apiKey, file, "docker", 1234),
+    `docker runs a job as uid 1000, and this runner is uid 1234, so no job could read the Anthropic API key file ${file}, which only this runner can; use rootless podman ("engine": "podman")`,
   );
   assert.match(
-    (await claudeTokenFileRefusal(file, "docker", 1000)) ?? "",
+    (await claudeCredentialFileRefusal(apiKey, file, "docker", 1000)) ?? "",
     /cannot be found/u,
   );
   assert.match(
-    (await claudeTokenFileRefusal(file, "host", 1234)) ?? "",
+    (await claudeCredentialFileRefusal(apiKey, file, "host", 1234)) ?? "",
     /cannot be found/u,
   );
+});
+
+test("a file names a Claude credential of any kind in claudeCredential, read as it is named", async (t) => {
+  const directory = await scratch(t);
+  for (const claudeCredential of credentials) {
+    const read = await runnerConfig(
+      await written(directory, { ...unnamed, claudeCredential }),
+    );
+    assert.deepEqual(read.claudeCredential, claudeCredential);
+    assert.equal("claudeTokenFile" in read, false);
+  }
+});
+
+test("a file naming a Claude credential by both keys, or by neither, is refused, one naming neither as one naming no token file always was", async (t) => {
+  const directory = await scratch(t);
+  const neither = await written(directory, unnamed);
+  await assert.rejects(runnerConfig(neither), {
+    message: `runner configuration ${neither}: claudeTokenFile Invalid input: expected string, received undefined`,
+  });
+  await assert.rejects(
+    runnerConfig(await written(directory, { outputBytesMax: 65536 })),
+    /timeoutSecsMax .*; claudeTokenFile Invalid input: expected string, received undefined$/u,
+  );
+  for (const claudeCredential of credentials) {
+    const both = await written(directory, { ...minimal, claudeCredential });
+    await assert.rejects(runnerConfig(both), {
+      message: `runner configuration ${both}: claudeCredential names a Claude credential, and so does claudeTokenFile; keep one`,
+    });
+  }
+});
+
+test("what a Claude credential may not say is refused, naming where", async (t) => {
+  const directory = await scratch(t);
+  const refused = [
+    [
+      { kind: "OAuth" },
+      /claudeCredential\.kind names no kind of Claude credential/u,
+    ],
+    [
+      { kind: "Subscription", tokenFile: "claude-token" },
+      /claudeCredential\.tokenFile must be an absolute path/u,
+    ],
+    [
+      { kind: "ApiKey", apiKeyFile: "/a,readonly=false" },
+      /claudeCredential\.apiKeyFile cannot be named in a bind mount/u,
+    ],
+    [
+      {
+        kind: "Vertex",
+        region: "r",
+        project: "p",
+        credentialsFile: "key.json",
+      },
+      /claudeCredential\.credentialsFile must be an absolute path/u,
+    ],
+    [
+      { kind: "ApiKey", apiKeyFile: "/k", region: "us-west-2" },
+      /claudeCredential Unrecognized key: "region"/u,
+    ],
+    [{ kind: "Bedrock", apiKeyFile: "/k" }, /claudeCredential\.region /u],
+  ];
+  for (const [claudeCredential, why] of refused)
+    await assert.rejects(
+      runnerConfig(await written(directory, { ...unnamed, claudeCredential })),
+      why,
+      JSON.stringify(claudeCredential),
+    );
+});
+
+test("the environment may name any other variable that chooses Claude Code's credential or where it is sent, read as written whatever kind is named", async (t) => {
+  const directory = await scratch(t);
+  const environment = Object.fromEntries(
+    [
+      ...claudeCredentialVariables.filter(
+        (name) => !reservedJobVariables.includes(name),
+      ),
+      ...credentials.flatMap(({ kind }) =>
+        claudeCredentialProviderVariables(kind),
+      ),
+    ].map((name) => [name, "elsewhere"]),
+  );
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AWS_PROFILE"])
+    assert.ok(Object.hasOwn(environment, name), name);
+  for (const named of [
+    minimal,
+    ...credentials.map((claudeCredential) => ({
+      ...unnamed,
+      claudeCredential,
+    })),
+  ])
+    assert.deepEqual(
+      (await runnerConfig(await written(directory, { ...named, environment })))
+        .environment,
+      environment,
+    );
 });
 
 test("podman's registries.conf is sought wherever a supported podman reads it as this uid, the user's under both config homes", () => {
