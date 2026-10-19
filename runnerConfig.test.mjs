@@ -9,7 +9,10 @@ import {
   claudeCredentialVariables,
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import { ownerVolumeTargetsRefused } from "@chuggy/worker-core/containerBackend.mjs";
-import { jobEngineSocketVariables } from "@chuggy/worker-core/job.mjs";
+import {
+  jobEngineSocketVariables,
+  reservedJobVariables,
+} from "@chuggy/worker-core/job.mjs";
 
 import {
   claudeCredentialFileRefusal,
@@ -250,6 +253,10 @@ test("what the file may not say is refused, naming where", async (t) => {
     [
       { ...minimal, environment: { CLAUDE_CODE_OAUTH_TOKEN: "x" } },
       /environment\.CLAUDE_CODE_OAUTH_TOKEN is the runner's to set/u,
+    ],
+    [
+      { ...minimal, environment: { CHUG_WORKER_CLAUDE_CREDENTIAL: "{}" } },
+      /environment\.CHUG_WORKER_CLAUDE_CREDENTIAL is the runner's to set/u,
     ],
     [
       { ...minimal, environment: { NAME: "a\nB=c" } },
@@ -539,64 +546,32 @@ test("what a Claude credential may not say is refused, naming where", async (t) 
     );
 });
 
-test("the environment names no variable that chooses Claude Code's credential or where it is sent, each refused by name and never by its value", async (t) => {
+test("the environment may name any other variable that chooses Claude Code's credential or where it is sent, read as written whatever kind is named", async (t) => {
   const directory = await scratch(t);
-  const value = "sk-ant-api03-fixture-never-printed";
-  for (const name of [
-    ...claudeCredentialVariables,
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_CUSTOM_HEADERS",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CHUG_WORKER_CLAUDE_CREDENTIAL",
+  const environment = Object.fromEntries(
+    [
+      ...claudeCredentialVariables.filter(
+        (name) => !reservedJobVariables.includes(name),
+      ),
+      ...credentials.flatMap(({ kind }) =>
+        claudeCredentialProviderVariables(kind),
+      ),
+    ].map((name) => [name, "elsewhere"]),
+  );
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AWS_PROFILE"])
+    assert.ok(Object.hasOwn(environment, name), name);
+  for (const named of [
+    minimal,
+    ...credentials.map((claudeCredential) => ({
+      ...unnamed,
+      claudeCredential,
+    })),
   ])
-    for (const named of [
-      minimal,
-      { ...unnamed, claudeCredential: credentials[1] },
-    ]) {
-      const file = await written(directory, {
-        ...named,
-        environment: { [name]: value, OTHER: "kept" },
-      });
-      await assert.rejects(runnerConfig(file), {
-        message: `runner configuration ${file}: environment.${name} is the runner's to set; name the credential in claudeCredential instead`,
-      });
-    }
-});
-
-test("while a kind is chosen, the environment names none of the variables its provider is reached by, which it may name while another is", async (t) => {
-  const directory = await scratch(t);
-  for (const claudeCredential of credentials)
-    for (const name of claudeCredentialProviderVariables(
-      claudeCredential.kind,
-    )) {
-      const environment = { [name]: "elsewhere", OTHER: "kept" };
-      assert.deepEqual(
-        (
-          await runnerConfig(
-            await written(directory, { ...minimal, environment }),
-          )
-        ).environment,
-        environment,
-      );
-      const file = await written(directory, {
-        ...unnamed,
-        claudeCredential,
-        environment,
-      });
-      await assert.rejects(runnerConfig(file), {
-        message: `runner configuration ${file}: environment.${name} is the runner's to set while claudeCredential is ${claudeCredential.kind}; name the credential in claudeCredential instead`,
-      });
-    }
-  for (const [kind, names] of [
-    ["Bedrock", ["AWS_PROFILE", "AWS_REGION", "AWS_SHARED_CREDENTIALS_FILE"]],
-    ["Vertex", ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"]],
-  ])
-    for (const name of names)
-      assert.ok(claudeCredentialProviderVariables(kind).includes(name), name);
-  assert.deepEqual(claudeCredentialProviderVariables("ApiKey"), []);
+    assert.deepEqual(
+      (await runnerConfig(await written(directory, { ...named, environment })))
+        .environment,
+      environment,
+    );
 });
 
 test("podman's registries.conf is sought wherever a supported podman reads it as this uid, the user's under both config homes", () => {

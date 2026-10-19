@@ -5,10 +5,7 @@
  * pool's credentials are the worker core's to read.
  *
  * THE FILE NAMES ONE CLAUDE CREDENTIAL, by `claudeCredential` of any kind the
- * core takes or by `claudeTokenFile`, a subscription's. Its `environment`
- * names nothing that chooses Claude Code's credential or where it is sent,
- * which the core sets beside the kind and withholds from what Claude Code
- * inherits.
+ * core takes or by `claudeTokenFile`, a subscription's.
  */
 
 import { open, stat } from "node:fs/promises";
@@ -19,10 +16,8 @@ import { z } from "zod";
 import {
   claudeCredentialDescribed,
   claudeCredentialFile,
-  claudeCredentialProviderVariables,
   claudeCredentialSchema,
   claudeCredentialSetting,
-  claudeCredentialVariables,
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   ownerImagesSchema,
@@ -66,11 +61,6 @@ const networkSchema = z
     error: "may not be the host's network",
   });
 
-/**
- * What the owner sets for every job, less a job's own variables and those that
- * choose Claude Code's credential or where it is sent, which the core sets
- * beside the kind it is told.
- */
 const environmentSchema = z
   .record(
     z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
@@ -78,22 +68,11 @@ const environmentSchema = z
   )
   .superRefine((environment, context) => {
     for (const name of reservedJobVariables)
-      if (
-        !claudeCredentialVariables.includes(name) &&
-        Object.hasOwn(environment, name)
-      )
-        context.addIssue({
-          code: "custom",
-          path: [name],
-          message: "is the runner's to set",
-        });
-    for (const name of claudeCredentialVariables)
       if (Object.hasOwn(environment, name))
         context.addIssue({
           code: "custom",
           path: [name],
-          message:
-            "is the runner's to set; name the credential in claudeCredential instead",
+          message: "is the runner's to set",
         });
   });
 
@@ -198,8 +177,7 @@ function configCredentialNamed(config, context) {
 }
 
 /**
- * Holds the file to naming one Claude credential, and its environment to
- * naming none of the variables the kind's provider is reached by.
+ * Holds the file to naming one Claude credential.
  *
  * @param {RunnerConfig} config
  * @param {z.core.$RefinementCtx} context
@@ -213,14 +191,6 @@ function configCredentialChecked(config, context) {
       message:
         "names a Claude credential, and so does claudeTokenFile; keep one",
     });
-  const kind = claudeCredential?.kind ?? "Subscription";
-  for (const name of claudeCredentialProviderVariables(kind))
-    if (Object.hasOwn(config.environment, name))
-      context.addIssue({
-        code: "custom",
-        path: ["environment", name],
-        message: `is the runner's to set while claudeCredential is ${kind}; name the credential in claudeCredential instead`,
-      });
 }
 
 /**
