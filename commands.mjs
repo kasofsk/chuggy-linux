@@ -522,8 +522,8 @@ async function registerRan(host, argvs, said, since, why) {
 }
 
 /**
- * Restarts each unit serving the file, since chuggy denies the registration
- * it ran on. The file's own unit is written first as install-service writes
+ * Restarts each unit serving the file, which still runs the registration it
+ * read when it started. The file's own unit is written first as install-service writes
  * it, so what comes back is this copy under this Node, and then the units are
  * read again and each enabled: a unit may have been written and never
  * enabled. Where the write fails nothing is restarted, and what is left
@@ -531,11 +531,12 @@ async function registerRan(host, argvs, said, since, why) {
  *
  * @param {CliHost} host
  * @param {string} file
- * @param {string} whose
+ * @param {boolean} denied where chuggy denies the registration the units run,
+ *   as it does a pool's and not a personal runner's
  * @param {readonly string[]} units
  * @returns {Promise<RegisterServed>}
  */
-async function registerRestarted(host, file, whose, units) {
+async function registerRestarted(host, file, denied, units) {
   const argvs = [
     serviceReloadArgv,
     ...units.map(serviceEnableArgv),
@@ -543,7 +544,7 @@ async function registerRestarted(host, file, whose, units) {
   ];
   /** @param {string} what */
   const since = (what) =>
-    `chuggy denies ${whose} earlier registration and ${what}`;
+    denied ? `chuggy denies the pool's earlier registration and ${what}` : what;
   try {
     await installServiceUnit(host, file);
   } catch (failure) {
@@ -613,8 +614,8 @@ async function registerStarted(host, file, written) {
 
 /**
  * The written file's service: its unit written again and restarted where the
- * file's own unit here already serves it, since chuggy denies the
- * registration it ran on, and started otherwise. Where the legacy unit serves
+ * file's own unit here already serves it, since that unit still runs the
+ * registration it read, and started otherwise. Where the legacy unit serves
  * this pool, nothing is started, as the start path answers. What fails is
  * said rather than thrown, since the token is spent.
  *
@@ -642,7 +643,7 @@ async function registerServed(host, pool, file, written) {
     return await registerRestarted(
       host,
       file,
-      poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's",
+      !poolIdentityPersonal(pool),
       units,
     );
   } catch (failure) {
