@@ -12,8 +12,8 @@
     "chuggy-linux": "cli.mjs"
   },
   "dependencies": {
-    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.10.0/chuggy-worker-contract-1.10.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#ce025010a825dbf6e49e35474e5c02db09676f09",
+    "@chuggy/worker-contract": "file:../../chuggy-effort/runner-autoupdate/contract/chuggy-worker-contract-1.11.0.tgz",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#db6b0acfc6070654d2a5cf210cfd62374349e96c",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.5.4"
   },
@@ -43,5 +43,8 @@
     "runnerConfig.mjs",
     "systemd.mjs",
     "systemdUnit.mjs"
-  ]
+  ],
+  "overrides": {
+    "@chuggy/worker-contract": "$@chuggy/worker-contract"
+  }
 }
