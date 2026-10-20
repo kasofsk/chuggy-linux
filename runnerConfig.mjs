@@ -137,6 +137,8 @@ export const runnerConfigSchema = z
      * job, each field named as `--mount` names it on docker and podman alike.
      */
     volumes: ownerVolumesSchema.default([]),
+    /** Whether the service installs the release of itself chuggy names, between jobs. */
+    autoUpdate: z.boolean().default(true),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

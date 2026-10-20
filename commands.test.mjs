@@ -10,8 +10,9 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import { cliMain } from "./commands.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
@@ -75,10 +76,18 @@ const ready = {
   },
 };
 
-/** The copy a suite's calls are made of, and the Node they run under. */
+/**
+ * The copy a suite's calls are made of, installed where npm installs one
+ * globally under a prefix of the suite's own, and the Node they run under.
+ */
+const copyPrefix = await mkdtemp(join(tmpdir(), "chuggy-linux-prefix-"));
+after(() => rm(copyPrefix, { recursive: true, force: true }));
+const copyInstalled = join(copyPrefix, "lib", "node_modules", "chuggy-linux");
+await mkdir(copyInstalled, { recursive: true });
+await mkdir(join(copyPrefix, "bin"));
 const copyVersion = "9.8.7";
 const copyNode = "/opt/node/bin/node";
-const copyCli = "/opt/chuggy-linux/cli.mjs";
+const copyCli = join(copyInstalled, "cli.mjs");
 
 /** What doctor says first, of the copy a suite's calls are made of. */
 const copyLine = `chuggy-linux ${copyVersion} at ${copyCli}, under Node 24.8.0 at ${copyNode}`;
@@ -117,6 +126,7 @@ async function called(argv, machine = {}) {
         ...machine.systemd?.[command.join(" ")],
       };
     },
+    packageName: "chuggy-linux",
     version: copyVersion,
     node: copyNode,
     nodeVersion: "24.8.0",
@@ -220,7 +230,7 @@ test("install-service writes the pool file's own unit, which runs this CLI under
   assert.match(
     await readFile(unit, "utf8"),
     new RegExp(
-      `^ExecStart="/opt/node/bin/node" "/opt/chuggy-linux/cli.mjs" "run" "--pool" "${poolFile}"$`,
+      `^ExecStart="/opt/node/bin/node" "${copyCli}" "run" "--pool" "${poolFile}"$`,
       "mu",
     ),
   );
@@ -748,6 +758,60 @@ test("a second run of a pool is refused before it removes anything of the first'
   ]);
 });
 
+test("a run names its copy on each poll, and takes the release chuggy names unless the runner's file turns updates off", async (t) => {
+  const release = {
+    package: "chuggy-linux",
+    version: "9.8.8",
+    url: "https://github.com/kasofsk/chuggy-linux/releases/download/v9.8.8/chuggy-linux-9.8.8.tgz",
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+  /** @type {(string | null)[]} */
+  const named = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => {
+      named.push(new globalThis.Headers(init.headers).get("chuggy-runner"));
+      return globalThis.Response.json({
+        assignments: [],
+        sessions: [],
+        stop: [],
+        release,
+      });
+    },
+  );
+  for (const [runner, said] of [
+    [
+      {},
+      "chuggy-linux 9.8.8 is out, and this pool takes no new work until it has updated",
+    ],
+    [
+      { autoUpdate: false },
+      "chuggy-linux 9.8.8 is out, and this runner, 9.8.7, does not update itself",
+    ],
+  ]) {
+    const { home, environment, poolFile } = await served(t, { runner });
+    let acquired = 0;
+    const { status, out } = await called(["run", "--pool", poolFile], {
+      home,
+      environment,
+      tokens: {
+        acquire: async () =>
+          (acquired += 1) === 1
+            ? { acquired: "Token", token: "pool-token" }
+            : deniedTokens.acquire(),
+        invalidate: () => undefined,
+      },
+    });
+    assert.equal(status, 3);
+    assert.ok(
+      out.split("\n").some((line) => line.startsWith(said)),
+      out,
+    );
+  }
+  assert.deepEqual(named, ["chuggy-linux/9.8.7", "chuggy-linux/9.8.7"]);
+});
+
 const registerArgv = [
   "register",
   "--api",
@@ -827,7 +891,7 @@ test("register writes the pool file it redeems the token for, and where every ch
   assert.match(
     await readFile(unit, "utf8"),
     new RegExp(
-      `^ExecStart="/opt/node/bin/node" "/opt/chuggy-linux/cli.mjs" "run" "--pool" "${file}"$`,
+      `^ExecStart="/opt/node/bin/node" "${copyCli}" "run" "--pool" "${file}"$`,
       "mu",
     ),
   );

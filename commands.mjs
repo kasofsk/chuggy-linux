@@ -1,7 +1,8 @@
 /**
  * The `chuggy-linux` commands. Each answers an exit status: 0 done, 1 failed,
- * 2 asked wrongly, and `deniedExitStatus` when the plane denied the pool,
- * which is the one failure the service unit does not restart after.
+ * 2 asked wrongly, `deniedExitStatus` when the plane denied the pool, which is
+ * the one failure the service unit does not restart after, and
+ * `updatedExitStatus` when `run` installed a release of itself to run again on.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -43,6 +44,7 @@ import {
   runnerLoop,
   runnerParts,
   runnerSetup,
+  runnerUpdates,
   scratchRemovedOnSignal,
 } from "./runner.mjs";
 import {
@@ -78,6 +80,7 @@ import {
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] the token source a run and doctor reach, when not the pool's issuer
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane] the plane doctor polls, when not the pool's
  * @property {import("./systemd.mjs").Systemd} systemd how `systemctl` and `loginctl` are run
+ * @property {string} packageName this copy's package, as its `package.json` names it
  * @property {string} version this copy's, as its `package.json` names it
  * @property {string} node the Node binary running this
  * @property {string} nodeVersion that Node's, as `process.versions.node` says it
@@ -118,6 +121,16 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
 The pool file is --pool, or ${poolFileVariable}.`;
 
 /**
+ * The copy of this runner that is speaking.
+ *
+ * @param {CliHost} host
+ * @returns {import("./runner.mjs").RunnerCopy}
+ */
+function runnerCopy(host) {
+  return { package: host.packageName, version: host.version, cli: host.cli };
+}
+
+/**
  * @param {CliCall} call
  * @param {{places: boolean}} run whether the command places work, which alone needs the engine's socket
  */
@@ -133,6 +146,7 @@ async function started(call, run = { places: true }) {
     engine: call.host.engine,
     tokens: call.host.tokens,
     places: run.places,
+    runner: { package: call.host.packageName, version: call.host.version },
   });
   return {
     setup,
@@ -144,12 +158,14 @@ async function started(call, run = { places: true }) {
 /**
  * The service. It claims the pool's control socket before removing what a
  * killed run left, so a second service of the pool is refused before it can
- * remove the first's scratch.
+ * remove the first's scratch. systemd names the run it started with
+ * `INVOCATION_ID`.
  *
  * @param {CliCall} call
  */
 async function run(call) {
   const { setup, runner, sockets } = await started(call);
+  const updates = runnerUpdates(setup, runnerCopy(call.host));
   if (
     sockets.legacy !== undefined &&
     (await controlAsked(sockets.legacy.socket, { op: "status" })) !== undefined
@@ -169,6 +185,8 @@ async function run(call) {
     return await runnerLoop(runner.client, {
       sleep: (ms) => delay(ms),
       log: call.host.out,
+      updates,
+      underService: call.host.environment.INVOCATION_ID !== undefined,
     });
   } finally {
     server.close();

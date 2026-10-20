@@ -9,9 +9,10 @@ import { fileURLToPath, URL } from "node:url";
 
 import { nodeRefusal } from "./nodeFloor.mjs";
 
-const version = JSON.parse(
+const manifest = JSON.parse(
   readFileSync(new URL("package.json", import.meta.url), "utf8"),
-).version;
+);
+const version = manifest.version;
 
 async function cliRun() {
   const [os, commands, systemd] = await Promise.all([
@@ -26,6 +27,7 @@ async function cliRun() {
     hostname: os.hostname(),
     arch: process.arch,
     fetch: globalThis.fetch,
+    packageName: manifest.name,
     version,
     node: process.execPath,
     nodeVersion: process.versions.node,

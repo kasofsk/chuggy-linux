@@ -1,9 +1,10 @@
 /**
  * The runner composed: the pool's credentials and the runner's file read, and
  * the container backend beside the worker core's pool runner, which passes
- * until the plane denies the pool. Where the pool was registered with
- * `--host`, a job that pins no image runs on this machine itself, beside the
- * containers. Every command starts here.
+ * until the plane denies the pool or the runner has installed a release of
+ * itself, from this package's own release downloads. Where the pool was
+ * registered with `--host`, a job that pins no image runs on this machine
+ * itself, beside the containers. Every command starts here.
  *
  * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
  * the runner's file names `claudeTokenFile`. The core withholds what would
@@ -14,7 +15,7 @@
 import { readdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
@@ -23,6 +24,7 @@ import {
   poolRunnerLoop,
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
+import { runnerUpdater } from "@chuggy/worker-core/runnerUpdate.mjs";
 
 import { containerBackend } from "@chuggy/worker-core/containerBackend.mjs";
 import {
@@ -54,11 +56,15 @@ import {
   runnerConfig,
   runnerPaths,
 } from "./runnerConfig.mjs";
-import { deniedExitStatus } from "./systemdUnit.mjs";
+import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts} RunnerUpdatePorts
  * @typedef {import("@chuggy/worker-core/containerBackend.mjs").ContainerBackend} ContainerBackend
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("@chuggy/worker-core/engineArgv.mjs").EngineSocket} EngineSocket
@@ -77,7 +83,16 @@ import { deniedExitStatus } from "./systemdUnit.mjs";
  * @property {Engine} engine
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client
+ *
+ * @typedef {object} RunnerCopy the copy of this runner that is running
+ * @property {string} package its package's name, as its `package.json` names it
+ * @property {string} version as its `package.json` names it
+ * @property {string} cli its entry, as an absolute path, at the root of the directory it is installed in
  */
+
+/** Where this package's releases are downloaded from, and the one place a release chuggy names is taken from. */
+export const runnerReleasePrefix =
+  "https://github.com/kasofsk/chuggy-linux/releases/download/";
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
 const pullRetryMs = 5_000;
@@ -122,6 +137,41 @@ export function runtimeDirectory(paths) {
  */
 export function poolRuntimeDirectory(paths, identity) {
   return join(runtimeDirectory(paths), "pools", poolIdentityDigest(identity));
+}
+
+/**
+ * The lock a service takes to install a release of the runner: one for every
+ * pool's service of this user, which all run the one install.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerUpdateLock(paths) {
+  return join(runtimeDirectory(paths), "update.lock");
+}
+
+/**
+ * What a run is told of its runner's update of itself: on unless the
+ * runner's file turns it off, and taken from this package's own release
+ * downloads into the directory this copy is installed in.
+ *
+ * @param {Pick<RunnerSetup, "config" | "paths">} setup
+ * @param {RunnerCopy} copy
+ * @param {Partial<RunnerUpdatePorts>} [ports] where a suite stands in for the network, npm or the machine
+ * @returns {WorkerPoolUpdates}
+ */
+export function runnerUpdates(setup, copy, ports) {
+  return {
+    on: setup.config.autoUpdate,
+    updater: runnerUpdater(
+      {
+        runner: { package: copy.package, version: copy.version },
+        releasePrefix: runnerReleasePrefix,
+        installed: dirname(copy.cli),
+        lockPath: runnerUpdateLock(setup.paths),
+      },
+      ports,
+    ),
+  };
 }
 
 /**
@@ -299,8 +349,29 @@ export async function engineSocketHanded(config, engine, endpoint) {
 }
 
 /**
- * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket, and what starts a job on this machine itself when not Node's own `spawn`
+ * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket, what starts a job on this machine itself when not Node's own `spawn`, and the package and version each poll names
  */
+
+/**
+ * The backend as a run's loop sees it on podman, where nothing held outlives
+ * this process. Under the service's unit, podman leaves each container's
+ * conmon in the unit's cgroup, and the unit's stop or restart signals conmon,
+ * which passes the signal to the container. So an update waits for podman's
+ * containers to end, as it waits for a job on this machine itself.
+ *
+ * @param {WorkerPoolBackend} backend
+ * @returns {WorkerPoolBackend}
+ */
+export function heldEndingWithRunner(backend) {
+  return {
+    ...backend,
+    held: async () =>
+      (await backend.held()).map(({ assignment, kind }) => ({
+        assignment,
+        kind,
+      })),
+  };
+}
 
 /**
  * @param {RunnerSetup} setup
@@ -359,9 +430,9 @@ export async function runnerParts(setup, host) {
   const backend = runnerHostRouted(setup, container, machine, host);
   const client = poolRunnerClient(
     credentials,
-    backend,
+    config.engine === "podman" ? heldEndingWithRunner(backend) : backend,
     { concurrencyMax: config.concurrencyMax, sessionsMax: config.sessionsMax },
-    { tokens, fetch: host.fetch },
+    { tokens, fetch: host.fetch, runner: host.runner },
   );
   return { runtime: runtimeDir, engine, backend, client };
 }
@@ -437,15 +508,24 @@ export async function jobNetwork(engine, network) {
 
 /**
  * The pool loop until the plane denies the pool, which the unit does not
- * restart.
+ * restart, or until the runner has installed a release of itself, which the
+ * unit restarts it on and a run started by hand is started again on.
  *
  * @param {WorkerPoolClient} client
- * @param {{sleep: (ms: number) => Promise<void>, log: (line: string) => void}} seams
+ * @param {{sleep: (ms: number) => Promise<void>, log: (line: string) => void, updates: WorkerPoolUpdates, underService: boolean}} seams `underService` where systemd started the run
  * @returns {Promise<number>} the exit status
  */
 export async function runnerLoop(client, seams) {
-  await poolRunnerLoop(client, seams);
-  return deniedExitStatus;
+  const { underService, ...loop } = seams;
+  const pass = await poolRunnerLoop(client, loop);
+  if (pass.passed === "Denied") return deniedExitStatus;
+  const release = `${seams.updates.updater.runner.package} ${pass.version}`;
+  seams.log(
+    underService
+      ? `ending, for the service to restart on ${release}`
+      : `ending: start this run again to run ${release}`,
+  );
+  return updatedExitStatus;
 }
 
 /**
