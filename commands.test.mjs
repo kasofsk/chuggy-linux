@@ -1596,7 +1596,7 @@ test("registering a personal runner its service here runs restarts the unit name
   assert.equal(
     failed.out,
     [
-      `replaced ${file}; its service is not running, since chuggy denies this personal runner's earlier registration and systemctl --user restart ${name} failed; next:`,
+      `replaced ${file}; its service is not running, since systemctl --user restart ${name} failed; next:`,
       `  systemctl --user restart ${name}`,
       "  loginctl enable-linger",
     ].join("\n"),
