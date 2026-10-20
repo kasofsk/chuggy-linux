@@ -770,8 +770,9 @@ test("a run names its copy on each poll, and takes the release chuggy names unle
   t.mock.method(
     globalThis,
     "fetch",
-    async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => {
-      named.push(new globalThis.Headers(init.headers).get("chuggy-runner"));
+    async (/** @type {string} */ url, /** @type {RequestInit} */ init) => {
+      if (String(url) !== release.url)
+        named.push(new globalThis.Headers(init.headers).get("chuggy-runner"));
       return globalThis.Response.json({
         assignments: [],
         sessions: [],
@@ -781,10 +782,7 @@ test("a run names its copy on each poll, and takes the release chuggy names unle
     },
   );
   for (const [runner, said] of [
-    [
-      {},
-      "chuggy-linux 9.8.8 is out, and this pool takes no new work until it has updated",
-    ],
+    [{}, "updating to chuggy-linux 9.8.8"],
     [
       { autoUpdate: false },
       "chuggy-linux 9.8.8 is out, and this runner, 9.8.7, does not update itself",
@@ -797,7 +795,7 @@ test("a run names its copy on each poll, and takes the release chuggy names unle
       environment,
       tokens: {
         acquire: async () =>
-          (acquired += 1) === 1
+          (acquired += 1) <= 2
             ? { acquired: "Token", token: "pool-token" }
             : deniedTokens.acquire(),
         invalidate: () => undefined,
@@ -809,7 +807,7 @@ test("a run names its copy on each poll, and takes the release chuggy names unle
       out,
     );
   }
-  assert.deepEqual(named, ["chuggy-linux/9.8.7", "chuggy-linux/9.8.7"]);
+  assert.deepEqual(named, Array(4).fill("chuggy-linux/9.8.7"));
 });
 
 const registerArgv = [
