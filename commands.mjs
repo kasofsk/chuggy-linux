@@ -320,9 +320,10 @@ async function servicePath(host, poolFile) {
  * @param {string} poolFile
  */
 function doctorFound(host, poolFile) {
+  const paths = runnerPaths(host.environment, host.home);
   return doctorFindings({
     poolFile,
-    paths: runnerPaths(host.environment, host.home),
+    paths,
     uid: host.uid,
     registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
     node: host.node,
@@ -334,6 +335,7 @@ function doctorFound(host, poolFile) {
       engine: (config) => host.engine ?? runnerEngine(config),
       tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
       plane: (credentials) => host.plane ?? poolRunnerPlane(credentials),
+      updates: (config) => runnerUpdates({ config, paths }, runnerCopy(host)),
     },
   });
 }
