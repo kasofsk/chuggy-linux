@@ -1,8 +1,9 @@
 /**
  * The systemd user unit a pool's service runs under, one per pool file, so
- * several pools serve from one machine. It restarts the runner after any
- * failure but one: a pool the plane denied exits `deniedExitStatus`, and no
- * restart of it would be answered differently.
+ * several pools serve from one machine. It restarts the runner after any exit
+ * but one: a pool the plane denied exits `deniedExitStatus`, and no restart of
+ * it would be answered differently. A run that installed a release of itself
+ * exits `updatedExitStatus`, and is restarted on that release.
  */
 
 import { Buffer } from "node:buffer";
@@ -10,6 +11,13 @@ import { basename } from "node:path";
 
 /** The exit status of a run the plane ended by denying the pool. */
 export const deniedExitStatus = 3;
+
+/**
+ * The exit status of a run that installed a release of itself, to be started
+ * again on it: sysexits' `EX_TEMPFAIL`, which systemd's journal names
+ * `TEMPFAIL`.
+ */
+export const updatedExitStatus = 75;
 
 /** The one unit a machine served a pool under before each pool had its own. */
 export const legacyServiceUnitName = "chuggy-linux.service";

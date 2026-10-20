@@ -7,10 +7,10 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.13.0/chuggy-linux-0.13.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.14.0/chuggy-linux-0.14.0.tgz
 ```
 
-The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout.
+The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
 
 It refuses to run on a Node below 24. A pool's service runs the copy that wrote its unit, under that copy's Node; `chuggy-linux --version` names a copy, and `doctor` warns where the service runs another.
 
@@ -62,7 +62,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "network": "chuggy-jobs",
   "engineSocket": false,
   "images": [],
-  "volumes": []
+  "volumes": [],
+  "autoUpdate": true
 }
 ```
 
@@ -80,6 +81,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
+| `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
 
@@ -159,7 +161,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, podman's credential helpers, whether the pool file's unit runs this copy, the engine, whether jobs are handed its socket, the job network, each volume's source, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, podman's credential helpers, whether the pool file's unit runs this copy, whether updates are on and this install can take one, the engine, whether jobs are handed its socket, the job network, each volume's source, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 
@@ -172,6 +174,16 @@ chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng.chuggy.shame.js
 This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again from the new copy after upgrading Node or moving the install; until then `doctor` warns that the service runs another.
 
 chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-linux.service`, and it keeps working after an upgrade. Where it serves the pool being installed, `install-service` prints the commands that stop and remove it before starting the pool's own. A pool's service refuses to start while another service of the pool runs, or while the old unit's service runs a pool file this runner cannot read, which may be the same pool. It cannot see a 0.1 runner started by hand rather than by that unit. Where the old unit serves another pool, it runs on beside the new unit. The containers it started are found by their labels, so `status` and `stop` still see them.
+
+## Updates
+
+The service keeps itself on the release chuggy names for it. Once chuggy names a newer one, the service downloads and checks it, installs it over itself and exits 75, and systemd starts it again on the new copy. A docker container runs on through the restart. Work that would end with the service holds the update back: a job on this machine itself, from a pool registered with `--host`, and on podman every job and session, since podman's containers stop with the service. Where the pool holds any, it checks the release first, then takes no new work until that work ends.
+
+Before installing a release, it checks that the release is this package, newer than the copy running, downloaded from chuggy-linux's own GitHub releases, byte for byte the one chuggy named, and that it runs under the service's Node and names its own version. Only then does npm install it where this copy is installed. A release that fails a check, or an install that fails, leaves the running copy serving, and the log says why and when it tries again.
+
+It cannot update an install this user cannot write, such as one `sudo npm i -g` put under `/usr`. Install it under a prefix of your own instead, with nvm or after `npm config set prefix ~/.local`, and run `install-service` again from that copy. `doctor` says whether updates are on, and warns where this install cannot take one.
+
+To turn updates off, set `"autoUpdate": false` in the runner's file and restart the service; the log then says only that a release is out. `chuggy-linux --version` names the copy installed, and the service's log names each release it updates to.
 
 ## Tools for your coding agent
 
@@ -212,5 +224,5 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 - Check that a capability it declares is met: that is yours.
 - Restrict a job's network: the bridge reaches whatever the machine reaches.
 - Report a job's result: the job reports to chuggy itself.
-- Install docker or podman, or upgrade itself.
+- Install docker or podman.
 - Limit a job's workspace: its volume has no size limit.

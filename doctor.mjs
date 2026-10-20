@@ -49,6 +49,7 @@ import {
 import {
   engineEndpoint,
   engineSocketHanded,
+  runnerReleasePrefix,
   runtimeDirectory,
 } from "./runner.mjs";
 import {
@@ -62,6 +63,8 @@ import {
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
@@ -70,6 +73,7 @@ import {
  *
  * @typedef {object} DoctorParts what a run would reach, built from what was read
  * @property {(config: RunnerConfig) => Engine} engine
+ * @property {(config: RunnerConfig) => WorkerPoolUpdates} updates the update a run would make of its runner
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["tokens"]} tokens
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["plane"]} plane
  *
@@ -610,6 +614,57 @@ async function serviceUnitFinding(input) {
   );
 }
 
+/**
+ * A release one patch above this copy, from its own release downloads, as
+ * chuggy would name the next: the core's refusal of it is only of what keeps
+ * this install from taking a release.
+ *
+ * @param {RunnerIdentity} runner
+ */
+function nextRelease(runner) {
+  const [major, minor, patch] = runner.version.split(".").map(Number);
+  const version = `${String(major)}.${String(minor)}.${String(patch + 1)}`;
+  return {
+    package: runner.package,
+    version,
+    url: `${runnerReleasePrefix}v${version}/${runner.package}-${version}.tgz`,
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+}
+
+/**
+ * Whether the runner updates itself and, where it does, whether this install
+ * can take a release: one that npm did not install globally, or that this
+ * user cannot write, cannot, and is warned of.
+ *
+ * @param {WorkerPoolUpdates} updates
+ * @returns {Promise<DoctorFinding>}
+ */
+async function updatesFinding(updates) {
+  const check = "updates";
+  if (!updates.on)
+    return {
+      check,
+      passed: true,
+      detail: "off: the runner's file sets autoUpdate to false",
+    };
+  const refusal = await updates.updater.refusal(
+    nextRelease(updates.updater.runner),
+  );
+  if (refusal === undefined)
+    return {
+      check,
+      passed: true,
+      detail: "on: the service installs the release chuggy names",
+    };
+  return {
+    check,
+    passed: true,
+    warning: true,
+    detail: `on, but this install cannot take a release: ${refusal}; install it with npm under a prefix you own, such as nvm's`,
+  };
+}
+
 /** @param {DoctorFinding} finding */
 export function findingLine(finding) {
   const label =
@@ -635,7 +690,7 @@ export async function doctorFindings(input) {
     const read = await runnerConfig(input.paths.config);
     return [read, `${input.paths.config}: ${runnerConfigLimits(read)}`];
   });
-  await checked(findings, "runtime directory", async () => [
+  const runtime = await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),
   ]);
@@ -651,6 +706,8 @@ export async function doctorFindings(input) {
   if (config?.engine === "podman")
     findings.push(await podmanHelpersFinding(input.registriesConf));
   findings.push(await serviceUnitFinding(input));
+  if (config !== undefined && runtime !== undefined)
+    findings.push(await updatesFinding(input.parts.updates(config)));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(

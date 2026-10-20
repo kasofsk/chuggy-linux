@@ -100,7 +100,27 @@ test("a minimal file is read with every default", async (t) => {
     engineSocket: false,
     images: [],
     volumes: [],
+    autoUpdate: true,
   });
+});
+
+test("the runner updates itself unless its file turns that off", async (t) => {
+  const directory = await scratch(t);
+  for (const autoUpdate of [true, false])
+    assert.equal(
+      (await runnerConfig(await written(directory, { ...minimal, autoUpdate })))
+        .autoUpdate,
+      autoUpdate,
+    );
+  for (const autoUpdate of ["false", 0, null]) {
+    const file = await written(directory, { ...minimal, autoUpdate });
+    await assert.rejects(runnerConfig(file), {
+      message: new RegExp(
+        `^runner configuration ${file}: autoUpdate Invalid input: expected boolean`,
+        "u",
+      ),
+    });
+  }
 });
 
 test("a job that pins no image is run in an image its owner lists", async (t) => {
@@ -212,6 +232,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         engineSocket: false,
         images: [],
         volumes: [],
+        autoUpdate: true,
       },
     );
   for (const [sessionsMax, why] of [

@@ -31,12 +31,16 @@ import {
   poolRuntimeDirectory,
   runnerDirectories,
   runnerLeftoversRemoved,
+  heldEndingWithRunner,
   runnerLoop,
   runnerParts,
+  runnerReleasePrefix,
   runnerSetup,
+  runnerUpdateLock,
+  runnerUpdates,
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
-import { deniedExitStatus } from "./systemdUnit.mjs";
+import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 import {
   engineSocketFixture,
   fixturePool,
@@ -45,29 +49,184 @@ import {
 
 const ownUid = process.getuid?.() ?? -1;
 
-test("a run the plane denies ends with the status the unit does not restart", async () => {
-  const client = {
+/** A release of this package above the copy a suite's runs are made of. */
+const nextRelease = {
+  package: "chuggy-linux",
+  version: "9.8.8",
+  url: `${runnerReleasePrefix}v9.8.8/chuggy-linux-9.8.8.tgz`,
+  integrity: `sha512-${"A".repeat(86)}==`,
+};
+
+/**
+ * A client whose plane answers each poll as `polled` says, holding nothing.
+ *
+ * @param {() => unknown} polled
+ */
+function polledClient(polled) {
+  return /** @type {any} */ ({
     tokens: {
       acquire: async () => ({ acquired: "Token", token: "pool-token" }),
       invalidate: () => undefined,
     },
-    plane: {
-      poll: async () => ({
-        polled: "Denied",
-        evidence: "the pool was revoked",
-      }),
-    },
+    plane: { poll: async () => polled() },
     backend: { held: async () => [], ended: async () => [] },
     settings: { concurrencyMax: 2, outageBackoffMs: 5000, passesMax: 1 },
+  });
+}
+
+/**
+ * The update of a copy at 9.8.7 that installs whatever release it is given.
+ *
+ * @param {boolean} on
+ */
+function installingUpdates(on) {
+  return {
+    on,
+    updater: {
+      runner: { package: "chuggy-linux", version: "9.8.7" },
+      refusal: async () => undefined,
+      update: async (/** @type {{version: string}} */ release) => ({
+        updated: /** @type {const} */ ("Installed"),
+        version: release.version,
+      }),
+    },
   };
+}
+
+test("a run the plane denies ends with the status the unit does not restart", async () => {
+  const client = polledClient(() => ({
+    polled: "Denied",
+    evidence: "the pool was revoked",
+  }));
   /** @type {string[]} */
   const log = [];
-  const status = await runnerLoop(/** @type {any} */ (client), {
+  const status = await runnerLoop(client, {
     sleep: async () => undefined,
     log: (line) => log.push(line),
+    updates: installingUpdates(true),
+    underService: true,
   });
   assert.equal(status, deniedExitStatus);
   assert.deepEqual(log, ["the plane denied this pool: the pool was revoked"]);
+});
+
+test("a run that installed a release of itself ends with the status the unit restarts after, and started by hand says to start it again", async () => {
+  for (const [underService, said] of [
+    [true, "ending, for the service to restart on chuggy-linux 9.8.8"],
+    [false, "ending: start this run again to run chuggy-linux 9.8.8"],
+  ]) {
+    /** @type {string[]} */
+    const log = [];
+    const status = await runnerLoop(
+      polledClient(() => ({
+        polled: "Reconciled",
+        assignments: [],
+        sessions: [],
+        stop: [],
+        release: nextRelease,
+      })),
+      {
+        sleep: async () => undefined,
+        log: (line) => log.push(line),
+        updates: installingUpdates(true),
+        underService: /** @type {boolean} */ (underService),
+      },
+    );
+    assert.equal(status, updatedExitStatus);
+    assert.notEqual(updatedExitStatus, deniedExitStatus);
+    assert.equal(log.at(-1), said);
+  }
+});
+
+test("on podman nothing a run holds outlives it, so an update waits for its containers, and on docker a listed container does", async (t) => {
+  for (const engineName of ["podman", "docker"]) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: { engine: engineName },
+    });
+    const { engine, state } = fakeEngine();
+    state.contextHost = "unix:///var/run/docker.sock";
+    state.containers.set("chuggy-shame-a", {
+      id: "id-chuggy-shame-a",
+      name: "chuggy-shame-a",
+      status: "running",
+      image: "i",
+      labels: {
+        "io.chuggy.pool": "vteng/chuggy/shame",
+        "io.chuggy.deadline": String(Math.floor(Date.now() / 1000) + 3600),
+        "io.chuggy.assignment": "asg-1",
+      },
+    });
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: 1000, log: () => undefined, engine },
+    );
+    const listed = { assignment: "asg-1", kind: "Job", outlivesRunner: true };
+    assert.deepEqual(await runner.backend.held(), [listed], engineName);
+    assert.deepEqual(
+      await runner.client.backend.held(),
+      [engineName === "podman" ? { assignment: "asg-1", kind: "Job" } : listed],
+      engineName,
+    );
+  }
+});
+
+test("a backend whose holdings end with the runner keeps every other part of it", async () => {
+  const place = async () => ({ placed: "Placed" });
+  const ended = heldEndingWithRunner(
+    /** @type {any} */ ({
+      held: async () => [
+        { assignment: "asg-1", kind: "Job", outlivesRunner: true },
+        { assignment: "ses-1", kind: "Session" },
+      ],
+      place,
+    }),
+  );
+  assert.equal(ended.place, place);
+  assert.deepEqual(await ended.held(), [
+    { assignment: "asg-1", kind: "Job" },
+    { assignment: "ses-1", kind: "Session" },
+  ]);
+});
+
+test("a run updates itself as the runner's file says, from this package's own release downloads into the directory its copy is installed in", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t);
+  const setup = await runnerSetup(poolFile, environment, home);
+  const copy = {
+    package: "chuggy-linux",
+    version: "9.8.7",
+    cli: "/opt/chuggy-linux/cli.mjs",
+  };
+  const updates = runnerUpdates(setup, copy);
+  assert.equal(updates.on, true);
+  assert.deepEqual(updates.updater.runner, {
+    package: "chuggy-linux",
+    version: "9.8.7",
+  });
+  assert.equal(
+    await updates.updater.refusal(nextRelease),
+    "this runner is installed at /opt/chuggy-linux, which is not where npm installs a package globally",
+  );
+  const elsewhere = `https://github.com/kasofsk/chuggy-darwin/releases/download/v9.8.8/chuggy-linux-9.8.8.tgz`;
+  assert.equal(
+    await updates.updater.refusal({ ...nextRelease, url: elsewhere }),
+    `its address, ${elsewhere}, is not a release download under ${runnerReleasePrefix}`,
+  );
+  const off = await runnerFixture(t, { runner: { autoUpdate: false } });
+  assert.equal(
+    runnerUpdates(
+      await runnerSetup(off.poolFile, off.environment, off.home),
+      copy,
+    ).on,
+    false,
+  );
+});
+
+test("every pool's service of a user takes one install lock, in the runner's runtime directory", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  assert.equal(
+    runnerUpdateLock(runnerPaths(environment, home)),
+    join(environment.XDG_RUNTIME_DIR, "chuggy-linux", "update.lock"),
+  );
 });
 
 test("a job network another run made between the inspection and the creation is present", async () => {

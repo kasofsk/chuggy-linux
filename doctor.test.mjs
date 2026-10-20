@@ -11,6 +11,7 @@ import {
   volumeDirectoryWritable,
 } from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
+import { runnerUpdates } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import {
   engineSocketFixture,
@@ -23,8 +24,36 @@ import { serviceUnit } from "./systemdUnit.mjs";
 const copy = { node: "/opt/node/bin/node", cli: "/opt/chuggy-linux/cli.mjs" };
 
 /**
+ * A copy at 9.8.7 installed where npm installs one globally under a prefix in
+ * the home, and the updates doctor finds for it.
+ *
+ * @param {string} home
+ * @param {import("./runnerConfig.mjs").RunnerPaths} paths
+ * @param {{installed?: string, writable?: (path: string) => Promise<boolean>}} options the directory the copy is installed in where it is not that one, and what this user may write where it is not what the file system says
+ */
+async function installedCopy(home, paths, options) {
+  const prefix = join(home, "npm");
+  const installed = join(prefix, "lib", "node_modules", "chuggy-linux");
+  await mkdir(installed, { recursive: true });
+  await mkdir(join(prefix, "bin"));
+  const runner = {
+    package: "chuggy-linux",
+    version: "9.8.7",
+    cli: join(options.installed ?? installed, "cli.mjs"),
+  };
+  const ports =
+    options.writable === undefined ? {} : { writable: options.writable };
+  return {
+    prefix,
+    updates: (
+      /** @type {import("./runnerConfig.mjs").RunnerConfig} */ config,
+    ) => runnerUpdates({ config, paths }, runner, ports),
+  };
+}
+
+/**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, volumes?: string[], volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, the named volumes the engine has, doctor's own PATH and the service manager's, and what each `claude` says its version is
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, volumes?: string[], volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, the named volumes the engine has, doctor's own PATH and the service manager's, what each `claude` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, and the install `installedCopy` makes
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -36,7 +65,13 @@ async function doctored(t, options = {}) {
     options.poolFileName === undefined
       ? fixture.poolFile
       : join(home, options.poolFileName);
-  const paths = runnerPaths(environment, home);
+  const paths = runnerPaths(
+    options.runtime === false
+      ? { ...environment, XDG_RUNTIME_DIR: undefined }
+      : environment,
+    home,
+  );
+  const { prefix, updates } = await installedCopy(home, paths, options);
   const unit = join(paths.units, "chuggy-linux-pool.service");
   if (options.unit !== undefined) {
     await mkdir(paths.units, { recursive: true });
@@ -72,6 +107,7 @@ async function doctored(t, options = {}) {
     claudeVersion: async (file) => options.claudeVersions?.[file],
     parts: {
       engine: () => engine,
+      updates,
       tokens: () => ({
         acquire: async () =>
           options.token ?? { acquired: "Token", token: "pool-token" },
@@ -86,7 +122,7 @@ async function doctored(t, options = {}) {
       }),
     },
   });
-  return { findings, state, polls, poolFile, registries, unit };
+  return { findings, state, polls, poolFile, registries, unit, prefix };
 }
 
 test("doctor names a personal runner's file as one, by its tenant and member", async (t) => {
@@ -149,6 +185,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["Claude credential", true],
       ["podman credential helpers", true],
       ["service unit", true],
+      ["updates", true],
       ["container engine", true],
       ["engine socket", true],
       ["job network", true],
@@ -156,6 +193,10 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["pool token", true],
       ["plane", true],
     ],
+  );
+  assert.equal(
+    findings.some((finding) => finding.warning === true),
+    false,
   );
   assert.equal(findings[0].detail, `${poolFile} names pool vteng/chuggy/shame`);
   assert.match(
@@ -168,20 +209,91 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     detail:
       "none named ahead of the auth file in the 0 registries.conf files read",
   });
-  assert.deepEqual(findings[7], {
+  assert.deepEqual(findings[8], {
     check: "engine socket",
     passed: true,
     detail: "off",
   });
   assert.equal(
-    findings[8].detail,
+    findings[9].detail,
     "chuggy-jobs is missing, and a run makes it",
   );
-  assert.equal(findings[9].detail, "none");
+  assert.equal(findings[10].detail, "none");
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
     ["version", "info", "ps", "network"],
+  );
+});
+
+test("doctor says the runner updates itself unless its file turns that off", async (t) => {
+  const on = await doctored(t);
+  assert.deepEqual(
+    on.findings.find((finding) => finding.check === "updates"),
+    {
+      check: "updates",
+      passed: true,
+      detail: "on: the service installs the release chuggy names",
+    },
+  );
+  const off = await doctored(t, {
+    runner: { autoUpdate: false },
+    writable: async () => false,
+  });
+  assert.deepEqual(
+    off.findings.find((finding) => finding.check === "updates"),
+    {
+      check: "updates",
+      passed: true,
+      detail: "off: the runner's file sets autoUpdate to false",
+    },
+  );
+});
+
+test("an install that could not update itself is warned of with why, and passes", async (t) => {
+  const remedy = "install it with npm under a prefix you own, such as nvm's";
+  const unglobal = await doctored(t, { installed: dirname(copy.cli) });
+  assert.deepEqual(
+    unglobal.findings.find((finding) => finding.check === "updates"),
+    {
+      check: "updates",
+      passed: true,
+      warning: true,
+      detail: `on, but this install cannot take a release: this runner is installed at ${dirname(copy.cli)}, which is not where npm installs a package globally; ${remedy}`,
+    },
+  );
+  /** @type {string[]} */
+  const asked = [];
+  const unwritable = await doctored(t, {
+    writable: async (path) => {
+      asked.push(path);
+      return !path.endsWith("bin");
+    },
+  });
+  assert.deepEqual(asked, [
+    join(unwritable.prefix, "lib", "node_modules"),
+    join(unwritable.prefix, "bin"),
+  ]);
+  assert.deepEqual(
+    unwritable.findings.find((finding) => finding.check === "updates"),
+    {
+      check: "updates",
+      passed: true,
+      warning: true,
+      detail: `on, but this install cannot take a release: this runner cannot write ${join(unwritable.prefix, "bin")}, where npm would install it; ${remedy}`,
+    },
+  );
+});
+
+test("without a runtime directory, where the install lock is kept, updates are not checked", async (t) => {
+  const { findings } = await doctored(t, { runtime: false });
+  assert.deepEqual(
+    findings.find((finding) => finding.check === "runtime directory")?.passed,
+    false,
+  );
+  assert.equal(
+    findings.some((finding) => finding.check === "updates"),
+    false,
   );
 });
 
