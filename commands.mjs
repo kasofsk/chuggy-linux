@@ -334,7 +334,12 @@ function doctorFound(host, poolFile) {
     parts: {
       engine: (config) => host.engine ?? runnerEngine(config),
       tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
-      plane: (credentials) => host.plane ?? poolRunnerPlane(credentials),
+      plane: (credentials) =>
+        host.plane ??
+        poolRunnerPlane(credentials, {
+          package: host.packageName,
+          version: host.version,
+        }),
       updates: (config) => runnerUpdates({ config, paths }, runnerCopy(host)),
     },
   });

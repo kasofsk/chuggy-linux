@@ -15,7 +15,7 @@ export const deniedExitStatus = 3;
 /**
  * The exit status of a run that installed a release of itself, to be started
  * again on it: sysexits' `EX_TEMPFAIL`, which systemd's journal names
- * `TEMPFAIL` rather than as a fault.
+ * `TEMPFAIL`.
  */
 export const updatedExitStatus = 75;
 
