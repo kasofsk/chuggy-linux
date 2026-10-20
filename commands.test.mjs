@@ -1230,7 +1230,7 @@ test("register asked wrongly exits 2 before the token is spent", async (t) => {
     [
       [...registerArgv, "--personal", "--pool", "shame"],
       {},
-      /^--pool names a pool, and a personal runner is its member's one in the tenant/u,
+      /^--pool names a pool, and a personal runner names none/u,
     ],
     [[...registerArgv, "extra"], {}, /^usage: chuggy-linux/u],
     [["run", "--pool", "/p", "--token", "t"], {}, /^usage: chuggy-linux/u],
