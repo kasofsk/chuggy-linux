@@ -233,7 +233,7 @@ test("doctor says the runner updates itself unless its file turns that off", asy
     {
       check: "updates",
       passed: true,
-      detail: "on: the release chuggy names is installed between jobs",
+      detail: "on: the service installs the release chuggy names",
     },
   );
   const off = await doctored(t, {

@@ -177,7 +177,7 @@ chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-
 
 ## Updates
 
-The service keeps itself on the release chuggy names for it, between jobs. Once chuggy names a newer one, the pool takes no new work, and once nothing it holds would end with the service, it installs the release over itself and exits 75, and systemd starts it again on the new copy. A docker container runs on through the restart. A job on this machine itself, from a pool registered with `--host`, holds the update back until it ends, and on podman so does every job and session, since podman's containers stop with the service.
+The service keeps itself on the release chuggy names for it. Once chuggy names a newer one, the service downloads and checks it, installs it over itself and exits 75, and systemd starts it again on the new copy. A docker container runs on through the restart. Work that would end with the service holds the update back: a job on this machine itself, from a pool registered with `--host`, and on podman every job and session, since podman's containers stop with the service. Where the pool holds any, it checks the release first, then takes no new work until that work ends.
 
 Before installing a release, it checks that the release is this package, newer than the copy running, downloaded from chuggy-linux's own GitHub releases, byte for byte the one chuggy named, and that it runs under the service's Node and names its own version. Only then does npm install it where this copy is installed. A release that fails a check, or an install that fails, leaves the running copy serving, and the log says why and when it tries again.
 

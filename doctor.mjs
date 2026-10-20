@@ -655,7 +655,7 @@ async function updatesFinding(updates) {
     return {
       check,
       passed: true,
-      detail: "on: the release chuggy names is installed between jobs",
+      detail: "on: the service installs the release chuggy names",
     };
   return {
     check,
