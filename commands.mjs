@@ -522,8 +522,8 @@ async function registerRan(host, argvs, said, since, why) {
 }
 
 /**
- * Restarts each unit serving the file, since chuggy denies the registration
- * it ran on. The file's own unit is written first as install-service writes
+ * Restarts each unit serving the file, which still runs the registration it
+ * read when it started. The file's own unit is written first as install-service writes
  * it, so what comes back is this copy under this Node, and then the units are
  * read again and each enabled: a unit may have been written and never
  * enabled. Where the write fails nothing is restarted, and what is left
