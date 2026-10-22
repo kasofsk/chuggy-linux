@@ -71,7 +71,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | Key                | Required | Meaning                                                                                                    |
 | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `engine`           | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 runs none, for a runner kept for sessions. Default 1.             |
+| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions. Default 1. |
 | `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. Default 2.                        |
 | `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
 | `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, below, in place of `claudeTokenFile`.                     |
@@ -82,7 +82,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
-| `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below. Default none.             |
+| `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below; 0.18.0 or later. Default none. |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
@@ -94,7 +94,7 @@ Each assignment's CPU and memory are checked against the whole machine, not what
 "pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
 ```
 
-The pool `vteng.chuggy.lead.json` runs one session and no job, and every other pool's service, the personal runner's among them, runs two jobs and two sessions. `status` and `doctor` print the limits of the pool they are given, and `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, which limits nothing.
+The pool `vteng.chuggy.lead.json` runs one session and no job, and every other pool's service, the personal runner's among them, runs two jobs and two sessions. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
 
 A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing either.
 
@@ -221,7 +221,7 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
 | `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | The runner's limits, this pool's containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
+| `status`            | This pool's limits, its containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
 | `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
