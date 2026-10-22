@@ -11,6 +11,8 @@ import { constants } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
+import { z } from "zod";
+
 import {
   claudeCredentialDescribed,
   claudeCredentialFile,
@@ -18,6 +20,11 @@ import {
   claudeCredentialSetting,
 } from "@chuggy/worker-core/claudeCredential.mjs";
 
+import {
+  ownerVolumeLabelsRefusal,
+  ownerVolumesServed,
+  ownerVolumeWithheldLine,
+} from "@chuggy/worker-core/containerBackend.mjs";
 import {
   hostEnvironmentRefusal,
   hostTimeoutSecsMax,
@@ -66,6 +73,7 @@ import {
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
  * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
+ * @typedef {import("@chuggy/worker-core/engineArgv.mjs").OwnerVolume} OwnerVolume
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
  *
@@ -375,19 +383,43 @@ export function volumeDirectoryWritable(engine, directory, runnerUid) {
   return (directory.mode & bits) === bits;
 }
 
+/** What an engine answers an inspection of volumes with, of each one's labels. */
+const inspectedVolumeLabelsSchema = z.array(
+  z.object({ Labels: z.record(z.string(), z.string()).nullish() }),
+);
+
+/**
+ * The labels of a named volume an inspection answered for.
+ *
+ * @param {RunnerConfig} config
+ * @param {string} volume
+ * @param {string} stdout the inspection's
+ */
+function ownerVolumeFoundLabels(config, volume, stdout) {
+  try {
+    const [inspected] = inspectedVolumeLabelsSchema.parse(JSON.parse(stdout));
+    return inspected?.Labels ?? {};
+  } catch {
+    throw new Error(
+      `${config.engine} answered an inspection of ${volume} doctor cannot read`,
+    );
+  }
+}
+
 /**
  * What a job is given of one of its owner's volumes, or a throw naming why it
  * cannot be given it: a directory that is there, and whether a job may write
- * it, or a named volume, there or for the first job to make.
+ * it, or a named volume, there and labelled as the one listed, or for the
+ * first job to make.
  *
  * @param {Engine} engine
  * @param {RunnerConfig} config
- * @param {RunnerConfig["volumes"][number]} volume
+ * @param {OwnerVolume} volume
  * @param {number} uid this process's
  */
 async function ownerVolumeFound(engine, config, volume, uid) {
-  const { source, target, readonly } = volume;
-  const mounted = `${source} at ${target}${readonly ? ", read-only" : ""}`;
+  const { source, target, readonly, project } = volume;
+  const mounted = `${source} at ${target}${readonly ? ", read-only" : ""}${project === undefined ? "" : `, ${project}'s alone`}`;
   if (ownerVolumeDirectory(source)) {
     const directory = await stat(source);
     if (!directory.isDirectory())
@@ -402,10 +434,45 @@ async function ownerVolumeFound(engine, config, volume, uid) {
     return `${mounted}, which a job, ${job}, may not write: it is uid ${String(directory.uid)}'s, group ${String(directory.gid)}'s and mode ${(directory.mode & 0o777).toString(8).padStart(3, "0")}`;
   }
   const inspected = await engine.exec(volumeInspectArgv([source]));
-  if (inspected.code === 0) return `${mounted}, present`;
+  if (inspected.code === 0) {
+    const refusal = ownerVolumeLabelsRefusal(
+      volume,
+      ownerVolumeFoundLabels(config, source, inspected.stdout),
+    );
+    if (refusal !== undefined) throw new Error(`${source} ${refusal}`);
+    return `${mounted}, present`;
+  }
   if (engineFailure(inspected) === "NoSuchVolume")
     return `${mounted}, missing until the first job started through chuggy's runtime makes it`;
   throw new Error(`${source}: ${engineFailureLine(inspected)}`);
+}
+
+/**
+ * What each job is given of its owner's volumes, warned of where this runner
+ * withholds one scoped per project, as a personal runner does.
+ *
+ * @param {Engine} engine
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @param {number} uid this process's
+ * @returns {Promise<DoctorFinding>}
+ */
+async function ownerVolumesFinding(engine, credentials, config, uid) {
+  const check = "volumes";
+  const { served, withheld } = ownerVolumesServed(config.volumes, credentials);
+  /** @type {string[]} */
+  const found = [];
+  try {
+    for (const volume of served)
+      found.push(await ownerVolumeFound(engine, config, volume, uid));
+  } catch (failure) {
+    return { check, passed: false, detail: failureMessage(failure) };
+  }
+  found.push(...withheld.map(ownerVolumeWithheldLine));
+  const detail = found.length === 0 ? "none" : found.join("; ");
+  return withheld.length === 0
+    ? { check, passed: true, detail }
+    : { check, passed: true, warning: true, detail };
 }
 
 /**
@@ -437,13 +504,7 @@ async function engineChecks(engine, credentials, config, uid, findings) {
       return [true, `${config.network} is missing, and a run makes it`];
     throw new Error(engineFailureLine(inspected));
   });
-  await checked(findings, "volumes", async () => {
-    /** @type {string[]} */
-    const found = [];
-    for (const volume of config.volumes)
-      found.push(await ownerVolumeFound(engine, config, volume, uid));
-    return [true, found.length === 0 ? "none" : found.join("; ")];
-  });
+  findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
 }
 
 /**

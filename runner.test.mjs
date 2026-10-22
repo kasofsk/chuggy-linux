@@ -477,6 +477,19 @@ test("a runner whose file sets sessionsMax to 0 is given no room for a session",
   assert.equal(runner.client.settings.sessionsMax, 0);
 });
 
+test("a runner whose file sets concurrencyMax to 0 is given no room for a job, and its sessions' room", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { concurrencyMax: 0 },
+  });
+  const { engine } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid: 1000, log: () => undefined, engine },
+  );
+  assert.equal(runner.client.settings.concurrencyMax, 0);
+  assert.equal(runner.client.settings.sessionsMax, 2);
+});
+
 test("podman has no endpoint, and is taken only from the first version whose keep-id maps its user onto a job's", async () => {
   const { engine, state } = fakeEngine();
   for (const version of [

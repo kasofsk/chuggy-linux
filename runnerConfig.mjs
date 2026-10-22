@@ -53,6 +53,8 @@ const runnerConfigBytesMax = 64 * 1024;
 
 const positiveSchema = z.number().int().positive().safe();
 
+const nonnegativeSchema = z.number().int().nonnegative().safe();
+
 /** A name docker and podman both give a network, less the host's own. */
 const networkSchema = z
   .string()
@@ -111,9 +113,10 @@ const credentialSchema = claudeCredentialSchema.superRefine(
 export const runnerConfigSchema = z
   .strictObject({
     engine: z.enum(["docker", "podman"]).default("docker"),
-    concurrencyMax: positiveSchema.default(1),
+    /** The jobs held at once, none where it is 0, as on a runner kept for sessions. */
+    concurrencyMax: nonnegativeSchema.default(1),
     /** The sessions held beside the jobs, none where it is 0. */
-    sessionsMax: z.number().int().nonnegative().safe().default(2),
+    sessionsMax: nonnegativeSchema.default(2),
     /** Where `claude setup-token`'s output was saved, a subscription's credential. */
     claudeTokenFile: credentialFileSchema.optional(),
     /** The credential Claude Code runs on, of any kind, in place of `claudeTokenFile`. */
@@ -134,7 +137,9 @@ export const runnerConfigSchema = z
     images: ownerImagesSchema.default([]),
     /**
      * The named volumes and directories of this machine mounted into every
-     * job, each field named as `--mount` names it on docker and podman alike.
+     * job, each field but `scope` named as `--mount` names it on docker and
+     * podman alike. A named volume whose `scope` is "project" is one per
+     * project, and no personal runner's job mounts it.
      */
     volumes: ownerVolumesSchema.default([]),
     /** Whether the service installs the release of itself chuggy names. */
@@ -146,6 +151,7 @@ export const runnerConfigSchema = z
   })
   .superRefine((config, context) => {
     configCredentialChecked(config, context);
+    configLimitsChecked(config, context);
     if (!config.engineSocket) return;
     for (const name of Object.keys(
       jobEngineSocketEnvironment(config.engine, ""),
@@ -192,6 +198,21 @@ function configCredentialChecked(config, context) {
       path: ["claudeCredential"],
       message:
         "names a Claude credential, and so does claudeTokenFile; keep one",
+    });
+}
+
+/**
+ * Holds the file to a runner that takes some work.
+ *
+ * @param {RunnerConfig} config
+ * @param {z.core.$RefinementCtx} context
+ */
+function configLimitsChecked(config, context) {
+  if (config.concurrencyMax === 0 && config.sessionsMax === 0)
+    context.addIssue({
+      code: "custom",
+      path: ["concurrencyMax"],
+      message: "is 0 and so is sessionsMax, so this runner would take no work",
     });
 }
 

@@ -138,11 +138,13 @@ test("the volumes a job mounts are read as listed, each one a job may write unle
   const volumes = [
     { source: "cargo", target: "/home/runner/.cargo" },
     { source: "/srv/npm-cache", target: "/cache/npm", readonly: true },
+    { source: "sccache", target: "/cache/sccache", scope: "project" },
   ];
   const file = await written(await scratch(t), { ...minimal, volumes });
   assert.deepEqual((await runnerConfig(file)).volumes, [
     { ...volumes[0], readonly: false },
     volumes[1],
+    { ...volumes[2], readonly: false },
   ]);
 });
 
@@ -202,6 +204,13 @@ test("a volume no mount can make as it is written is refused, naming the volume"
       },
       /volumes\.0 Unrecognized key: "type"/u,
     ],
+    [
+      {
+        ...minimal,
+        volumes: [{ source: "/srv/cache", target: "/cache", scope: "project" }],
+      },
+      /volumes\.0\.source is a directory, and only a named volume can be one per project/u,
+    ],
   ];
   for (const [document, why] of refused)
     await assert.rejects(
@@ -209,6 +218,25 @@ test("a volume no mount can make as it is written is refused, naming the volume"
       why,
       JSON.stringify(document),
     );
+});
+
+test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+  const directory = await scratch(t);
+  for (const sessions of [{}, { sessionsMax: 1 }]) {
+    const config = await runnerConfig(
+      await written(directory, { ...minimal, concurrencyMax: 0, ...sessions }),
+    );
+    assert.equal(config.concurrencyMax, 0);
+    assert.equal(config.sessionsMax, sessions.sessionsMax ?? 2);
+  }
+  const file = await written(directory, {
+    ...minimal,
+    concurrencyMax: 0,
+    sessionsMax: 0,
+  });
+  await assert.rejects(runnerConfig(file), {
+    message: `runner configuration ${file}: concurrencyMax is 0 and so is sessionsMax, so this runner would take no work`,
+  });
 });
 
 test("sessionsMax is a whole number of none or more, read apart from concurrencyMax", async (t) => {
@@ -294,7 +322,7 @@ test("what the file may not say is refused, naming where", async (t) => {
       { ...minimal, claudeTokenFile: "/a,readonly=false" },
       /claudeTokenFile cannot be named in a bind mount/u,
     ],
-    [{ ...minimal, concurrencyMax: 0 }, /concurrencyMax /u],
+    [{ ...minimal, concurrencyMax: -1 }, /concurrencyMax /u],
     [
       { ...minimal, engineSocket: "true" },
       /engineSocket Invalid input: expected boolean/u,
