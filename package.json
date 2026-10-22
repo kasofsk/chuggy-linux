@@ -12,8 +12,8 @@
     "chuggy-linux": "cli.mjs"
   },
   "dependencies": {
-    "@chuggy/worker-contract": "file:../../chuggy-effort/valensta-fixes-2026-10-21/r2b/contract/chuggy-worker-contract-1.15.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#49350925df39a524395d9f5a154fd72d89245754",
+    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.15.0/chuggy-worker-contract-1.15.0.tgz",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#d9bf07ae98c51b2acee32b278ac3c4f2aa05c9da",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.5.4"
   },

@@ -451,7 +451,8 @@ async function ownerVolumeFound(engine, config, volume, uid) {
 /**
  * What each job is given of its owner's volumes. On a personal runner one
  * scoped per project is each job's own project's, so it is named as such and
- * not looked for, since no job has named its project yet.
+ * not looked for: the runner serves its member across projects, and doctor
+ * holds no job's project to look under.
  *
  * @param {Engine} engine
  * @param {PoolCredentials} credentials
