@@ -998,7 +998,7 @@ const personalPool = {
   clientSecret: "personal-client-secret",
 };
 
-test("doctor warns that a personal runner's jobs run without a volume listed as its project's, and finds the rest", async (t) => {
+test("doctor names a volume a personal runner lists as its project's as each job's own, without looking for it, and finds the rest", async (t) => {
   const { findings, state } = await doctored(t, {
     pool: personalPool,
     runner: {
@@ -1011,9 +1011,8 @@ test("doctor warns that a personal runner's jobs run without a volume listed as 
     {
       check: "volumes",
       passed: true,
-      warning: true,
       detail:
-        "cargo at /cache/cargo, present; sccache is scoped per project, and a personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one",
+        "cargo at /cache/cargo, present; sccache is scoped per project: each job mounts its own project's, which, where it is missing, the first job in that project started through chuggy's runtime makes",
     },
   );
   assert.deepEqual(
@@ -1024,7 +1023,7 @@ test("doctor warns that a personal runner's jobs run without a volume listed as 
   );
 });
 
-test("doctor that fails a personal runner's volume still says which it withholds", async (t) => {
+test("doctor that fails a personal runner's volume still names those it scopes per project", async (t) => {
   const { findings } = await doctored(t, {
     pool: personalPool,
     runner: {
@@ -1038,7 +1037,7 @@ test("doctor that fails a personal runner's volume still says which it withholds
       check: "volumes",
       passed: false,
       detail:
-        "cargo is labelled as vteng/chuggy's, and is listed as no project's; sccache is scoped per project, and a personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one",
+        "cargo is labelled as vteng/chuggy's, and is listed as no project's; sccache is scoped per project: each job mounts its own project's, which, where it is missing, the first job in that project started through chuggy's runtime makes",
     },
   );
 });

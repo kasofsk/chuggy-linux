@@ -22,8 +22,8 @@ import {
 
 import {
   ownerVolumeLabelsRefusal,
+  ownerVolumeProjectsLine,
   ownerVolumesServed,
-  ownerVolumeWithheldLine,
 } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   hostEnvironmentRefusal,
@@ -449,8 +449,9 @@ async function ownerVolumeFound(engine, config, volume, uid) {
 }
 
 /**
- * What each job is given of its owner's volumes, warned of where this runner
- * withholds one scoped per project, as a personal runner does.
+ * What each job is given of its owner's volumes. On a personal runner one
+ * scoped per project is each job's own project's, so it is named as such and
+ * not looked for, since no job has named its project yet.
  *
  * @param {Engine} engine
  * @param {PoolCredentials} credentials
@@ -461,7 +462,7 @@ async function ownerVolumeFound(engine, config, volume, uid) {
 async function ownerVolumesFinding(engine, credentials, config, uid) {
   const check = "volumes";
   const { served, withheld } = ownerVolumesServed(config.volumes, credentials);
-  const unmounted = withheld.map(ownerVolumeWithheldLine);
+  const scoped = withheld.map(ownerVolumeProjectsLine);
   /** @type {string[]} */
   const found = [];
   try {
@@ -471,14 +472,15 @@ async function ownerVolumesFinding(engine, credentials, config, uid) {
     return {
       check,
       passed: false,
-      detail: [failureMessage(failure), ...unmounted].join("; "),
+      detail: [failureMessage(failure), ...scoped].join("; "),
     };
   }
-  found.push(...unmounted);
-  const detail = found.length === 0 ? "none" : found.join("; ");
-  return withheld.length === 0
-    ? { check, passed: true, detail }
-    : { check, passed: true, warning: true, detail };
+  found.push(...scoped);
+  return {
+    check,
+    passed: true,
+    detail: found.length === 0 ? "none" : found.join("; "),
+  };
 }
 
 /**

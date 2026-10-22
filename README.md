@@ -133,13 +133,13 @@ With `volumes`, every job, and never a session, mounts each one listed at its `t
 
 and in the image, `ENV npm_config_cache=/cache/npm`.
 
-A named volume listed with `"scope": "project"` is one per project instead. Each project a pool serves gets its own, named for the source and the project, such as `sccache-3f9c…`, and labelled `io.chuggy.owner-volume.project=<tenant>/<project>`. A job mounts it only where that label names the job's project: one labelled as another project's, or as none, fails the job, and so does an unscoped volume that carries the label. That keeps chuggy from handing one project's volume to another project's job; it hides nothing from whatever reaches the engine, such as a job given it by `engineSocket`. A directory cannot be scoped. `scope` needs chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
+A named volume listed with `"scope": "project"` is one per project instead. Each project gets its own, named for the source and the project, such as `sccache-3f9c…`, and labelled `io.chuggy.owner-volume.project=<tenant>/<project>`. A job mounts it only where that label names the job's project: one labelled as another project's, or as none, fails the job, and so does an unscoped volume that carries the label. That keeps chuggy from handing one project's volume to another project's job; it hides nothing from whatever reaches the engine, such as a job given it by `engineSocket`. A directory cannot be scoped. `scope` needs chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
 
 ```json
 "volumes": [{ "source": "sccache", "target": "/cache/sccache", "scope": "project" }]
 ```
 
-A personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one. A personal runner serves its member across projects and is not told which project a job is for, so it cannot choose one; its first job says so in the service's log, and `doctor` warns of each.
+A personal runner mounts a scoped volume from chuggy-linux 0.19.0: chuggy tells it each job's project, and the job mounts that project's volume, the same one a project's pool on this machine mounts, so the two share it. `doctor` names each as its job's project's without looking for it, since a personal runner serves its member across projects. Before 0.19.0 a personal runner's jobs run without it.
 
 An unscoped volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change. Jobs of one project share its scoped volume the same way.
 
