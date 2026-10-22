@@ -54,8 +54,26 @@ async function installedCopy(home, paths, options) {
 }
 
 /**
+ * Writes each pool file named in the pools directory, which doctor reads the
+ * names `pools` may key from, and gives the engine each named volume.
+ *
+ * @param {import("./runnerConfig.mjs").RunnerPaths} paths
+ * @param {ReturnType<typeof fakeEngine>["state"]} state
+ * @param {{poolFiles?: string[], volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>}} options
+ */
+async function doctoredMachine(paths, state, options) {
+  for (const file of options.poolFiles ?? []) {
+    await mkdir(paths.pools, { recursive: true });
+    await writeFile(join(paths.pools, file), "{}");
+  }
+  for (const volume of options.volumes ?? []) state.volumes.set(volume, {});
+  for (const [volume, labels] of Object.entries(options.labelledVolumes ?? {}))
+    state.volumes.set(volume, labels);
+}
+
+/**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, and the install `installedCopy` makes
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, and the install `installedCopy` makes
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -86,9 +104,7 @@ async function doctored(t, options = {}) {
     options.podmanServiceRemote ?? state.podmanServiceRemote;
   state.podmanSocket = options.podmanSocket ?? state.podmanSocket;
   state.contextHost = options.contextHost ?? state.contextHost;
-  for (const volume of options.volumes ?? []) state.volumes.set(volume, {});
-  for (const [volume, labels] of Object.entries(options.labelledVolumes ?? {}))
-    state.volumes.set(volume, labels);
+  await doctoredMachine(paths, state, options);
   state.volumesUnanswered = options.volumesUnanswered ?? false;
   const registries = join(home, "registries");
   for (const [file, text] of Object.entries(options.registries ?? {})) {
@@ -850,6 +866,48 @@ test("doctor fails a volume whose directory is not there or is no directory, or 
   );
 });
 
+test("doctor names the limits a pool's entry in pools sets its service, and warns of each entry naming no pool file in the pools directory", async (t) => {
+  const own = await doctored(t, {
+    runner: { pools: { pool: { concurrencyMax: 0, sessionsMax: 1 } } },
+  });
+  const ownFound = own.findings.find(
+    (finding) => finding.check === "runner configuration",
+  );
+  assert.equal(ownFound?.passed, true);
+  assert.equal(ownFound?.warning, undefined);
+  assert.match(
+    ownFound?.detail ?? "",
+    /\/runner\.json: concurrencyMax 0, sessionsMax 1, as pools\.pool sets them$/u,
+  );
+
+  const { findings } = await doctored(t, {
+    runner: {
+      pools: {
+        "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+        "vteng.chuggy.leed": { concurrencyMax: 0, sessionsMax: 1 },
+        "vteng.chuggy.lead.json": { concurrencyMax: 0, sessionsMax: 1 },
+      },
+    },
+    poolFiles: ["vteng.chuggy.lead.json"],
+  });
+  const found = findings.find(
+    (finding) => finding.check === "runner configuration",
+  );
+  assert.equal(found?.passed, true);
+  assert.equal(found?.warning, true);
+  const [limits, ...warned] = (found?.detail ?? "").split("; ");
+  assert.match(limits, /\/runner\.json: concurrencyMax 1, sessionsMax 2$/u);
+  assert.deepEqual(
+    warned.map((line) =>
+      line.replace(/ in \S+\/chuggy\/pools,/u, " in pools,"),
+    ),
+    [
+      "pools.vteng.chuggy.leed names no pool file in pools, so it limits no service",
+      "pools.vteng.chuggy.lead.json names no pool file in pools, so it limits no service",
+    ],
+  );
+});
+
 /** A volume listed as its project's, and its name for the fixture pool's project. */
 const projectMount = {
   source: "sccache",
@@ -927,19 +985,22 @@ test("doctor fails a volume another project's label or none marks where it is li
   }
 });
 
+/** A member's personal runner's file. */
+const personalPool = {
+  kind: "Personal",
+  tenant: "vteng",
+  owner: "28:https://auth.chuggy.example/0f3c9a52-member",
+  capabilities: ["container"],
+  tokenUrl: "https://issuer.chuggy.example/oauth2/token",
+  audience: "https://chuggy.example",
+  planeUrl: "https://chuggy.example/pool",
+  clientId: "personal-client",
+  clientSecret: "personal-client-secret",
+};
+
 test("doctor warns that a personal runner's jobs run without a volume listed as its project's, and finds the rest", async (t) => {
   const { findings, state } = await doctored(t, {
-    pool: {
-      kind: "Personal",
-      tenant: "vteng",
-      owner: "28:https://auth.chuggy.example/0f3c9a52-member",
-      capabilities: ["container"],
-      tokenUrl: "https://issuer.chuggy.example/oauth2/token",
-      audience: "https://chuggy.example",
-      planeUrl: "https://chuggy.example/pool",
-      clientId: "personal-client",
-      clientSecret: "personal-client-secret",
-    },
+    pool: personalPool,
     runner: {
       volumes: [{ source: "cargo", target: "/cache/cargo" }, projectMount],
     },
@@ -960,6 +1021,25 @@ test("doctor warns that a personal runner's jobs run without a volume listed as 
       .filter(({ argv }) => argv[0] === "volume")
       .map(({ argv }) => argv),
     [["volume", "inspect", "cargo"]],
+  );
+});
+
+test("doctor that fails a personal runner's volume still says which it withholds", async (t) => {
+  const { findings } = await doctored(t, {
+    pool: personalPool,
+    runner: {
+      volumes: [{ source: "cargo", target: "/cache/cargo" }, projectMount],
+    },
+    labelledVolumes: { cargo: projectLabels("vteng/chuggy") },
+  });
+  assert.deepEqual(
+    findings.find((found) => found.check === "volumes"),
+    {
+      check: "volumes",
+      passed: false,
+      detail:
+        "cargo is labelled as vteng/chuggy's, and is listed as no project's; sccache is scoped per project, and a personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one",
+    },
   );
 });
 

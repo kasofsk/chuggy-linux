@@ -52,6 +52,7 @@ import {
   runnerClaudeCredential,
   runnerConfig,
   runnerConfigLimits,
+  runnerPoolName,
 } from "./runnerConfig.mjs";
 import {
   engineEndpoint,
@@ -460,15 +461,20 @@ async function ownerVolumeFound(engine, config, volume, uid) {
 async function ownerVolumesFinding(engine, credentials, config, uid) {
   const check = "volumes";
   const { served, withheld } = ownerVolumesServed(config.volumes, credentials);
+  const unmounted = withheld.map(ownerVolumeWithheldLine);
   /** @type {string[]} */
   const found = [];
   try {
     for (const volume of served)
       found.push(await ownerVolumeFound(engine, config, volume, uid));
   } catch (failure) {
-    return { check, passed: false, detail: failureMessage(failure) };
+    return {
+      check,
+      passed: false,
+      detail: [failureMessage(failure), ...unmounted].join("; "),
+    };
   }
-  found.push(...withheld.map(ownerVolumeWithheldLine));
+  found.push(...unmounted);
   const detail = found.length === 0 ? "none" : found.join("; ");
   return withheld.length === 0
     ? { check, passed: true, detail }
@@ -734,6 +740,47 @@ export function findingLine(finding) {
 }
 
 /**
+ * The runner's file, read, and the limits it sets this pool's service, warned
+ * of where an entry in `pools` names no pool file in the pools directory, so
+ * that it limits no service.
+ *
+ * @param {DoctorInput} input
+ * @param {DoctorFinding[]} findings
+ */
+async function runnerConfigChecked(input, findings) {
+  const check = "runner configuration";
+  let config;
+  try {
+    config = await runnerConfig(input.paths.config);
+  } catch (failure) {
+    findings.push({ check, passed: false, detail: failureMessage(failure) });
+    return undefined;
+  }
+  const files = new Set(
+    (await readdir(input.paths.pools).catch(() => [])).map((file) =>
+      runnerPoolName(file),
+    ),
+  );
+  files.add(runnerPoolName(input.poolFile));
+  const unmatched = Object.keys(config.pools).filter(
+    (name) => !files.has(name),
+  );
+  const detail = [
+    `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile)}`,
+    ...unmatched.map(
+      (name) =>
+        `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,
+    ),
+  ].join("; ");
+  findings.push(
+    unmatched.length === 0
+      ? { check, passed: true, detail }
+      : { check, passed: true, warning: true, detail },
+  );
+  return config;
+}
+
+/**
  * @param {DoctorInput} input
  * @returns {Promise<DoctorFinding[]>}
  */
@@ -747,10 +794,7 @@ export async function doctorFindings(input) {
       `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
     ];
   });
-  const config = await checked(findings, "runner configuration", async () => {
-    const read = await runnerConfig(input.paths.config);
-    return [read, `${input.paths.config}: ${runnerConfigLimits(read)}`];
-  });
+  const config = await runnerConfigChecked(input, findings);
   const runtime = await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),

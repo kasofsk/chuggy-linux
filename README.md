@@ -63,6 +63,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "engineSocket": false,
   "images": [],
   "volumes": [],
+  "pools": {},
   "autoUpdate": true
 }
 ```
@@ -81,9 +82,21 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
+| `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below. Default none.             |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
+
+`pools` sets one pool's service apart from the rest. It is keyed by the pool file's name without `.json`, as `register` wrote it, and each limit it names replaces the file's for that service alone; one leaving that service 0 jobs and 0 sessions is refused. A personal runner that takes jobs beside a project's pool kept for its lead:
+
+```json
+"concurrencyMax": 2,
+"pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
+```
+
+The pool `vteng.chuggy.lead.json` runs one session and no job, and every other pool's service, the personal runner's among them, runs two jobs and two sessions. `status` and `doctor` print the limits of the pool they are given, and `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, which limits nothing.
+
+A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing either.
 
 A session is a project's chat or lead, run on this machine's Claude credential, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same credential, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
@@ -120,13 +133,13 @@ With `volumes`, every job, and never a session, mounts each one listed at its `t
 
 and in the image, `ENV npm_config_cache=/cache/npm`.
 
-A named volume listed with `"scope": "project"` is one per project instead. Each project a pool serves gets its own, named for the source and the project, such as `sccache-3f9c…`, and labelled `io.chuggy.owner-volume.project=<tenant>/<project>`. A job mounts it only where that label names the job's project: one labelled as another project's, or as none, fails the job, and so does an unscoped volume that carries the label. That keeps chuggy from handing one project's volume to another project's job; it hides nothing from whatever reaches the engine, such as a job given it by `engineSocket`. A directory cannot be scoped.
+A named volume listed with `"scope": "project"` is one per project instead. Each project a pool serves gets its own, named for the source and the project, such as `sccache-3f9c…`, and labelled `io.chuggy.owner-volume.project=<tenant>/<project>`. A job mounts it only where that label names the job's project: one labelled as another project's, or as none, fails the job, and so does an unscoped volume that carries the label. That keeps chuggy from handing one project's volume to another project's job; it hides nothing from whatever reaches the engine, such as a job given it by `engineSocket`. A directory cannot be scoped. `scope` needs chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
 
 ```json
 "volumes": [{ "source": "sccache", "target": "/cache/sccache", "scope": "project" }]
 ```
 
-A personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one. A personal runner serves its member across projects and is not told which project a job is for, so it cannot choose one; it says so when it starts, and `doctor` warns of each.
+A personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one. A personal runner serves its member across projects and is not told which project a job is for, so it cannot choose one; its first job says so in the service's log, and `doctor` warns of each.
 
 An unscoped volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change. Jobs of one project share its scoped volume the same way.
 

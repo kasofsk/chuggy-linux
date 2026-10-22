@@ -237,7 +237,7 @@ async function status(call) {
   call.host.out(
     answered === undefined ? "service: not running" : "service: running",
   );
-  call.host.out(`limits: ${runnerConfigLimits(setup.config)}`);
+  call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
   for (const placement of answered?.inFlight ?? [])
     call.host.out(
       `${placement.name}  ${statusKind(placement)}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,

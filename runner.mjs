@@ -55,6 +55,7 @@ import {
   runnerClaudeHanded,
   runnerConfig,
   runnerPaths,
+  runnerPoolLimits,
 } from "./runnerConfig.mjs";
 import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 
@@ -431,7 +432,7 @@ export async function runnerParts(setup, host) {
   const client = poolRunnerClient(
     credentials,
     config.engine === "podman" ? heldEndingWithRunner(backend) : backend,
-    { concurrencyMax: config.concurrencyMax, sessionsMax: config.sessionsMax },
+    runnerPoolLimits(config, setup.poolFile),
     { tokens, fetch: host.fetch, runner: host.runner },
   );
   return { runtime: runtimeDir, engine, backend, client };
