@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.17.0/chuggy-linux-0.17.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.18.0/chuggy-linux-0.18.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -63,6 +63,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "engineSocket": false,
   "images": [],
   "volumes": [],
+  "pools": {},
   "autoUpdate": true
 }
 ```
@@ -70,7 +71,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | Key                | Required | Meaning                                                                                                    |
 | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `engine`           | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`   | no       | Jobs each pool's service runs at once. Default 1.                                                          |
+| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions. Default 1. |
 | `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. Default 2.                        |
 | `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
 | `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, below, in place of `claudeTokenFile`.                     |
@@ -81,9 +82,21 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
+| `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below; 0.18.0 or later. Default none. |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
 
-Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; set `sessionsMax` to 0 to run no sessions.
+Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
+
+`pools` sets one pool's service apart from the rest. It is keyed by the pool file's name without `.json`, as `register` wrote it, and each limit it names replaces the file's for that service alone; one leaving that service 0 jobs and 0 sessions is refused. A personal runner that takes jobs beside a project's pool kept for its lead:
+
+```json
+"concurrencyMax": 2,
+"pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
+```
+
+The pool `vteng.chuggy.lead.json` runs one session and no job, and every other pool's service, the personal runner's among them, runs two jobs and two sessions. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
+
+A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing either.
 
 A session is a project's chat or lead, run on this machine's Claude credential, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same credential, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
@@ -112,7 +125,7 @@ With `engineSocket` on, each job, and never a session, is handed this machine's 
 
 Every job on this machine, and its agent, can then run anything the engine can; with rootful docker, that is root on this machine. That includes stopping or inspecting this machine's other jobs and sessions, and reading what every container here holds, its own included. Turn it on only on a machine whose every project you trust that far. The containers a job starts are left to testcontainers' own clean-up (Ryuk), so a killed job can leave them running. testcontainers for Rust needs docker: it does not work on rootless podman.
 
-With `volumes`, every job, and never a session, mounts each one listed at its `target`, read-only where `readonly` is `true`. Each is named as `docker run --mount` names it: a `source` that is an absolute path is a directory here, which must exist; any other is a named volume. A named volume that is missing is made by the first job started through chuggy's runtime, which opens it to uid 1000; one you made is mounted as it is. Nothing removes one. A `target` at, in or above `/opt/chuggy`, `/workspace`, `/var/run/chuggy` or `/var/run/docker.sock` is refused, and so is one at, in or above `/run/chuggy` or `/run/docker.sock`, since images commonly link `/var/run` to `/run`. `doctor` checks each source, and says whether a job can write each directory. A cache npm keeps between jobs:
+With `volumes`, every job, and never a session, mounts each one listed at its `target`, read-only where `readonly` is `true`. Each is named as `docker run --mount` names it: a `source` that is an absolute path is a directory here, which must exist; any other is a named volume. A named volume that is missing is made by the first job started through chuggy's runtime, which opens it to uid 1000; one you made is mounted as it is. Nothing removes one. A `target` at, in or above `/opt/chuggy`, `/workspace`, `/var/run/chuggy` or `/var/run/docker.sock` is refused, and so is one at, in or above `/run/chuggy` or `/run/docker.sock`, since images commonly link `/var/run` to `/run`. `doctor` checks each source and its labels, and says whether a job can write each directory. A cache npm keeps between jobs:
 
 ```json
 "volumes": [{ "source": "npm-cache", "target": "/cache/npm" }]
@@ -120,7 +133,15 @@ With `volumes`, every job, and never a session, mounts each one listed at its `t
 
 and in the image, `ENV npm_config_cache=/cache/npm`.
 
-A volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change.
+A named volume listed with `"scope": "project"` is one per project instead. Each project a pool serves gets its own, named for the source and the project, such as `sccache-3f9c…`, and labelled `io.chuggy.owner-volume.project=<tenant>/<project>`. A job mounts it only where that label names the job's project: one labelled as another project's, or as none, fails the job, and so does an unscoped volume that carries the label. That keeps chuggy from handing one project's volume to another project's job; it hides nothing from whatever reaches the engine, such as a job given it by `engineSocket`. A directory cannot be scoped. `scope` needs chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
+
+```json
+"volumes": [{ "source": "sccache", "target": "/cache/sccache", "scope": "project" }]
+```
+
+A personal runner mounts no volume scoped per project: its jobs run without it, and a project's own pool is how to get one. A personal runner serves its member across projects and is not told which project a job is for, so it cannot choose one; its first job says so in the service's log, and `doctor` warns of each.
+
+An unscoped volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change. Jobs of one project share its scoped volume the same way.
 
 ## The image a job runs in
 
@@ -200,7 +221,7 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
 | `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | The runner's limits, this pool's containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
+| `status`            | This pool's limits, its containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
 | `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |

@@ -477,6 +477,44 @@ test("a runner whose file sets sessionsMax to 0 is given no room for a session",
   assert.equal(runner.client.settings.sessionsMax, 0);
 });
 
+test("a runner whose file sets concurrencyMax to 0 is given no room for a job, and its sessions' room", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { concurrencyMax: 0 },
+  });
+  const { engine } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid: 1000, log: () => undefined, engine },
+  );
+  assert.equal(runner.client.settings.concurrencyMax, 0);
+  assert.equal(runner.client.settings.sessionsMax, 2);
+});
+
+test("a runner's client is given its own pool's limits from pools, and the file's where pools names another", async (t) => {
+  for (const [pools, limits] of [
+    [{ pool: { concurrencyMax: 0, sessionsMax: 1 } }, [0, 1]],
+    [{ pool: { sessionsMax: 0 } }, [3, 0]],
+    [{ other: { concurrencyMax: 0, sessionsMax: 1 } }, [3, 2]],
+  ]) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: { concurrencyMax: 3, pools },
+    });
+    const { engine } = fakeEngine();
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: 1000, log: () => undefined, engine },
+    );
+    assert.deepEqual(
+      [
+        runner.client.settings.concurrencyMax,
+        runner.client.settings.sessionsMax,
+      ],
+      limits,
+      JSON.stringify(pools),
+    );
+  }
+});
+
 test("podman has no endpoint, and is taken only from the first version whose keep-id maps its user onto a job's", async () => {
   const { engine, state } = fakeEngine();
   for (const version of [

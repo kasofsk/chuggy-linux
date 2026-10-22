@@ -17,8 +17,10 @@ import {
 import {
   claudeCredentialFileRefusal,
   runnerConfig,
+  runnerConfigLimits,
   podmanRegistriesConf,
   runnerPaths,
+  runnerPoolLimits,
 } from "./runnerConfig.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
@@ -100,6 +102,7 @@ test("a minimal file is read with every default", async (t) => {
     engineSocket: false,
     images: [],
     volumes: [],
+    pools: {},
     autoUpdate: true,
   });
 });
@@ -138,11 +141,13 @@ test("the volumes a job mounts are read as listed, each one a job may write unle
   const volumes = [
     { source: "cargo", target: "/home/runner/.cargo" },
     { source: "/srv/npm-cache", target: "/cache/npm", readonly: true },
+    { source: "sccache", target: "/cache/sccache", scope: "project" },
   ];
   const file = await written(await scratch(t), { ...minimal, volumes });
   assert.deepEqual((await runnerConfig(file)).volumes, [
     { ...volumes[0], readonly: false },
     volumes[1],
+    { ...volumes[2], readonly: false },
   ]);
 });
 
@@ -202,6 +207,13 @@ test("a volume no mount can make as it is written is refused, naming the volume"
       },
       /volumes\.0 Unrecognized key: "type"/u,
     ],
+    [
+      {
+        ...minimal,
+        volumes: [{ source: "/srv/cache", target: "/cache", scope: "project" }],
+      },
+      /volumes\.0\.source is a directory, and only a named volume can be one per project/u,
+    ],
   ];
   for (const [document, why] of refused)
     await assert.rejects(
@@ -209,6 +221,125 @@ test("a volume no mount can make as it is written is refused, naming the volume"
       why,
       JSON.stringify(document),
     );
+});
+
+test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+  const directory = await scratch(t);
+  for (const sessions of [{}, { sessionsMax: 1 }]) {
+    const config = await runnerConfig(
+      await written(directory, { ...minimal, concurrencyMax: 0, ...sessions }),
+    );
+    assert.equal(config.concurrencyMax, 0);
+    assert.equal(config.sessionsMax, sessions.sessionsMax ?? 2);
+  }
+  const file = await written(directory, {
+    ...minimal,
+    concurrencyMax: 0,
+    sessionsMax: 0,
+  });
+  await assert.rejects(runnerConfig(file), {
+    message: `runner configuration ${file}: concurrencyMax is 0 and so is sessionsMax, so this runner would take no work`,
+  });
+});
+
+test("a pool's entry in pools sets its own service's limits in place of the file's, each it names, and no other pool's", async (t) => {
+  const pools = {
+    "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+    "vteng.chuggy.builds": { sessionsMax: 0 },
+  };
+  const config = await runnerConfig(
+    await written(await scratch(t), { ...minimal, concurrencyMax: 2, pools }),
+  );
+  assert.deepEqual(config.pools, pools);
+  /** @type {[string, {concurrencyMax: number, sessionsMax: number}, string][]} */
+  const cases = [
+    [
+      "vteng.chuggy.lead",
+      { concurrencyMax: 0, sessionsMax: 1 },
+      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.lead sets them",
+    ],
+    [
+      "vteng.chuggy.builds",
+      { concurrencyMax: 2, sessionsMax: 0 },
+      "concurrencyMax 2, sessionsMax 0, as pools.vteng.chuggy.builds sets them",
+    ],
+    [
+      "vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2fmember",
+      { concurrencyMax: 2, sessionsMax: 2 },
+      "concurrencyMax 2, sessionsMax 2",
+    ],
+    [
+      "vteng.chuggy",
+      { concurrencyMax: 2, sessionsMax: 2 },
+      "concurrencyMax 2, sessionsMax 2",
+    ],
+    [
+      "constructor",
+      { concurrencyMax: 2, sessionsMax: 2 },
+      "concurrencyMax 2, sessionsMax 2",
+    ],
+  ];
+  for (const [name, limits, line] of cases) {
+    const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
+    assert.deepEqual(runnerPoolLimits(config, poolFile), limits, name);
+    assert.equal(runnerConfigLimits(config, poolFile), line, name);
+  }
+});
+
+test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
+  const directory = await scratch(t);
+  const refusal =
+    "pools.vteng.chuggy.lead leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
+  /** @type {[Record<string, unknown>, string][]} */
+  const refused = [
+    [
+      {
+        ...minimal,
+        pools: { "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 0 } },
+      },
+      refusal,
+    ],
+    [
+      {
+        ...minimal,
+        sessionsMax: 0,
+        pools: { "vteng.chuggy.lead": { concurrencyMax: 0 } },
+      },
+      refusal,
+    ],
+    [
+      {
+        ...minimal,
+        concurrencyMax: 0,
+        sessionsMax: 1,
+        pools: { "vteng.chuggy.lead": { sessionsMax: 0 } },
+      },
+      refusal,
+    ],
+    [
+      { ...minimal, pools: { "vteng.chuggy.lead": { timeoutSecsMax: 60 } } },
+      'pools.vteng.chuggy.lead Unrecognized key: "timeoutSecsMax"',
+    ],
+    [
+      { ...minimal, pools: { "vteng.chuggy.lead": { concurrencyMax: -1 } } },
+      "pools.vteng.chuggy.lead.concurrencyMax Too small: expected number to be >=0",
+    ],
+  ];
+  for (const [document, why] of refused) {
+    const file = await written(directory, document);
+    await assert.rejects(runnerConfig(file), {
+      message: `runner configuration ${file}: ${why}`,
+    });
+  }
+  const file = await written(directory, {
+    ...minimal,
+    concurrencyMax: 0,
+    sessionsMax: 1,
+    pools: { "vteng.chuggy.builds": { concurrencyMax: 2, sessionsMax: 0 } },
+  });
+  assert.deepEqual((await runnerConfig(file)).pools, {
+    "vteng.chuggy.builds": { concurrencyMax: 2, sessionsMax: 0 },
+  });
 });
 
 test("sessionsMax is a whole number of none or more, read apart from concurrencyMax", async (t) => {
@@ -232,6 +363,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         engineSocket: false,
         images: [],
         volumes: [],
+        pools: {},
         autoUpdate: true,
       },
     );
@@ -294,7 +426,7 @@ test("what the file may not say is refused, naming where", async (t) => {
       { ...minimal, claudeTokenFile: "/a,readonly=false" },
       /claudeTokenFile cannot be named in a bind mount/u,
     ],
-    [{ ...minimal, concurrencyMax: 0 }, /concurrencyMax /u],
+    [{ ...minimal, concurrencyMax: -1 }, /concurrencyMax /u],
     [
       { ...minimal, engineSocket: "true" },
       /engineSocket Invalid input: expected boolean/u,

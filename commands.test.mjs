@@ -726,6 +726,30 @@ test("status names a job what a service from before sessions answers it is placi
   );
 });
 
+test("status names the limits this pool's entry in pools sets its service", async (t) => {
+  const { home, environment, poolFile, paths } = await served(t, {
+    runner: {
+      concurrencyMax: 2,
+      pools: {
+        pool: { concurrencyMax: 0, sessionsMax: 1 },
+        other: { concurrencyMax: 5 },
+      },
+    },
+  });
+  await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+  );
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.deepEqual(status.out.split("\n").slice(0, 2), [
+    "service: running",
+    "limits: concurrencyMax 0, sessionsMax 1, as pools.pool sets them",
+  ]);
+});
+
 test("a run is refused while a legacy service serving its pool runs", async (t) => {
   const { home, environment, poolFile, paths } = await served(t);
   await controlServed(t, controlSocketPath(runtimeDirectory(paths)));
