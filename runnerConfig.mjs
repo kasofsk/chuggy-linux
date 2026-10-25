@@ -7,7 +7,9 @@
  * core's to read.
  *
  * THE FILE NAMES ONE CLAUDE CREDENTIAL, by `claudeCredential` of any kind the
- * core takes or by `claudeTokenFile`, a subscription's.
+ * core takes or by `claudeTokenFile`, a subscription's, and may name another
+ * agent's beside it, which a job requiring that agent is handed in its place:
+ * Codex's by `codexCredential`.
  */
 
 import { open, stat } from "node:fs/promises";
@@ -134,6 +136,10 @@ export const runnerConfigSchema = z
     claudeTokenFile: credentialFileSchema.optional(),
     /** The credential Claude Code runs on, of any kind, in place of `claudeTokenFile`. */
     claudeCredential: credentialSchema.optional(),
+    /** The `auth.json` `codex login` writes, which a job requiring `Agent:Codex` is handed. */
+    codexCredential: z
+      .strictObject({ authFile: credentialFileSchema })
+      .optional(),
     timeoutSecsMax: positiveSchema,
     outputBytesMax: positiveSchema,
     environment: environmentSchema.default({}),
@@ -270,20 +276,49 @@ export function runnerClaudeCredential(config) {
   return { kind: "Subscription", tokenFile: config.claudeTokenFile };
 }
 
+/** The agent `codexCredential` is the credential of, as an `Agent:` capability names it. */
+export const runnerCodexAgent = "Codex";
+
+/** How a refusal names the Codex credential's file, and what its owner does to make one. */
+export const codexCredentialDescribed = {
+  label: "Codex auth file",
+  remedy: "run codex login, which writes it to ~/.codex/auth.json",
+};
+
 /**
- * What each workload is handed of a checked file's Claude credential: the
- * file, and the setting that names its kind, which every run names so that
- * the core withholds what would choose another.
+ * What the backends are handed of a checked file's credentials: the Claude
+ * credential's file and the setting that names its kind, which every run
+ * names so that the core withholds what would choose another, and the file of
+ * each other agent it names a credential for, by that agent's name.
  *
  * @param {RunnerConfig} config
- * @returns {{tokenFile: string, claudeCredential: ClaudeCredentialSetting}}
+ * @returns {{tokenFile: string, claudeCredential: ClaudeCredentialSetting, agentCredentialFiles: Record<string, string>}}
  */
-export function runnerClaudeHanded(config) {
+export function runnerCredentialsHanded(config) {
   const credential = runnerClaudeCredential(config);
   return {
     tokenFile: claudeCredentialFile(credential),
     claudeCredential: claudeCredentialSetting(credential),
+    agentCredentialFiles: {
+      ...(config.codexCredential === undefined
+        ? {}
+        : { [runnerCodexAgent]: config.codexCredential.authFile }),
+    },
   };
+}
+
+/**
+ * How a refusal names the credential file of an agent, and what its owner
+ * does to make one: Claude's by the kind its setting names.
+ *
+ * @param {ClaudeCredentialSetting} claudeCredential
+ * @param {string} agent
+ * @returns {{label: string, remedy: string}}
+ */
+export function runnerCredentialDescribed(claudeCredential, agent) {
+  return agent === runnerCodexAgent
+    ? codexCredentialDescribed
+    : claudeCredentialDescribed(claudeCredential);
 }
 
 /**
@@ -488,27 +523,27 @@ export async function runnerConfig(file) {
 }
 
 /**
- * Why this runner cannot hand its jobs its Claude credential's file, or
- * nothing. The file is its owner's alone and a job reads it as the image's
- * user. Docker runs that user as the same uid on this machine, so only a
- * runner that is that uid can hand the file over; rootless podman maps it onto
- * the runner itself. A job run on this machine itself reads it as this
- * runner. Only the file's metadata is read: the credential reaches the job by
- * mount or by its path, and never this process.
+ * Why this runner cannot hand its jobs a credential's file, or nothing. The
+ * file is its owner's alone and a job reads it as the image's user. Docker
+ * runs that user as the same uid on this machine, so only a runner that is
+ * that uid can hand the file over; rootless podman maps it onto the runner
+ * itself. A job run on this machine itself reads it as this runner. Only the
+ * file's metadata is read: the credential reaches the job by mount or by its
+ * path, and never this process.
  *
- * @param {ClaudeCredentialSetting} setting the kind the file is, which names it
+ * @param {{label: string, remedy: string}} described how the file is named, as `runnerCredentialDescribed` names it
  * @param {string} file
  * @param {"docker" | "podman" | "host"} engine what runs the job that reads it
  * @param {number} runnerUid this process's uid, which must own the file
  * @returns {Promise<string | undefined>}
  */
-export async function claudeCredentialFileRefusal(
-  setting,
+export async function credentialFileRefusal(
+  described,
   file,
   engine,
   runnerUid,
 ) {
-  const { label, remedy } = claudeCredentialDescribed(setting);
+  const { label, remedy } = described;
   if (engine === "docker" && runnerUid !== jobUid)
     return `docker runs a job as uid ${String(jobUid)}, and this runner is uid ${String(runnerUid)}, so no job could read the ${label} ${file}, which only this runner can; use rootless podman ("engine": "podman")`;
   let stats;

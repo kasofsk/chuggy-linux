@@ -1384,7 +1384,11 @@ test("register declares each --capability after this machine's platform, writes 
     JSON.parse(String(requests[0].init.body)).capabilities,
     declared.capabilities,
   );
-  const hosted = answeringFetch(201, registeredFixture);
+  const hostedPool = {
+    ...registeredFixture,
+    capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
+  };
+  const hosted = answeringFetch(201, hostedPool);
   const { status: hostedStatus, err: hostedErr } = await called(
     [...registerArgv, "--host"],
     { home, environment, fetch: hosted.fetch },
@@ -1401,7 +1405,7 @@ test("register declares each --capability after this machine's platform, writes 
     "newtenant.arbbot.shame.json",
   );
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {
-    ...registeredFixture,
+    ...hostedPool,
     host: true,
   });
   for (const [capability, why] of [
@@ -1423,6 +1427,92 @@ test("register declares each --capability after this machine's platform, writes 
     2,
   );
   assert.equal((await called(["run", "--pool", "x", "--host"])).status, 2);
+});
+
+/**
+ * Catches register declaring an agent runner.json names no credential for or
+ * has nowhere to run, leaving one it can run undeclared, or declaring one
+ * twice beside a --capability naming it, which chuggy would refuse.
+ */
+test("register declares the agents runner.json can run, each an images entry declares or all with --host, once beside a --capability naming one", async (t) => {
+  const { home, environment, tokenFile } = await runnerFixture(t);
+  const runner = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy-linux",
+    "runner.json",
+  );
+  const platform = "Platform:Linux:Amd64";
+  for (const [document, argv, declared] of [
+    [
+      { images: [{ image: "x", capabilities: ["Agent:Codex"] }] },
+      ["--capability", "Agent:Codex"],
+      [platform, "Agent:Codex"],
+    ],
+    [
+      {
+        images: [{ image: "x", capabilities: ["Agent:Claude", "Agent:Codex"] }],
+      },
+      [],
+      [platform, "Agent:Claude", "Agent:Codex"],
+    ],
+    [{}, ["--host"], [platform, "Agent:Claude", "Agent:Codex"]],
+    [{}, [], [platform]],
+  ]) {
+    await writeFile(
+      runner,
+      JSON.stringify({
+        claudeTokenFile: tokenFile,
+        codexCredential: { authFile: tokenFile },
+        timeoutSecsMax: 3600,
+        outputBytesMax: 65536,
+        ...document,
+      }),
+      { mode: 0o600 },
+    );
+    const answer = answeringFetch(201, {
+      ...registeredFixture,
+      capabilities: declared,
+    });
+    const { status, err } = await called([...registerArgv, ...argv], {
+      home,
+      environment,
+      fetch: answer.fetch,
+    });
+    assert.equal(status, 0, err);
+    assert.deepEqual(
+      JSON.parse(String(answer.requests[0].init.body)).capabilities,
+      declared,
+    );
+    assert.doesNotMatch(err, /declared no agents/u);
+  }
+});
+
+/**
+ * Catches register refusing, or failing, where runner.json is missing, or
+ * saying nothing of why it declared no agent.
+ */
+test("register with no runner.json declares the platform and each --capability, says in one line that runner.json declared no agents, and goes on", async (t) => {
+  const { home, environment } = await runnerFixture(t, { runner: undefined });
+  const declared = ["Platform:Linux:Amd64", "Tool:Bazel"];
+  const answer = answeringFetch(201, {
+    ...registeredFixture,
+    capabilities: declared,
+  });
+  const { status, out, err } = await called(
+    [...registerArgv, "--capability", "Tool:Bazel"],
+    { home, environment, fetch: answer.fetch },
+  );
+  assert.equal(status, 0, err);
+  assert.deepEqual(
+    JSON.parse(String(answer.requests[0].init.body)).capabilities,
+    declared,
+  );
+  assert.match(out, /^wrote .*newtenant\.arbbot\.shame\.json;/u);
+  const [said] = err.split("\n");
+  assert.match(
+    said,
+    /^runner\.json declared no agents, since it could not be read: ENOENT/u,
+  );
 });
 
 test("a token beginning with a dash is taken as --token=<token>, as usage says, and the space form keeps working for one that does not", async (t) => {

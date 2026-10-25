@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  claudeCredentialDescribed,
   claudeCredentialProviderVariables,
   claudeCredentialVariables,
 } from "@chuggy/worker-core/claudeCredential.mjs";
@@ -15,8 +16,10 @@ import {
 } from "@chuggy/worker-core/job.mjs";
 
 import {
-  claudeCredentialFileRefusal,
+  credentialFileRefusal,
   runnerConfig,
+  runnerCredentialDescribed,
+  runnerCredentialsHanded,
   runnerConfigLimits,
   podmanRegistriesConf,
   runnerPaths,
@@ -615,8 +618,12 @@ test("a Claude credential's file a job cannot be handed is refused, naming the f
   const subscription = { kind: /** @type {const} */ ("Subscription") };
   /** @param {string} path */
   const refusal = async (path, uid = ownUid) =>
-    (await claudeCredentialFileRefusal(subscription, path, "podman", uid)) ??
-    "";
+    (await credentialFileRefusal(
+      claudeCredentialDescribed(subscription),
+      path,
+      "podman",
+      uid,
+    )) ?? "";
   assert.equal(
     await refusal(file),
     `the Claude token file ${file} cannot be found; save \`claude setup-token\`'s output there, alone`,
@@ -625,7 +632,12 @@ test("a Claude credential's file a job cannot be handed is refused, naming the f
   assert.match(await refusal(file), /is empty; save `claude setup-token`/u);
   await writeFile(file, "claude-token-fixture");
   assert.equal(
-    await claudeCredentialFileRefusal(subscription, file, "podman", ownUid),
+    await credentialFileRefusal(
+      claudeCredentialDescribed(subscription),
+      file,
+      "podman",
+      ownUid,
+    ),
     undefined,
   );
   assert.match(
@@ -650,8 +662,8 @@ test("a Claude credential's file a job cannot be handed is refused, naming the f
     ],
   ])
     assert.equal(
-      await claudeCredentialFileRefusal(
-        /** @type {any} */ (setting),
+      await credentialFileRefusal(
+        claudeCredentialDescribed(/** @type {any} */ (setting)),
         missing,
         "podman",
         ownUid,
@@ -664,16 +676,103 @@ test("under docker only a runner that is uid 1000 can hand a job its Claude cred
   const file = join(await scratch(t), "anthropic-api-key");
   const apiKey = { kind: /** @type {const} */ ("ApiKey") };
   assert.equal(
-    await claudeCredentialFileRefusal(apiKey, file, "docker", 1234),
+    await credentialFileRefusal(
+      claudeCredentialDescribed(apiKey),
+      file,
+      "docker",
+      1234,
+    ),
     `docker runs a job as uid 1000, and this runner is uid 1234, so no job could read the Anthropic API key file ${file}, which only this runner can; use rootless podman ("engine": "podman")`,
   );
   assert.match(
-    (await claudeCredentialFileRefusal(apiKey, file, "docker", 1000)) ?? "",
+    (await credentialFileRefusal(
+      claudeCredentialDescribed(apiKey),
+      file,
+      "docker",
+      1000,
+    )) ?? "",
     /cannot be found/u,
   );
   assert.match(
-    (await claudeCredentialFileRefusal(apiKey, file, "host", 1234)) ?? "",
+    (await credentialFileRefusal(
+      claudeCredentialDescribed(apiKey),
+      file,
+      "host",
+      1234,
+    )) ?? "",
     /cannot be found/u,
+  );
+});
+
+/**
+ * Catches a Codex credential's file a bind mount cannot name, or a line
+ * naming more than it, accepted; one named and not handed to the backends as
+ * Codex's; or one handed where the file names none.
+ */
+test("a file may name a Codex credential's auth.json beside the Claude one, handed to the backends as Codex's, and one naming none hands no other agent's", async (t) => {
+  const directory = await scratch(t);
+  const authFile = "/home/op/.codex/auth.json";
+  const read = await runnerConfig(
+    await written(directory, { ...minimal, codexCredential: { authFile } }),
+  );
+  assert.deepEqual(read.codexCredential, { authFile });
+  assert.deepEqual(runnerCredentialsHanded(read), {
+    tokenFile: minimal.claudeTokenFile,
+    claudeCredential: { kind: "Subscription" },
+    agentCredentialFiles: { Codex: authFile },
+  });
+  assert.deepEqual(
+    runnerCredentialsHanded(
+      await runnerConfig(await written(directory, minimal)),
+    ).agentCredentialFiles,
+    {},
+  );
+  for (const [codexCredential, why] of [
+    [
+      { authFile: "auth.json" },
+      /codexCredential\.authFile must be an absolute path/u,
+    ],
+    [
+      { authFile: "/a,readonly=false" },
+      /codexCredential\.authFile cannot be named in a bind mount/u,
+    ],
+    [
+      { authFile, kind: "ChatGPT" },
+      /codexCredential Unrecognized key: "kind"/u,
+    ],
+    [{}, /codexCredential\.authFile Invalid input/u],
+  ])
+    await assert.rejects(
+      runnerConfig(await written(directory, { ...minimal, codexCredential })),
+      why,
+    );
+});
+
+/**
+ * Catches the Codex file's refusal naming it as Claude's, or telling its
+ * owner to save a Claude credential there.
+ */
+test("a Codex credential's file a job cannot be handed is refused as a Claude one's is, naming the Codex auth file and how to make one", async (t) => {
+  const directory = await scratch(t);
+  const file = join(directory, "auth.json");
+  const subscription = { kind: /** @type {const} */ ("Subscription") };
+  const codex = runnerCredentialDescribed(subscription, "Codex");
+  assert.equal(
+    await credentialFileRefusal(codex, file, "podman", ownUid),
+    `the Codex auth file ${file} cannot be found; run codex login, which writes it to ~/.codex/auth.json`,
+  );
+  await writeFile(file, "", { mode: 0o600 });
+  assert.equal(
+    await credentialFileRefusal(codex, file, "podman", ownUid),
+    `the Codex auth file ${file} is empty; run codex login, which writes it to ~/.codex/auth.json`,
+  );
+  assert.match(
+    (await credentialFileRefusal(codex, file, "docker", 1234)) ?? "",
+    /^docker runs a job as uid 1000, and this runner is uid 1234, so no job could read the Codex auth file /u,
+  );
+  assert.deepEqual(
+    runnerCredentialDescribed(subscription, "Claude"),
+    claudeCredentialDescribed(subscription),
   );
 });
 
