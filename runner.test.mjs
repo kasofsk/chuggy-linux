@@ -23,7 +23,7 @@ import {
 } from "@chuggy/worker-core/job.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 
-import { fakeEngine } from "./engine.fixture.mjs";
+import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
 import {
   engineEndpoint,
   engineSocketHanded,
@@ -779,6 +779,45 @@ test("a run removes a job's image it pulled once unused for as long as its file 
     await runner.backend.held();
     await runner.backend.settled();
     assert.deepEqual(removed, kept ? [] : [image], String(imageUnusedSecsMax));
+  }
+});
+
+test("a run holds the floor its file sets in GiB free where the engine stores, taking no job under it, and keeps none at 0", async (t) => {
+  const store = "/home/runner/.local/share/containers/storage";
+  for (const [diskFreeGibMin, gib, taken] of /** @type {const} */ ([
+    [undefined, 19.9, false],
+    [undefined, 20, true],
+    [8, 7.5, false],
+    [0, 0.5, true],
+  ])) {
+    const label = `${String(diskFreeGibMin)} at ${String(gib)}`;
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: diskFreeGibMin === undefined ? {} : { diskFreeGibMin },
+    });
+    const disk = fakeDisk(gib);
+    /** @type {string[]} */
+    const logged = [];
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      {
+        uid: ownUid,
+        log: (line) => logged.push(line),
+        engine: fakeEngine().engine,
+        disk,
+      },
+    );
+    await runner.client.backend.held();
+    await runner.backend.settled();
+    assert.equal(runner.client.backend.jobsTaken?.(), taken, label);
+    if (diskFreeGibMin === 0) assert.deepEqual(disk.measured, [], label);
+    else
+      assert.equal(
+        logged.includes(
+          `this runner's disk has ${String(gib)} GiB free at ${store}, under its floor of ${String(diskFreeGibMin ?? 20)} GiB: it takes no job until it is over`,
+        ),
+        !taken,
+        `${label}: ${logged.join("; ")}`,
+      );
   }
 });
 

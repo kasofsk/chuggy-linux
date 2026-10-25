@@ -46,6 +46,7 @@ import {
   poolIdentityPersonal,
   poolLabelValue,
 } from "@chuggy/worker-core/poolIdentity.mjs";
+import { diskFloorSaid } from "./diskFree.mjs";
 import { serviceUnitText } from "./poolService.mjs";
 import {
   claudeCredentialFileRefusal,
@@ -77,6 +78,7 @@ import {
  * @typedef {import("@chuggy/worker-core/engineArgv.mjs").OwnerVolume} OwnerVolume
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerConfig.mjs").RunnerPaths} RunnerPaths
+ * @typedef {import("./diskFree.mjs").DiskFreePorts} DiskFreePorts
  *
  * @typedef {{check: string, passed: boolean, detail: string, warning?: true}} DoctorFinding a warning passes, and is printed as one
  *
@@ -96,6 +98,7 @@ import {
  * @property {string | undefined} path this process's PATH
  * @property {() => Promise<string | undefined>} servicePath the PATH the service manager starts the runner with, where it can be read
  * @property {(file: string) => Promise<string | undefined>} claudeVersion what a `claude` says its version is
+ * @property {DiskFreePorts} disk what the engine's free disk is measured by
  * @property {DoctorParts} parts
  */
 
@@ -485,13 +488,31 @@ async function ownerVolumesFinding(engine, credentials, config, uid) {
 }
 
 /**
+ * The engine's free disk against the floor the runner's file sets, warned of
+ * where it could not be measured or is under the floor.
+ *
+ * @param {Engine} engine
+ * @param {RunnerConfig} config
+ * @param {DiskFreePorts} disk
+ * @returns {Promise<DoctorFinding>}
+ */
+async function diskFloorFinding(engine, config, disk) {
+  const check = "disk floor";
+  const { detail, warning } = await diskFloorSaid(config, engine, disk);
+  return warning
+    ? { check, passed: true, warning: true, detail }
+    : { check, passed: true, detail };
+}
+
+/**
  * @param {Engine} engine
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
- * @param {number} uid this process's
+ * @param {DoctorInput} input
  * @param {DoctorFinding[]} findings
  */
-async function engineChecks(engine, credentials, config, uid, findings) {
+async function engineChecks(engine, credentials, config, input, findings) {
+  const { uid } = input;
   const reachable = await checked(findings, "container engine", async () => {
     const endpoint = await engineEndpoint(config.engine, engine);
     const listed = await engine.exec(listArgv(poolLabelValue(credentials)));
@@ -514,6 +535,7 @@ async function engineChecks(engine, credentials, config, uid, findings) {
     throw new Error(engineFailureLine(inspected));
   });
   findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
+  findings.push(await diskFloorFinding(engine, config, input.disk));
 }
 
 /**
@@ -822,7 +844,7 @@ export async function doctorFindings(input) {
       input.parts.engine(config),
       credentials,
       config,
-      input.uid,
+      input,
       findings,
     );
   await planeChecks(input, credentials, findings);

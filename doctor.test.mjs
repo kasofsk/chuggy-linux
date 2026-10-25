@@ -12,7 +12,7 @@ import {
   findingLine,
   volumeDirectoryWritable,
 } from "./doctor.mjs";
-import { fakeEngine } from "./engine.fixture.mjs";
+import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
 import { runnerUpdates } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
 import {
@@ -73,7 +73,7 @@ async function doctoredMachine(paths, state, options) {
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, and the install `installedCopy` makes
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -104,6 +104,7 @@ async function doctored(t, options = {}) {
     options.podmanServiceRemote ?? state.podmanServiceRemote;
   state.podmanSocket = options.podmanSocket ?? state.podmanSocket;
   state.contextHost = options.contextHost ?? state.contextHost;
+  state.info = options.info ?? state.info;
   await doctoredMachine(paths, state, options);
   state.volumesUnanswered = options.volumesUnanswered ?? false;
   const registries = join(home, "registries");
@@ -125,6 +126,7 @@ async function doctored(t, options = {}) {
     path: options.path,
     servicePath: async () => options.servicePath,
     claudeVersion: async (file) => options.claudeVersions?.[file],
+    disk: options.disk ?? fakeDisk(100),
     parts: {
       engine: () => engine,
       updates,
@@ -210,6 +212,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["engine socket", true],
       ["job network", true],
       ["volumes", true],
+      ["disk floor", true],
       ["pool token", true],
       ["plane", true],
     ],
@@ -239,11 +242,51 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     "chuggy-jobs is missing, and a run makes it",
   );
   assert.equal(findings[10].detail, "none");
+  assert.equal(
+    findings[11].detail,
+    "100 GiB free at /home/runner/.local/share/containers/storage, over the floor of 20 GiB",
+  );
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
-    ["version", "info", "ps", "network"],
+    ["version", "info", "ps", "network", "info"],
   );
+});
+
+test("doctor warns of a disk under the runner's floor, or one it cannot measure, and passes one over it", async (t) => {
+  /** @param {Awaited<ReturnType<typeof doctored>>} doctor */
+  const floor = (doctor) =>
+    doctor.findings.find((finding) => finding.check === "disk floor");
+  const store = "/home/runner/.local/share/containers/storage";
+  assert.deepEqual(
+    floor(
+      await doctored(t, {
+        runner: { diskFreeGibMin: 50 },
+        disk: fakeDisk(30),
+      }),
+    ),
+    {
+      check: "disk floor",
+      passed: true,
+      warning: true,
+      detail: `30 GiB free at ${store}, under the floor of 50 GiB: the service removes the images it may and takes no job until it is over`,
+    },
+  );
+  const elsewhere = floor(
+    await doctored(t, {
+      info: { host: { hostname: "podman-machine-default" }, store: {} },
+    }),
+  );
+  assert.equal(elsewhere?.warning, true);
+  assert.match(
+    elsewhere?.detail ?? "",
+    /^none held, since the free disk could not be measured: podman answered an info/u,
+  );
+  assert.deepEqual(floor(await doctored(t, { disk: fakeDisk(20) })), {
+    check: "disk floor",
+    passed: true,
+    detail: `20 GiB free at ${store}, over the floor of 20 GiB`,
+  });
 });
 
 test("doctor says the runner updates itself unless its file turns that off", async (t) => {
@@ -362,7 +405,7 @@ test("under docker, doctor names the endpoint its context names, and fails rootl
       detail:
         "docker at unix:///var/run/docker.sock lists 0 of this pool's containers",
     },
-    verbs: ["info", "context", "ps", "network"],
+    verbs: ["info", "context", "ps", "network", "info"],
   });
   const rootless = await engineFinding(["name=rootless", "name=cgroupns"]);
   assert.equal(rootless.finding?.passed, false);
@@ -649,7 +692,7 @@ test("doctor names the socket each job reaches, at the path a job finds it, and 
   });
   assert.deepEqual(
     docker.state.calls.map((call) => call.argv[0]),
-    ["info", "context", "ps", "network"],
+    ["info", "context", "ps", "network", "info"],
   );
   const podman = await engineSocketFound(t, "podman", (path) => ({
     podmanSocket: `unix://${path} true`,

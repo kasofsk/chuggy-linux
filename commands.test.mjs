@@ -17,7 +17,7 @@ import test, { after } from "node:test";
 import { cliMain } from "./commands.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
-import { fakeEngine } from "./engine.fixture.mjs";
+import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
 import {
   answeringFetch,
   registeredFixture,
@@ -42,8 +42,12 @@ import { serviceUnit } from "./systemdUnit.mjs";
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens]
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane]
+ * @property {import("./diskFree.mjs").DiskFreePorts} [disk] the fake engine's own with plenty free unless a suite sets it
  * @property {Readonly<Record<string, Partial<import("./systemd.mjs").SystemdAnswer>>>} [systemd] what a command answers, by its argv joined with spaces, where it does not succeed
  */
+
+/** Where the fake engine's `info` says podman stores what it holds. */
+const podmanStore = "/home/runner/.local/share/containers/storage";
 
 /** A token source whose issuer has revoked the pool, so a pass ends without the network. */
 const deniedTokens = {
@@ -115,6 +119,7 @@ async function called(argv, machine = {}) {
         throw new Error("a suite reaches no network");
       }),
     engine: machine.engine ?? fakeEngine().engine,
+    disk: machine.disk ?? fakeDisk(100),
     tokens: machine.tokens ?? deniedTokens,
     plane: machine.plane ?? unreachedPlane,
     systemd: async (command) => {
@@ -653,6 +658,7 @@ test("status and stop reach this pool's service, and status names each workload'
     [
       "service: running",
       "limits: concurrencyMax 3, sessionsMax 4",
+      `disk floor: 100 GiB free at ${podmanStore}, over the floor of 20 GiB`,
       `${inFlightFixture.name}  session  pulling  i  asg-1`,
       "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
       "chuggy-shame-b  session  running  deadline 2027-01-15T08:00:00.000Z  ses-1",
@@ -721,6 +727,7 @@ test("status names a job what a service from before sessions answers it is placi
     [
       "service: running",
       "limits: concurrencyMax 1, sessionsMax 2",
+      `disk floor: 100 GiB free at ${podmanStore}, over the floor of 20 GiB`,
       `${inFlightFixture.name}  job  pulling  i  asg-1`,
     ].join("\n"),
   );
