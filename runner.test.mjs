@@ -1130,8 +1130,9 @@ test("a job stopped on the plane's word is never ended, though its container out
 
 /**
  * What a run over a fake engine `configure` sets up starts for a job and a
- * session placed beside it: each one's argv, its env file's path left out,
- * and its env file's lines.
+ * session placed beside it: each one's argv, its env file's path and its
+ * deadline's value left out, since the clock sets that, and its env file's
+ * lines.
  *
  * @param {Awaited<ReturnType<typeof runnerSetup>>} setup
  * @param {(state: import("./engine.fixture.mjs").FakeEngineState) => void} configure
@@ -1160,9 +1161,11 @@ async function ranBeside(setup, configure) {
     );
     assert.ok(call !== undefined, assignment);
     return {
-      argv: call.argv.filter(
-        (_, index) => call.argv[index - 1] !== "--env-file",
-      ),
+      argv: call.argv
+        .filter((_, index) => call.argv[index - 1] !== "--env-file")
+        .map((flag) =>
+          flag.startsWith("io.chuggy.deadline=") ? "io.chuggy.deadline" : flag,
+        ),
       envFile: (call.envFile ?? "").split("\n").filter((line) => line !== ""),
     };
   };
