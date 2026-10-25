@@ -65,7 +65,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "volumes": [],
   "pools": {},
   "autoUpdate": true,
-  "imageUnusedSecsMax": 604800
+  "imageUnusedSecsMax": 604800,
+  "diskFreeGibMin": 20
 }
 ```
 
@@ -85,7 +86,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
 | `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below; 0.18.0 or later. Default none. |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
-| `imageUnusedSecsMax` | no     | How long a job's image this runner pulled may go unused before it is removed; 0 keeps them. Default a week, 604800. |
+| `imageUnusedSecsMax` | no     | How long a job's image this runner pulled may go unused before it is removed; 0 keeps them until the disk is under `diskFreeGibMin`. Default a week, 604800. |
+| `diskFreeGibMin`   | no       | The GiB the engine's storage keeps free, below; 0 (0.23.0 or later) keeps no floor. Default 20.            |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
 
@@ -145,6 +147,10 @@ A personal runner mounts a scoped volume from chuggy-linux 0.19.0: chuggy tells 
 
 An unscoped volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change. Jobs of one project share its scoped volume the same way.
 
+**The disk floor** is `diskFreeGibMin`, held each pass against the space free where the engine stores what it holds: the least of the filesystems under docker's root directory, and under `/var/lib/containerd` where docker stores images through containerd, or under podman's graph root and volume path. Under it, the service removes the images it may, at most once a minute, as the hourly removal below does but keeping only the newest of chuggy's runtime and session images and whatever `imageUnusedSecsMax` says of a job's, and takes no job until the disk is over it; sessions and jobs already running go on. Under half of it once that removal is done, it kills one job a pass, never a session: on docker with several running, the one whose container and workspace hold the most, and otherwise the newest. chuggy shows that job's ticket as Disk low, waiting for you to free space on this machine and resume it. The service's log says when the disk goes under the floor and when it is over again. `doctor` and `status` say what is free against the floor.
+
+No floor is held where the space cannot be measured, as where docker names a machine other than this one, which Docker Desktop's VM is; the service's log says so. Nor does the floor see a filesystem mounted below those directories, or a directory `volumes` mounts into a job.
+
 ## The image a job runs in
 
 A project's configuration names the image its jobs run in, by digest or by tag. An image already in this machine's engine is used as it is, so one built here with `docker build -t myproject:dev .` serves under that tag and is never pulled; a missing one is pulled. chuggy's runtime is got the same way, copied into a volume of the job's own and mounted read-only at `/opt/chuggy`, and the job starts through it in place of the image's `ENTRYPOINT` and `CMD`. So the image needs:
@@ -184,7 +190,7 @@ Every job this machine runs, of every pool, then reaches that one server.
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, podman's credential helpers, whether the pool file's unit runs this copy, whether updates are on and this install can take one, the engine, whether jobs are handed its socket, the job network, each volume's source, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, podman's credential helpers, whether the pool file's unit runs this copy, whether updates are on and this install can take one, the engine, whether jobs are handed its socket, the job network, each volume's source, the engine's free disk against the floor, a token from the pool's issuer and one poll of the plane, and changes nothing. The poll is a long one, so the last check can take a while.
 
 ## Run as a service
 
@@ -223,7 +229,7 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
 | `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | This pool's limits, its containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
+| `status`            | This pool's limits, the engine's free disk against the floor, its containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
 | `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
@@ -238,8 +244,8 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 - Runs each job as uid 1000 through chuggy's runtime, mounted read-only, with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the Claude credential's file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
 - Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job that is stopped, or past its deadline, is killed first. A log longer than 10 MiB, the kubelet's own default bound, or than 200 000 lines is saved as its end, opening with a line saying so. A container whose logs cannot be saved is kept and tried again, and after ten minutes removed without them, which the service's log says.
-- Removes images this machine no longer needs, hourly: of each repository chuggy's runtime or sessions came from, every untagged image but the two most recently used, and a job's image this runner pulled itself once it has gone unused for `imageUnusedSecsMax`. No removal is forced, so an image a container uses stays. Nor is an image removed while a placement is about to use it, within ten minutes of its last use, or while it has a tag but the one a job pulled it by; to keep an image, tag it. Every runner here using the same engine keeps one record of what it used, in `~/.local/state/chuggy-linux/images/<engine>.json`. A job's image pulled before the runner kept that record was never recorded as its own, and stays until you remove it.
-- Tells chuggy at once when a job ends without being stopped: its container exited, was killed at its deadline, or never started. chuggy is given the runner's own reason, such as `its container exited with status 1`, never the job's log, and a job that already reported keeps its report. Nothing is sent for a job stopped by chuggy or by `stop`.
+- Removes images this machine no longer needs, hourly: of each repository chuggy's runtime or sessions came from, every untagged image but the two most recently used, and a job's image this runner pulled itself once it has gone unused for `imageUnusedSecsMax`; under the [disk floor](#configure), more. No removal is forced, so an image a container uses stays. Nor is an image removed while a placement is about to use it, within ten minutes of its last use, or while it has a tag but the one a job pulled it by; to keep an image, tag it. Every runner here using the same engine keeps one record of what it used, in `~/.local/state/chuggy-linux/images/<engine>.json`. A job's image pulled before the runner kept that record was never recorded as its own, and stays until you remove it.
+- Tells chuggy at once when a job ends without being stopped: its container exited, was killed at its deadline or under half the disk floor, or never started. chuggy is given the runner's own reason, such as `its container exited with status 1`, never the job's log, and a job that already reported keeps its report. Nothing is sent for a job stopped by chuggy or by `stop`.
 - Labels a session's container a session, and tells chuggy when one ends without being stopped: `Succeeded` where its container exited 0, `Failed` however else it ended. A container with no such label, as every container before sessions has, is a job's.
 
 ## What it does not do

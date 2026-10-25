@@ -105,6 +105,7 @@ test("a minimal file is read with every default", async (t) => {
     pools: {},
     autoUpdate: true,
     imageUnusedSecsMax: 604_800,
+    diskFreeGibMin: 20,
   });
 });
 
@@ -125,6 +126,25 @@ test("a job's image this runner pulled is kept a week unused unless the file say
         await written(directory, { ...minimal, imageUnusedSecsMax }),
       ),
       /imageUnusedSecsMax/u,
+    );
+});
+
+test("the engine's storage keeps 20 GiB free unless the file says otherwise, and 0 keeps no floor", async (t) => {
+  const directory = await scratch(t);
+  const most = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
+  for (const diskFreeGibMin of [0, 50, most])
+    assert.equal(
+      (
+        await runnerConfig(
+          await written(directory, { ...minimal, diskFreeGibMin }),
+        )
+      ).diskFreeGibMin,
+      diskFreeGibMin,
+    );
+  for (const diskFreeGibMin of [-1, 1.5, "20", most + 1])
+    await assert.rejects(
+      runnerConfig(await written(directory, { ...minimal, diskFreeGibMin })),
+      /diskFreeGibMin/u,
     );
 });
 
@@ -387,6 +407,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         pools: {},
         autoUpdate: true,
         imageUnusedSecsMax: 604_800,
+        diskFreeGibMin: 20,
       },
     );
   for (const [sessionsMax, why] of [

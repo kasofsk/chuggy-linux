@@ -59,6 +59,9 @@ const positiveSchema = z.number().int().positive().safe();
 
 const nonnegativeSchema = z.number().int().nonnegative().safe();
 
+/** The most GiB of a floor whose bytes are still a safe integer. */
+const diskFreeGibMax = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
+
 /** A pool's service's own limits, each in place of the file's for that service alone. */
 const poolLimitsSchema = z.strictObject({
   concurrencyMax: nonnegativeSchema.optional(),
@@ -164,6 +167,12 @@ export const runnerConfigSchema = z
      * removed, 0 keeping them.
      */
     imageUnusedSecsMax: nonnegativeSchema.default(imageUnusedSecsMaxDefault),
+    /**
+     * The GiB the engine's storage keeps free: under it the service removes
+     * the images it may and takes no job, and under half of it stops one.
+     * None is kept where it is 0.
+     */
+    diskFreeGibMin: nonnegativeSchema.max(diskFreeGibMax).default(20),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

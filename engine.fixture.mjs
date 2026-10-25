@@ -50,6 +50,30 @@ const failed = (stderr, code = 1) => ({
  */
 const answered = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 
+/** The machine the engine's `info` names, which a suite's disk is measured on. */
+export const fakeEngineMachine = "engine-fixture";
+
+/**
+ * A disk measured on the engine's machine, with this many GiB free under
+ * each path, or `free`'s where it names none, in 4 KiB blocks.
+ *
+ * @param {number} gib
+ * @param {Record<string, number>} [paths]
+ * @returns {import("./diskFree.mjs").DiskFreePorts & {measured: string[]}}
+ */
+export function fakeDisk(gib, paths = {}) {
+  /** @type {string[]} */
+  const measured = [];
+  return {
+    hostname: fakeEngineMachine,
+    measured,
+    statfs: async (path) => {
+      measured.push(path);
+      return { bavail: (paths[path] ?? gib) * 2 ** 18, bsize: 4096 };
+    },
+  };
+}
+
 /** The variable an image sets, which an inspection lists beside the env file's. */
 const imagePath = "PATH=/usr/local/bin:/usr/bin:/bin";
 
@@ -121,6 +145,27 @@ function fakeEngineState() {
     podmanSocket: /** @type {string | undefined} */ (
       "/run/user/1000/podman/podman.sock true"
     ),
+    /**
+     * All `info` says of the engine, or nothing when that `info` fails: the
+     * fields docker 28 names of a daemon storing on overlay2 beside those
+     * podman 5 names of a rootless store, so one answer serves either.
+     *
+     * @type {Record<string, unknown> | undefined}
+     */
+    info: /** @type {Record<string, unknown> | undefined} */ ({
+      DockerRootDir: "/var/lib/docker",
+      Name: fakeEngineMachine,
+      Driver: "overlay2",
+      DriverStatus: [
+        ["Backing Filesystem", "extfs"],
+        ["Supports d_type", "true"],
+      ],
+      host: { hostname: fakeEngineMachine },
+      store: {
+        graphRoot: "/home/runner/.local/share/containers/storage",
+        volumePath: "/home/runner/.local/share/containers/storage/volumes",
+      },
+    }),
     /** What docker's `info` names its security options; rootless adds `name=rootless`. */
     securityOptions: ["name=apparmor", "name=seccomp,profile=builtin"],
     /**
@@ -328,6 +373,10 @@ function answer(state, call) {
     return state.podmanSocket === undefined
       ? failed("Error: cannot connect to Podman")
       : answered(`${state.podmanSocket}\n`);
+  if (verb === "info" && call.argv[2] === "{{json .}}")
+    return state.info === undefined
+      ? failed(unreachable)
+      : answered(`${JSON.stringify(state.info)}\n`);
   if (verb === "info")
     return answered(`${JSON.stringify(state.securityOptions)}\n`);
   if (verb === "context")

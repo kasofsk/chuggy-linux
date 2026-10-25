@@ -21,6 +21,7 @@ import {
 
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
+import { diskFloorSaid, diskFreePorts } from "./diskFree.mjs";
 import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
@@ -79,6 +80,7 @@ import {
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run and doctor reach, when not the one the runner's file names
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] the token source a run and doctor reach, when not the pool's issuer
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane] the plane doctor polls, when not the pool's
+ * @property {import("./diskFree.mjs").DiskFreePorts} [disk] what a run, doctor and status measure the engine's free disk by, when not this machine's own
  * @property {import("./systemd.mjs").Systemd} systemd how `systemctl` and `loginctl` are run
  * @property {string} packageName this copy's package, as its `package.json` names it
  * @property {string} version this copy's, as its `package.json` names it
@@ -147,6 +149,7 @@ async function started(call, run = { places: true }) {
     tokens: call.host.tokens,
     places: run.places,
     runner: { package: call.host.packageName, version: call.host.version },
+    disk: call.host.disk,
   });
   return {
     setup,
@@ -238,6 +241,8 @@ async function status(call) {
     answered === undefined ? "service: not running" : "service: running",
   );
   call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
+  const disk = await diskFloorSaid(setup.config, runner.engine, runner.disk);
+  call.host.out(`disk floor: ${disk.detail}`);
   for (const placement of answered?.inFlight ?? [])
     call.host.out(
       `${placement.name}  ${statusKind(placement)}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
@@ -331,6 +336,7 @@ function doctorFound(host, poolFile) {
     path: host.environment.PATH,
     servicePath: () => servicePath(host, poolFile),
     claudeVersion: claudeVersionAsked,
+    disk: host.disk ?? diskFreePorts,
     parts: {
       engine: (config) => host.engine ?? runnerEngine(config),
       tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),

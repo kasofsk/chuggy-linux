@@ -50,6 +50,7 @@ import {
 import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
+import { diskFloorBytes, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
 import {
   claudeCredentialFileRefusal,
   runnerClaudeHanded,
@@ -82,6 +83,7 @@ import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
  * @typedef {object} Runner
  * @property {string} runtime the pool's runtime directory
  * @property {Engine} engine
+ * @property {import("./diskFree.mjs").DiskFreePorts} disk what the engine's free disk is measured by
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client
  *
@@ -350,7 +352,7 @@ export async function engineSocketHanded(config, engine, endpoint) {
 }
 
 /**
- * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket, what starts a job on this machine itself when not Node's own `spawn`, and the package and version each poll names
+ * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity, disk?: import("./diskFree.mjs").DiskFreePorts}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket, what starts a job on this machine itself when not Node's own `spawn`, the package and version each poll names, and what the engine's free disk is measured by when not this machine's own
  */
 
 /**
@@ -394,6 +396,7 @@ export async function runnerParts(setup, host) {
     memoryMib: Math.floor(totalmem() / (1024 * 1024)),
   };
   const claude = runnerClaudeHanded(config);
+  const disk = host.disk ?? diskFreePorts;
   const container = containerBackend(
     {
       engine: config.engine,
@@ -414,6 +417,7 @@ export async function runnerParts(setup, host) {
       ...(engineSocket === undefined ? {} : { engineSocket }),
       imageRecord: join(paths.images, `${config.engine}.json`),
       imageUnusedSecsMax: config.imageUnusedSecsMax,
+      diskFreeBytesMin: diskFloorBytes(config),
     },
     {
       engine,
@@ -428,6 +432,7 @@ export async function runnerParts(setup, host) {
           config.engine,
           host.uid,
         ),
+      diskFree: () => engineDiskFree(config.engine, engine, disk),
     },
   );
   const backend = runnerHostRouted(setup, container, machine, host);
@@ -437,7 +442,7 @@ export async function runnerParts(setup, host) {
     runnerPoolLimits(config, setup.poolFile),
     { tokens, fetch: host.fetch, runner: host.runner },
   );
-  return { runtime: runtimeDir, engine, backend, client };
+  return { runtime: runtimeDir, engine, disk, backend, client };
 }
 
 /**
