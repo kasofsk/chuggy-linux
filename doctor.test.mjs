@@ -1473,15 +1473,17 @@ test("a Codex credential's file that is no JSON object, or that a job cannot be 
 });
 
 /**
- * Catches a pool whose Codex jobs every one would be refused passing doctor.
+ * Catches a pool whose Codex jobs are handed the Claude credential's file
+ * passing unwarned, or failing doctor, which would stop register starting it.
  */
-test("a pool declaring Agent:Codex fails the Codex credential check where the runner's file names no codexCredential", async (t) => {
+test("a pool declaring Agent:Codex is warned of, and passes, where the runner's file names no codexCredential, its Codex jobs handed the Claude credential's file", async (t) => {
   const { findings } = await doctored(t, { pool: codexPool });
   const finding = findings.find((found) => found.check === "Codex credential");
-  assert.equal(finding?.passed, false);
+  assert.equal(finding?.passed, true);
+  assert.equal(finding?.warning, true);
   assert.match(
     finding?.detail ?? "",
-    /^this pool declares Agent:Codex and \/.*\/runner\.json names no codexCredential, so its Codex jobs are refused; add codexCredential to it$/u,
+    /^this pool declares Agent:Codex and \/.*\/runner\.json names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth\.json$/u,
   );
 });
 

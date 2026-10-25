@@ -309,8 +309,9 @@ async function codexCredentialFinding(input, config, credentials) {
     return credentials?.capabilities.includes(codexCapability) === true
       ? {
           check,
-          passed: false,
-          detail: `this pool declares ${codexCapability} and ${input.paths.config} names no codexCredential, so its Codex jobs are refused; add codexCredential to it`,
+          passed: true,
+          warning: true,
+          detail: `this pool declares ${codexCapability} and ${input.paths.config} names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth.json`,
         }
       : undefined;
   const file = config.codexCredential.authFile;

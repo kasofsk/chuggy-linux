@@ -1736,9 +1736,11 @@ test("a runner whose file names a Codex credential mounts it into a job requirin
 
 /**
  * Catches the runner's check of the Codex file naming it as Claude's, or a
- * Codex job run by a runner whose file names no Codex credential.
+ * Codex job refused, or handed otherwise than before, by a runner whose file
+ * names no Codex credential, which a pool running Codex on its Claude file
+ * relies on.
  */
-test("a runner refuses a job requiring Agent:Codex where its Codex credential's file is not its to hand over, naming that file, or where its file names none", async (t) => {
+test("a runner refuses a job requiring Agent:Codex where its Codex credential's file is not its to hand over, naming that file, and one whose file names none mounts the Claude one into it, as before", async (t) => {
   const claude = await claudeCredentialFixture(t);
   const codex = await claudeCredentialFixture(t);
   const other = await codexPlacing(
@@ -1758,21 +1760,27 @@ test("a runner refuses a job requiring Agent:Codex where its Codex credential's 
     refused.evidence ?? "",
     new RegExp(`^the Codex auth file ${codex} is owned by uid`, "u"),
   );
+  assert.ok(!other.state.calls.some(({ argv }) => argv[0] === "run"));
   const without = await codexPlacing(
     t,
     { claudeTokenFile: claude, images: codexImages },
     ownUid,
   );
-  assert.deepEqual(
-    await without.backend.place(agentRequired("asg-1", "Agent:Codex"), "Job"),
-    {
-      placed: "Refused",
-      evidence:
-        "the assignment requires Agent:Codex, and this runner names no Codex credential; name one in the runner's configuration",
-    },
+  assert.equal(
+    (await without.backend.place(agentRequired("asg-1", "Agent:Codex"), "Job"))
+      .placed,
+    "Placed",
   );
-  for (const { state } of [other, without])
-    assert.ok(!state.calls.some(({ argv }) => argv[0] === "run"));
+  await without.backend.settled();
+  const run = without.state.calls.find(({ argv }) => argv[0] === "run");
+  assert.ok(
+    run?.argv.includes(
+      `type=bind,source=${claude},target=${jobProviderCredentialFile},readonly`,
+    ),
+  );
+  assert.deepEqual(claudeToldOf((run?.envFile ?? "").split("\n")), {
+    kind: "Subscription",
+  });
 });
 
 /**
