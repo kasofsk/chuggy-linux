@@ -34,6 +34,7 @@ import {
   jobUid,
   reservedJobVariables,
 } from "@chuggy/worker-core/job.mjs";
+import { registerDeclaredSchema } from "@chuggy/worker-core/register.mjs";
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
@@ -154,6 +155,12 @@ export const runnerConfigSchema = z
      * owner declares it meets: the first meeting every one the job names.
      */
     images: ownerImagesSchema.default([]),
+    /**
+     * What this machine meets beside its platform and the agents the file
+     * can run, which each pool's service advertises in place of what
+     * `--capability` declared when its pool was registered.
+     */
+    capabilities: registerDeclaredSchema.optional(),
     /**
      * The named volumes and directories of this machine mounted into every
      * job, each field but `scope` named as `--mount` names it on docker and

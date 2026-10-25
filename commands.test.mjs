@@ -41,7 +41,7 @@ import { serviceUnit } from "./systemdUnit.mjs";
  * @property {typeof globalThis.fetch} [fetch]
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens]
- * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]} [plane]
+ * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"] | null} [plane] the one doctor polls, which a suite never reaches unless it sets it, and `null` for the pool's own
  * @property {import("./diskFree.mjs").DiskFreePorts} [disk] the fake engine's own with plenty free unless a suite sets it
  * @property {Readonly<Record<string, Partial<import("./systemd.mjs").SystemdAnswer>>>} [systemd] what a command answers, by its argv joined with spaces, where it does not succeed
  */
@@ -121,7 +121,9 @@ async function called(argv, machine = {}) {
     engine: machine.engine ?? fakeEngine().engine,
     disk: machine.disk ?? fakeDisk(100),
     tokens: machine.tokens ?? deniedTokens,
-    plane: machine.plane ?? unreachedPlane,
+    ...(machine.plane === null
+      ? {}
+      : { plane: machine.plane ?? unreachedPlane }),
     systemd: async (command) => {
       systemd.push([...command]);
       return {
@@ -839,6 +841,64 @@ test("a run names its copy on each poll, and takes the release chuggy names unle
     );
   }
   assert.deepEqual(named, Array(4).fill("chuggy-linux/9.8.7"));
+});
+
+/**
+ * Catches a run that advertises nothing, or what its pool file recorded in
+ * place of what its machine and its file are, and a doctor whose poll
+ * changes what the pool advertises.
+ */
+test("a run advertises its capabilities on each poll, and doctor's poll advertises none", async (t) => {
+  /** @type {(string | null)[]} */
+  const advertised = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => {
+      advertised.push(
+        new globalThis.Headers(init.headers).get("chuggy-capabilities"),
+      );
+      return globalThis.Response.json({
+        assignments: [],
+        sessions: [],
+        stop: [],
+      });
+    },
+  );
+  const { home, environment, poolFile } = await served(t, {
+    pool: {
+      ...fixturePool,
+      capabilities: ["Platform:Linux:Amd64", "container"],
+    },
+    runner: { capabilities: ["gpu"] },
+  });
+  let acquired = 0;
+  const { status } = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+    arch: "arm64",
+    tokens: {
+      acquire: async () =>
+        (acquired += 1) <= 2
+          ? { acquired: "Token", token: "pool-token" }
+          : deniedTokens.acquire(),
+      invalidate: () => undefined,
+    },
+  });
+  assert.equal(status, 3);
+  assert.deepEqual(advertised, Array(2).fill("Platform:Linux:Arm64,gpu"));
+  advertised.length = 0;
+  const doctor = await called(["doctor", "--pool", poolFile], {
+    home,
+    environment,
+    tokens: ready.tokens,
+    plane: null,
+  });
+  assert.match(
+    doctor.out,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Amd64, gpu on each poll: this machine's platform, the agents .*\/runner\.json can run, and its capabilities$/mu,
+  );
+  assert.deepEqual(advertised, [null]);
 });
 
 const registerArgv = [

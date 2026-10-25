@@ -4,7 +4,9 @@
  * until the plane denies the pool or the runner has installed a release of
  * itself, from this package's own release downloads. Where the pool was
  * registered with `--host`, a job that pins no image runs on this machine
- * itself, beside the containers. Every command starts here.
+ * itself, beside the containers. Each poll advertises what the runner finds
+ * of this machine and its file when the run starts. Every command starts
+ * here.
  *
  * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
  * the runner's file names `claudeTokenFile`. The core withholds what would
@@ -48,6 +50,10 @@ import {
   engineFailureLine,
 } from "@chuggy/worker-core/engineErrors.mjs";
 import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  registerAdvertised,
+  registerPlatform,
+} from "@chuggy/worker-core/register.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { diskFloorBytes, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
@@ -176,6 +182,36 @@ export function runnerUpdates(setup, copy, ports) {
       ports,
     ),
   };
+}
+
+/**
+ * The capabilities each poll of a pool's run advertises, found when it
+ * starts: this machine's platform, the agents the runner's file can run, and
+ * what the file's `capabilities` declares or, where it declares none, the
+ * rest of what the pool was registered with. A machine no pool runs on, and
+ * a set past the contract's bound, are refused.
+ *
+ * @param {Pick<RunnerSetup, "credentials" | "config" | "paths">} setup
+ * @param {string} arch as `process.arch` names this machine
+ * @returns {string[]}
+ */
+export function runnerCapabilities(setup, arch) {
+  const { credentials, config, paths } = setup;
+  const found = registerPlatform(arch);
+  if ("refused" in found) throw new Error(found.refused);
+  const advertised = registerAdvertised({
+    platforms: [found.platform],
+    files: runnerCredentialsHanded(config),
+    images: config.images,
+    host: credentials.host === true,
+    declared: config.capabilities,
+    recorded: credentials.capabilities,
+  });
+  if ("refused" in advertised)
+    throw new Error(
+      `runner configuration ${paths.config}: capabilities: ${advertised.refused}`,
+    );
+  return advertised.capabilities;
 }
 
 /**
@@ -353,7 +389,7 @@ export async function engineSocketHanded(config, engine, endpoint) {
 }
 
 /**
- * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity, disk?: import("./diskFree.mjs").DiskFreePorts}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket, what starts a job on this machine itself when not Node's own `spawn`, the package and version each poll names, and what the engine's free disk is measured by when not this machine's own
+ * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity, arch?: string, disk?: import("./diskFree.mjs").DiskFreePorts}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket and advertises nothing, what starts a job on this machine itself when not Node's own `spawn`, the package and version each poll names, this machine as `process.arch` names it when not this one, and what the engine's free disk is measured by when not this machine's own
  */
 
 /**
@@ -384,6 +420,10 @@ export function heldEndingWithRunner(backend) {
  */
 export async function runnerParts(setup, host) {
   const { credentials, config, paths } = setup;
+  const capabilities =
+    host.places === false
+      ? undefined
+      : runnerCapabilities(setup, host.arch ?? process.arch);
   const runtimeDir = poolRuntimeDirectory(paths, credentials);
   const engine = host.engine ?? runnerEngine(config);
   const dockerHost = await engineEndpoint(config.engine, engine);
@@ -441,7 +481,7 @@ export async function runnerParts(setup, host) {
     credentials,
     config.engine === "podman" ? heldEndingWithRunner(backend) : backend,
     runnerPoolLimits(config, setup.poolFile),
-    { tokens, fetch: host.fetch, runner: host.runner },
+    { tokens, fetch: host.fetch, runner: host.runner, capabilities },
   );
   return { runtime: runtimeDir, engine, disk, backend, client };
 }

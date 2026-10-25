@@ -111,9 +111,8 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
                           their personal runner's file, and start its service
                           where it can; it declares this machine's platform,
                           the agents runner.json can run, and each
-                          --capability, which the token must permit, and with
-                          --host runs a job that pins no image on this
-                          machine itself
+                          --capability, and with --host runs a job that pins
+                          no image on this machine itself
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -153,6 +152,7 @@ async function started(call, run = { places: true }) {
     tokens: call.host.tokens,
     places: run.places,
     runner: { package: call.host.packageName, version: call.host.version },
+    arch: call.host.arch,
     disk: call.host.disk,
   });
   return {
@@ -333,6 +333,7 @@ function doctorFound(host, poolFile) {
   return doctorFindings({
     poolFile,
     paths,
+    arch: host.arch,
     uid: host.uid,
     registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
     node: host.node,
