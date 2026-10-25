@@ -64,7 +64,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "images": [],
   "volumes": [],
   "pools": {},
-  "autoUpdate": true
+  "autoUpdate": true,
+  "imageUnusedSecsMax": 604800
 }
 ```
 
@@ -84,6 +85,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
 | `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below; 0.18.0 or later. Default none. |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
+| `imageUnusedSecsMax` | no     | How long a job's image this runner pulled may go unused before it is removed; 0 keeps them. Default a week, 604800. |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
 
@@ -235,7 +237,8 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 - Pulls a missing image from the registry the pool was registered for under the pool's own token, written for that one pull to a directory only you can read and removed after it. A refused token is replaced with a fresh one until the assignment's deadline. An image from any other registry is pulled once, as docker or podman pulls it with your own logins.
 - Runs each job as uid 1000 through chuggy's runtime, mounted read-only, with every capability dropped, no privilege escalation, a process limit, the assignment's CPU and memory, the Claude credential's file mounted read-only, and a workspace volume of its own. The job's credentials reach it through an env file that is deleted once the container starts.
 - Keeps renewing an assignment while its image is still pulling, and finds the containers a previous run started.
-- Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job that is stopped, or past its deadline, is killed first.
+- Saves an ended job's logs to `~/.local/state/chuggy-linux/logs/<container>.log` and removes the container with its workspace. A job that is stopped, or past its deadline, is killed first. A log longer than the kubelet's own default bound, 10 MiB, is saved as its end, opening with a line saying so. A container whose logs cannot be saved is kept and tried again, and after ten minutes removed without them, which the service's log says.
+- Removes images this machine no longer needs, hourly: of each repository chuggy's runtime or sessions came from, every untagged image but the two most recently used, and a job's image this runner pulled itself once it has gone unused for `imageUnusedSecsMax`. No removal is forced, so an image a container uses stays. Nor is an image removed while a placement is about to use it, within ten minutes of its last use, or while it has a tag but the one a job pulled it by; to keep an image, tag it. Every runner here using the same engine keeps one record of what it used, in `~/.local/state/chuggy-linux/images/<engine>.json`. A job's image pulled before the runner kept that record was never recorded as its own, and stays until you remove it.
 - Tells chuggy at once when a job ends without being stopped: its container exited, was killed at its deadline, or never started. chuggy is given the runner's own reason, such as `its container exited with status 1`, never the job's log, and a job that already reported keeps its report. Nothing is sent for a job stopped by chuggy or by `stop`.
 - Labels a session's container a session, and tells chuggy when one ends without being stopped: `Succeeded` where its container exited 0, `Failed` however else it ended. A container with no such label, as every container before sessions has, is a job's.
 
