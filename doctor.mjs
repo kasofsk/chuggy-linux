@@ -334,7 +334,7 @@ async function codexCredentialFinding(input, config, credentials) {
       check,
       passed: true,
       warning: true,
-      detail: `${detail}; no pool file declares ${codexCapability}, so no Codex job reaches this runner; ${why}`,
+      detail: `${detail}; no pool file declares ${codexCapability}, so no job requiring ${codexCapability} reaches this runner; ${why}`,
     };
   }
   if (!host) return { check, passed: true, detail };

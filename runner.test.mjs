@@ -1736,11 +1736,11 @@ test("a runner whose file names a Codex credential mounts it into a job requirin
 
 /**
  * Catches the runner's check of the Codex file naming it as Claude's, or a
- * Codex job refused, or handed otherwise than before, by a runner whose file
+ * Codex job refused, or handed other than the Claude file, by a runner whose file
  * names no Codex credential, which a pool running Codex on its Claude file
  * relies on.
  */
-test("a runner refuses a job requiring Agent:Codex where its Codex credential's file is not its to hand over, naming that file, and one whose file names none mounts the Claude one into it, as before", async (t) => {
+test("a runner refuses a job requiring Agent:Codex where its Codex credential's file is not its to hand over, naming that file, and one whose file names none mounts the Claude one into it", async (t) => {
   const claude = await claudeCredentialFixture(t);
   const codex = await claudeCredentialFixture(t);
   const other = await codexPlacing(

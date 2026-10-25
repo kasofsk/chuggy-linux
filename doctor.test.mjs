@@ -1503,7 +1503,7 @@ test("a Codex credential no pool file declares Agent:Codex for is warned of, wit
     (await doctored(t, options)).findings.find(
       (finding) => finding.check === "Codex credential",
     );
-  const unread = `the Codex auth file ${authFile}, this runner's own; no pool file declares Agent:Codex, so no Codex job reaches this runner`;
+  const unread = `the Codex auth file ${authFile}, this runner's own; no pool file declares Agent:Codex, so no job requiring Agent:Codex reaches this runner`;
   for (const [options, then] of [
     [
       { runner: { codexCredential: { authFile }, images: codexImages } },
