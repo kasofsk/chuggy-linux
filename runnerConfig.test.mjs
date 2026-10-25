@@ -104,7 +104,28 @@ test("a minimal file is read with every default", async (t) => {
     volumes: [],
     pools: {},
     autoUpdate: true,
+    imageUnusedSecsMax: 604_800,
   });
+});
+
+test("a job's image this runner pulled is kept a week unused unless the file says otherwise, and 0 keeps it", async (t) => {
+  const directory = await scratch(t);
+  for (const imageUnusedSecsMax of [0, 86_400])
+    assert.equal(
+      (
+        await runnerConfig(
+          await written(directory, { ...minimal, imageUnusedSecsMax }),
+        )
+      ).imageUnusedSecsMax,
+      imageUnusedSecsMax,
+    );
+  for (const imageUnusedSecsMax of [-1, 1.5, "604800"])
+    await assert.rejects(
+      runnerConfig(
+        await written(directory, { ...minimal, imageUnusedSecsMax }),
+      ),
+      /imageUnusedSecsMax/u,
+    );
 });
 
 test("the runner updates itself unless its file turns that off", async (t) => {
@@ -365,6 +386,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         volumes: [],
         pools: {},
         autoUpdate: true,
+        imageUnusedSecsMax: 604_800,
       },
     );
   for (const [sessionsMax, why] of [
@@ -541,6 +563,7 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
     signIns: "/home/op/.config/chuggy/sign-ins",
     logs: "/home/op/.local/state/chuggy-linux/logs",
     jobs: "/home/op/.local/state/chuggy-linux/jobs",
+    images: "/home/op/.local/state/chuggy-linux/images",
     runtime: undefined,
   });
   assert.deepEqual(
@@ -559,6 +582,7 @@ test("the runner's paths follow the XDG base directories, ignoring a relative on
       signIns: "/etc/op/chuggy/sign-ins",
       logs: "/home/op/.local/state/chuggy-linux/logs",
       jobs: "/home/op/.local/state/chuggy-linux/jobs",
+      images: "/home/op/.local/state/chuggy-linux/images",
       runtime: "/run/user/1000/chuggy-linux",
     },
   );

@@ -412,6 +412,8 @@ export async function runnerParts(setup, host) {
       images: config.images,
       volumes: config.volumes,
       ...(engineSocket === undefined ? {} : { engineSocket }),
+      imageRecord: join(paths.images, `${config.engine}.json`),
+      imageUnusedSecsMax: config.imageUnusedSecsMax,
     },
     {
       engine,

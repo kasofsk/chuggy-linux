@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   stat,
   writeFile,
@@ -700,10 +701,86 @@ test(
     assert.equal(other.authFile, undefined);
     assert.deepEqual(
       state.calls.map((call) => call.argv[0]),
-      ["info", "context", "image", "pull", "run", "image", "pull", "run"],
+      [
+        ...["info", "context"],
+        ...["image", "pull", "image", "run"],
+        ...["image", "pull", "image", "run"],
+      ],
     );
+    const record = JSON.parse(
+      await readFile(
+        join(runnerPaths(environment, home).images, "docker.json"),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(Object.keys(record.images), images);
   },
 );
+
+test("a run removes a job's image it pulled once unused for as long as its file says", async (t) => {
+  const image = `ghcr.io/someone/tool@sha256:${"b".repeat(64)}`;
+  for (const [imageUnusedSecsMax, kept] of [
+    [undefined, true],
+    [86_399, false],
+  ]) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: imageUnusedSecsMax === undefined ? {} : { imageUnusedSecsMax },
+    });
+    const file = join(runnerPaths(environment, home).images, "podman.json");
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        createdMs: 0,
+        repositories: {},
+        images: {
+          [image]: {
+            kinds: ["Job"],
+            usedMs: Date.now() - 86_400_000,
+            pulledId: "sha256:1",
+          },
+        },
+        holds: {},
+      }),
+    );
+    const { engine } = fakeEngine();
+    /** @type {string[]} */
+    const removed = [];
+    const answered = (stdout = "") => ({ code: 0, stdout, stderr: "" });
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      {
+        uid: ownUid,
+        log: () => undefined,
+        engine: {
+          ...engine,
+          exec: async (argv, call) => {
+            const [verb, sub, ...rest] = argv;
+            if (
+              verb !== "image" ||
+              (sub === "inspect" && rest[0] === "--format")
+            )
+              return engine.exec(argv, call);
+            if (sub === "ls") return answered("sha256:1\n");
+            if (sub === "rm") {
+              removed.push(rest[0]);
+              return answered(`Untagged: ${rest[0]}\nDeleted: sha256:1\n`);
+            }
+            return answered(
+              JSON.stringify([
+                { Id: "sha256:1", RepoTags: [], RepoDigests: [image] },
+              ]),
+            );
+          },
+        },
+      },
+    );
+    await runner.backend.held();
+    await runner.backend.settled();
+    assert.deepEqual(removed, kept ? [] : [image], String(imageUnusedSecsMax));
+  }
+});
 
 test("docker is refused when it cannot be asked, or its context names no local socket", async () => {
   const { engine, state } = fakeEngine();
@@ -1053,8 +1130,9 @@ test("a job stopped on the plane's word is never ended, though its container out
 
 /**
  * What a run over a fake engine `configure` sets up starts for a job and a
- * session placed beside it: each one's argv, its env file's path left out,
- * and its env file's lines.
+ * session placed beside it: each one's argv, its env file's path and its
+ * deadline's value left out, since the clock sets that, and its env file's
+ * lines.
  *
  * @param {Awaited<ReturnType<typeof runnerSetup>>} setup
  * @param {(state: import("./engine.fixture.mjs").FakeEngineState) => void} configure
@@ -1083,9 +1161,11 @@ async function ranBeside(setup, configure) {
     );
     assert.ok(call !== undefined, assignment);
     return {
-      argv: call.argv.filter(
-        (_, index) => call.argv[index - 1] !== "--env-file",
-      ),
+      argv: call.argv
+        .filter((_, index) => call.argv[index - 1] !== "--env-file")
+        .map((flag) =>
+          flag.startsWith("io.chuggy.deadline=") ? "io.chuggy.deadline" : flag,
+        ),
       envFile: (call.envFile ?? "").split("\n").filter((line) => line !== ""),
     };
   };

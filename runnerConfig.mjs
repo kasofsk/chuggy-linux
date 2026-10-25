@@ -26,6 +26,7 @@ import {
   ownerVolumesSchema,
 } from "@chuggy/worker-core/containerBackend.mjs";
 import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
+import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
 import {
   jobEngineSocketEnvironment,
   jobUid,
@@ -44,6 +45,7 @@ import {
  * @property {string} signIns where `mcp` keeps each site's sign-in
  * @property {string} logs where an ended job's logs are saved
  * @property {string} jobs where a job run on this machine itself has its directory
+ * @property {string} images where the record of this machine's images is kept, one file per engine
  * @property {string | undefined} runtime where each pool's pull credentials, env files and control socket live; absent without XDG_RUNTIME_DIR
  */
 
@@ -157,6 +159,11 @@ export const runnerConfigSchema = z
     pools: z.record(z.string(), poolLimitsSchema).default({}),
     /** Whether the service installs the release of itself chuggy names. */
     autoUpdate: z.boolean().default(true),
+    /**
+     * How long a job's image this runner pulled may go unused before it is
+     * removed, 0 keeping them.
+     */
+    imageUnusedSecsMax: nonnegativeSchema.default(imageUnusedSecsMaxDefault),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {
@@ -370,6 +377,7 @@ export function runnerPaths(environment, home) {
     signIns: join(configHome, "chuggy", "sign-ins"),
     logs: join(stateHome, "chuggy-linux", "logs"),
     jobs: join(stateHome, "chuggy-linux", "jobs"),
+    images: join(stateHome, "chuggy-linux", "images"),
     runtime:
       runtimeHome === undefined ? undefined : join(runtimeHome, "chuggy-linux"),
   };
