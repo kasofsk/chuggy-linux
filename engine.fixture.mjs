@@ -54,8 +54,8 @@ const answered = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 export const fakeEngineMachine = "engine-fixture";
 
 /**
- * A disk measured on the engine's machine, with this many GiB free under
- * each path, or `free`'s where it names none, in 4 KiB blocks.
+ * A disk on the engine's machine, in 4 KiB blocks, with `gib` GiB free under
+ * every path but those `paths` sets, recording each path it measures.
  *
  * @param {number} gib
  * @param {Record<string, number>} [paths]

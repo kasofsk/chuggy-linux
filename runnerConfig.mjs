@@ -164,7 +164,7 @@ export const runnerConfigSchema = z
     autoUpdate: z.boolean().default(true),
     /**
      * How long a job's image this runner pulled may go unused before it is
-     * removed, 0 keeping them.
+     * removed, 0 keeping them until the disk is under `diskFreeGibMin`.
      */
     imageUnusedSecsMax: nonnegativeSchema.default(imageUnusedSecsMaxDefault),
     /**
