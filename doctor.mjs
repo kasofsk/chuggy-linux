@@ -2,8 +2,9 @@
  * What `doctor` checks, in the order a run depends on them, each answered as
  * passed or not with what was found, and before the engine whether the pool
  * file's unit runs this copy. It changes nothing: a missing network is
- * reported for a run to make, and its one poll names nothing held and wants
- * nothing, which the plane answers without granting or releasing a lease.
+ * reported for a run to make, and its one poll names nothing held, wants
+ * nothing and advertises nothing, which the plane answers without granting
+ * or releasing a lease or changing what the pool advertised.
  */
 
 import { execFile } from "node:child_process";
@@ -65,6 +66,7 @@ import {
 import {
   engineEndpoint,
   engineSocketHanded,
+  runnerCapabilities,
   runnerReleasePrefix,
   runtimeDirectory,
 } from "./runner.mjs";
@@ -98,6 +100,7 @@ import {
  * @typedef {object} DoctorInput
  * @property {string} poolFile
  * @property {RunnerPaths} paths
+ * @property {string} arch this machine, as `process.arch` names it
  * @property {number} uid this process's
  * @property {readonly string[]} registriesConf podman's registries.conf files and drop-in directories
  * @property {string} node the Node binary running this
@@ -292,8 +295,8 @@ const codexCapability = jobAgentCapability(runnerCodexAgent);
 /**
  * The Codex credential the runner's file names, its file held to the rule a
  * run holds it to and then read as a JSON object, as only doctor reads it,
- * and the pool files declaring `Agent:Codex`, which is what brings a job its
- * file; or nothing where the file names none and this pool declares no
+ * and the pools advertising `Agent:Codex`, which is what brings a job its
+ * file; or nothing where the file names none and this pool advertises no
  * Codex. It never names what the file holds or what a parser said of it, and
  * on a pool registered with `--host` names the `codex` a job on this machine
  * itself runs.
@@ -301,17 +304,18 @@ const codexCapability = jobAgentCapability(runnerCodexAgent);
  * @param {DoctorInput} input
  * @param {RunnerConfig} config
  * @param {PoolCredentials | undefined} credentials this pool's
+ * @param {readonly string[]} advertised what this pool's run advertises
  * @returns {Promise<DoctorFinding | undefined>}
  */
-async function codexCredentialFinding(input, config, credentials) {
+async function codexCredentialFinding(input, config, credentials, advertised) {
   const check = "Codex credential";
   if (config.codexCredential === undefined)
-    return credentials?.capabilities.includes(codexCapability) === true
+    return advertised.includes(codexCapability)
       ? {
           check,
           passed: true,
           warning: true,
-          detail: `this pool declares ${codexCapability} and ${input.paths.config} names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth.json`,
+          detail: `this pool advertises ${codexCapability} and ${input.paths.config} names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth.json`,
         }
       : undefined;
   const file = config.codexCredential.authFile;
@@ -321,23 +325,14 @@ async function codexCredentialFinding(input, config, credentials) {
     (await codexAuthRefusal(file, described));
   if (refusal !== undefined) return { check, passed: false, detail: refusal };
   const detail = `the ${described.label} ${file}, this runner's own`;
-  const host = credentials?.host === true;
-  if (!(await codexDeclared(input, credentials))) {
-    const why =
-      host ||
-      config.images.some((image) =>
-        image.capabilities.includes(codexCapability),
-      )
-        ? "register again, which declares it"
-        : `registering again would not declare it, since no images entry declares ${codexCapability} and this pool was not registered with --host`;
+  if (!(await codexAdvertised(input, config, advertised)))
     return {
       check,
       passed: true,
       warning: true,
-      detail: `${detail}; no pool file declares ${codexCapability}, so no job requiring ${codexCapability} reaches this runner; ${why}`,
+      detail: `${detail}; no pool here advertises ${codexCapability}, since no images entry declares it and no pool here was registered with --host, so no job requiring ${codexCapability} reaches this runner`,
     };
-  }
-  if (!host) return { check, passed: true, detail };
+  if (credentials?.host !== true) return { check, passed: true, detail };
   return hostAgentFinding(
     check,
     detail,
@@ -375,19 +370,27 @@ async function codexAuthRefusal(file, described) {
 }
 
 /**
- * Whether this pool's file or another in the pools directory declares
- * `Agent:Codex`; a file that cannot be read declares nothing.
+ * Whether this pool's run or that of another pool file in the pools
+ * directory advertises `Agent:Codex`; a file that cannot be read, or whose
+ * run would be refused, advertises nothing.
  *
  * @param {DoctorInput} input
- * @param {PoolCredentials | undefined} credentials this pool's
+ * @param {RunnerConfig} config
+ * @param {readonly string[]} advertised what this pool's run advertises
  */
-async function codexDeclared(input, credentials) {
-  if (credentials?.capabilities.includes(codexCapability) === true) return true;
+async function codexAdvertised(input, config, advertised) {
+  if (advertised.includes(codexCapability)) return true;
   for (const name of await readdir(input.paths.pools).catch(() => [])) {
-    const other = await poolCredentials(join(input.paths.pools, name)).catch(
-      () => undefined,
-    );
-    if (other?.capabilities.includes(codexCapability) === true) return true;
+    try {
+      const credentials = await poolCredentials(join(input.paths.pools, name));
+      const other = runnerCapabilities(
+        { credentials, config, paths: input.paths },
+        input.arch,
+      );
+      if (other.includes(codexCapability)) return true;
+    } catch {
+      continue;
+    }
   }
   return false;
 }
@@ -667,6 +670,44 @@ async function engineChecks(engine, credentials, config, input, findings) {
   });
   findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
   findings.push(await diskFloorFinding(engine, config, input.disk));
+}
+
+/**
+ * What this pool's run advertises on each poll, as a run finds it when it
+ * starts, and where what is neither the platform nor an agent comes from;
+ * or nothing, with why a run would be refused, where it cannot be found.
+ *
+ * @param {DoctorInput} input
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @returns {{finding: DoctorFinding, advertised: string[]}}
+ */
+function capabilitiesFound(input, credentials, config) {
+  const check = "capabilities";
+  let advertised;
+  try {
+    advertised = runnerCapabilities(
+      { credentials, config, paths: input.paths },
+      input.arch,
+    );
+  } catch (failure) {
+    return {
+      finding: { check, passed: false, detail: failureMessage(failure) },
+      advertised: [],
+    };
+  }
+  const rest =
+    config.capabilities === undefined
+      ? "the rest of what the pool was registered with"
+      : "its capabilities";
+  return {
+    finding: {
+      check,
+      passed: true,
+      detail: `a run advertises ${advertised.join(", ")} on each poll: this machine's platform, the agents ${input.paths.config} can run, and ${rest}`,
+    },
+    advertised,
+  };
 }
 
 /**
@@ -955,11 +996,20 @@ export async function doctorFindings(input) {
     true,
     runtimeDirectory(input.paths),
   ]);
+  const capabilities =
+    credentials === undefined || config === undefined
+      ? undefined
+      : capabilitiesFound(input, credentials, config);
   if (config !== undefined) {
     findings.push(
       await claudeCredentialFinding(input, config, credentials?.host === true),
     );
-    const codex = await codexCredentialFinding(input, config, credentials);
+    const codex = await codexCredentialFinding(
+      input,
+      config,
+      credentials,
+      capabilities?.advertised ?? [],
+    );
     if (codex !== undefined) findings.push(codex);
   }
   if (credentials?.host === true && config !== undefined)
@@ -981,6 +1031,7 @@ export async function doctorFindings(input) {
       input,
       findings,
     );
+  if (capabilities !== undefined) findings.push(capabilities.finding);
   await planeChecks(input, credentials, findings);
   return findings;
 }

@@ -170,6 +170,31 @@ test("the runner updates itself unless its file turns that off", async (t) => {
   }
 });
 
+test("a file may declare what its machine meets, read as written, and a platform, a token no requirement can name, or one named twice is refused, naming where", async (t) => {
+  const directory = await scratch(t);
+  const file = await written(directory, {
+    ...minimal,
+    capabilities: ["gpu", "Agent:Codex"],
+  });
+  assert.deepEqual((await runnerConfig(file)).capabilities, [
+    "gpu",
+    "Agent:Codex",
+  ]);
+  for (const [capabilities, why] of [
+    [
+      ["gpu", "Platform:Linux:Arm64"],
+      /capabilities\.1 is a platform, which the runner finds of this machine/u,
+    ],
+    [["gpu", "gpu"], /capabilities\.1 is named by an earlier entry/u],
+    [["no spaces"], /capabilities\.0 /u],
+  ])
+    await assert.rejects(
+      runnerConfig(await written(directory, { ...minimal, capabilities })),
+      why,
+      JSON.stringify(capabilities),
+    );
+});
+
 test("a job that pins no image is run in an image its owner lists", async (t) => {
   const images = [
     {

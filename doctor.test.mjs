@@ -23,8 +23,12 @@ import {
 } from "./runner.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
 
-/** The copy doctor is run as, and the Node it runs under. */
-const copy = { node: "/opt/node/bin/node", cli: "/opt/chuggy-linux/cli.mjs" };
+/** The copy doctor is run as, the Node it runs under, and the machine. */
+const copy = {
+  node: "/opt/node/bin/node",
+  cli: "/opt/chuggy-linux/cli.mjs",
+  arch: "x64",
+};
 
 /**
  * A copy at 9.8.7 installed where npm installs one globally under a prefix in
@@ -217,6 +221,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["job network", true],
       ["volumes", true],
       ["disk floor", true],
+      ["capabilities", true],
       ["pool token", true],
       ["plane", true],
     ],
@@ -254,6 +259,49 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
     ["version", "info", "ps", "network", "info"],
+  );
+});
+
+/**
+ * Catches doctor passing a runner whose run would be refused, which register
+ * would then start, or naming a source of the set its run does not use.
+ */
+test("doctor names what a run advertises and where it comes from, and fails where a run would be refused", async (t) => {
+  /** @param {Parameters<typeof doctored>[1]} options */
+  const found = async (options) =>
+    (await doctored(t, options)).findings.find(
+      (finding) => finding.check === "capabilities",
+    );
+  const agents = String.raw`this machine's platform, the agents \/.*\/runner\.json can run`;
+  for (const [runner, said] of [
+    [
+      {},
+      new RegExp(
+        `^a run advertises Platform:Linux:Amd64, container on each poll: ${agents}, and the rest of what the pool was registered with$`,
+        "u",
+      ),
+    ],
+    [
+      { capabilities: ["gpu"] },
+      new RegExp(
+        `^a run advertises Platform:Linux:Amd64, gpu on each poll: ${agents}, and its capabilities$`,
+        "u",
+      ),
+    ],
+  ]) {
+    const finding = await found({ runner });
+    assert.equal(finding?.passed, true);
+    assert.match(finding?.detail ?? "", /** @type {RegExp} */ (said));
+  }
+  const refused = await found({
+    runner: {
+      capabilities: Array.from({ length: 64 }, (_, at) => `c${String(at)}`),
+    },
+  });
+  assert.equal(refused?.passed, false);
+  assert.match(
+    refused?.detail ?? "",
+    /^runner configuration \/.*\/runner\.json: capabilities: this runner would advertise 65 capabilities, /u,
   );
 });
 
@@ -1379,11 +1427,16 @@ const codexRemedy = "run codex login, which writes it to ~/.codex/auth.json";
 /** What the Codex fixture file holds that is secret, which no finding may print. */
 const codexSecret = "codex-refresh-token-fixture";
 
-/** A pool declaring `Agent:Codex`. */
+/** A pool registered declaring `Agent:Codex`. */
 const codexPool = {
   ...fixturePool,
   capabilities: ["container", "Agent:Codex"],
 };
+
+/** An image its owner lists as running Codex. */
+const codexImages = [
+  { image: "registry.example/codex", capabilities: ["Agent:Codex"] },
+];
 
 /**
  * Catches the Codex file's check printing what it holds, or appearing on a
@@ -1396,7 +1449,7 @@ test("the Codex credential check names its file and never what it holds, and is 
   const authFile = join(directory, "auth.json");
   const { findings } = await doctored(t, {
     pool: codexPool,
-    runner: { codexCredential: { authFile } },
+    runner: { codexCredential: { authFile }, images: codexImages },
   });
   assert.deepEqual(
     findings.find((found) => found.check === "Codex credential"),
@@ -1474,70 +1527,76 @@ test("a Codex credential's file that is no JSON object, or that a job cannot be 
 
 /**
  * Catches a pool whose Codex jobs are handed the Claude credential's file
- * passing unwarned, or failing doctor, which would stop register starting it.
+ * passing unwarned, or failing doctor, which would stop register starting
+ * it, and one warned of that advertises no Codex.
  */
-test("a pool declaring Agent:Codex is warned of, and passes, where the runner's file names no codexCredential, its Codex jobs handed the Claude credential's file", async (t) => {
-  const { findings } = await doctored(t, { pool: codexPool });
-  const finding = findings.find((found) => found.check === "Codex credential");
-  assert.equal(finding?.passed, true);
-  assert.equal(finding?.warning, true);
-  assert.match(
-    finding?.detail ?? "",
-    /^this pool declares Agent:Codex and \/.*\/runner\.json names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth\.json$/u,
+test("a pool advertising Agent:Codex is warned of, and passes, where the runner's file names no codexCredential, its Codex jobs handed the Claude credential's file", async (t) => {
+  for (const runner of [
+    { images: codexImages },
+    { capabilities: ["Agent:Codex"] },
+  ]) {
+    const { findings } = await doctored(t, { pool: codexPool, runner });
+    const finding = findings.find(
+      (found) => found.check === "Codex credential",
+    );
+    assert.equal(finding?.passed, true, JSON.stringify(runner));
+    assert.equal(finding?.warning, true);
+    assert.match(
+      finding?.detail ?? "",
+      /^this pool advertises Agent:Codex and \/.*\/runner\.json names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth\.json$/u,
+    );
+  }
+  const unrun = await doctored(t, { pool: codexPool });
+  assert.equal(
+    unrun.findings.some((found) => found.check === "Codex credential"),
+    false,
   );
 });
 
 /**
- * Catches a Codex credential no pool brings a job to passing unwarned, the
- * remedy offered where registering again would not declare it, or a warning
- * where another pool file here declares it.
+ * Catches a Codex credential no pool here brings a job to passing unwarned,
+ * or warned of where this pool or another here advertises Agent:Codex.
  */
-test("a Codex credential no pool file declares Agent:Codex for is warned of, with what registering again would do, and passes where any pool file here declares it", async (t) => {
+test("a Codex credential no pool here advertises Agent:Codex for is warned of, and passes where an image, or another pool's host, runs Codex", async (t) => {
   const directory = await filesWritten(t, { "auth.json": "{}" });
   const authFile = join(directory, "auth.json");
-  const codexImages = [
-    { image: "registry.example/codex", capabilities: ["Agent:Codex"] },
-  ];
   /** @param {Parameters<typeof doctored>[1]} options */
   const found = async (options) =>
     (await doctored(t, options)).findings.find(
       (finding) => finding.check === "Codex credential",
     );
-  const unread = `the Codex auth file ${authFile}, this runner's own; no pool file declares Agent:Codex, so no job requiring Agent:Codex reaches this runner`;
-  for (const [options, then] of [
-    [
-      { runner: { codexCredential: { authFile }, images: codexImages } },
-      "register again, which declares it",
-    ],
-    [
-      {
-        pool: { ...fixturePool, host: true },
-        runner: { codexCredential: { authFile } },
+  const own = `the Codex auth file ${authFile}, this runner's own`;
+  for (const options of [
+    { runner: { codexCredential: { authFile }, images: codexImages } },
+    {
+      runner: { codexCredential: { authFile } },
+      registered: {
+        "vteng.chuggy.other.json": {
+          ...fixturePool,
+          pool: "other",
+          host: true,
+        },
       },
-      "register again, which declares it",
-    ],
-    [
-      { runner: { codexCredential: { authFile } } },
-      "registering again would not declare it, since no images entry declares Agent:Codex and this pool was not registered with --host",
-    ],
+    },
+  ])
+    assert.deepEqual(await found(options), {
+      check: "Codex credential",
+      passed: true,
+      detail: own,
+    });
+  for (const options of [
+    { runner: { codexCredential: { authFile } } },
+    {
+      runner: { codexCredential: { authFile } },
+      registered: { "vteng.chuggy.other.json": codexPool },
+    },
   ])
     assert.deepEqual(await found(options), {
       check: "Codex credential",
       passed: true,
       warning: true,
-      detail: `${unread}; ${then}`,
+      detail: `${own}; no pool here advertises Agent:Codex, since no images entry declares it and no pool here was registered with --host, so no job requiring Agent:Codex reaches this runner`,
     });
-  assert.deepEqual(
-    await found({
-      runner: { codexCredential: { authFile } },
-      registered: { "vteng.chuggy.other.json": codexPool },
-    }),
-    {
-      check: "Codex credential",
-      passed: true,
-      detail: `the Codex auth file ${authFile}, this runner's own`,
-    },
-  );
 });
 
 /**

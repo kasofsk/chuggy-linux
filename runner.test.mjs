@@ -33,6 +33,7 @@ import {
   runnerDirectories,
   runnerLeftoversRemoved,
   heldEndingWithRunner,
+  runnerCapabilities,
   runnerLoop,
   runnerParts,
   runnerReleasePrefix,
@@ -335,6 +336,113 @@ test("a pool's scratch left by a killed run is removed at another pool's start n
   await runnerLeftoversRemoved(own);
   assert.deepEqual(await readdir(own), []);
   assert.deepEqual(await readdir(other), ["pull-1-a"]);
+});
+
+/**
+ * Catches a run advertising a platform its pool file names in place of this
+ * machine's, an agent it has no image or host to run, a capability twice, or
+ * what the pool was registered with beside what its own file declares.
+ */
+test("a run advertises this machine's platform, the agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
+  /**
+   * @param {Parameters<typeof runnerFixture>[1]} documents
+   * @param {string} [arch]
+   */
+  const advertised = async (documents, arch = "x64") => {
+    const { home, environment, poolFile } = await runnerFixture(t, documents);
+    return runnerCapabilities(
+      await runnerSetup(poolFile, environment, home),
+      arch,
+    );
+  };
+  const registered = {
+    ...fixturePool,
+    capabilities: [
+      "Platform:Linux:Amd64",
+      "container",
+      "container",
+      "Agent:Claude",
+      "Agent:Codex",
+    ],
+  };
+  const claudeImages = [
+    { image: "registry.example/claude", capabilities: ["Agent:Claude"] },
+  ];
+  for (const [documents, arch, capabilities] of [
+    [{}, "x64", ["Platform:Linux:Amd64", "container"]],
+    [
+      { pool: registered, runner: { images: claudeImages } },
+      "arm64",
+      ["Platform:Linux:Arm64", "container", "Agent:Claude"],
+    ],
+    [
+      { pool: { ...registered, host: true } },
+      "x64",
+      ["Platform:Linux:Amd64", "container", "Agent:Claude", "Agent:Codex"],
+    ],
+    [
+      { pool: registered, runner: { images: claudeImages, capabilities: [] } },
+      "x64",
+      ["Platform:Linux:Amd64", "Agent:Claude"],
+    ],
+    [
+      { pool: registered, runner: { capabilities: ["gpu", "Agent:Codex"] } },
+      "arm64",
+      ["Platform:Linux:Arm64", "gpu", "Agent:Codex"],
+    ],
+  ])
+    assert.deepEqual(
+      await advertised(
+        /** @type {Parameters<typeof runnerFixture>[1]} */ (documents),
+        /** @type {string} */ (arch),
+      ),
+      capabilities,
+      JSON.stringify(documents),
+    );
+});
+
+/**
+ * Catches a run started on a machine no pool runs on, or advertising a set
+ * the plane refuses, which would end the pool at its first poll, and a
+ * `status` or `stop`, which never polls, refused for it.
+ */
+test("a run is refused on a machine no pool runs on, and where it would advertise more than a pool may, naming the runner's file, while one that places nothing is not", async (t) => {
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: {
+      capabilities: Array.from({ length: 64 }, (_, at) => `c${String(at)}`),
+    },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  assert.throws(
+    () => runnerCapabilities(setup, "x64"),
+    new Error(
+      `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 65 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
+    ),
+  );
+  const { engine } = fakeEngine();
+  await assert.rejects(
+    runnerParts(setup, { uid: 1000, log: () => undefined, engine }),
+    /^Error: runner configuration .*: capabilities: this runner would advertise 65 /u,
+  );
+  await runnerParts(setup, {
+    uid: 1000,
+    log: () => undefined,
+    engine,
+    places: false,
+    arch: "ia32",
+  });
+  const fitting = { ...setup, config: { ...setup.config, capabilities: [] } };
+  assert.throws(
+    () => runnerCapabilities(fitting, "ia32"),
+    new Error("this machine is ia32, and a pool runs Linux on x64 or arm64"),
+  );
+  assert.equal(
+    runnerCapabilities(
+      { ...setup, config: { ...setup.config, capabilities: ["c"] } },
+      "x64",
+    ).length,
+    2,
+  );
 });
 
 test("a run is composed from both files, and refuses to start without a runtime directory", async (t) => {
