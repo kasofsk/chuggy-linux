@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { hostname } from "node:os";
 import test from "node:test";
 
-import { diskFloorSaid, engineDiskFree } from "./diskFree.mjs";
+import { diskFloorSaid, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
 import { fakeDisk, fakeEngine, fakeEngineMachine } from "./engine.fixture.mjs";
 
 const gib = 2 ** 30;
@@ -129,6 +130,7 @@ test("an engine naming another machine, one that cannot be asked or answers othe
 });
 
 test("the machine an engine names is held to this one's name as it is at each measurement", async () => {
+  assert.equal(diskFreePorts.hostname, hostname);
   const disk = fakeDisk(30);
   const names = ["shame", fakeEngineMachine];
   const renamed = { ...disk, hostname: () => names.shift() ?? "" };
