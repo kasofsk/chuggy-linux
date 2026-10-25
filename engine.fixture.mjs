@@ -65,7 +65,7 @@ export function fakeDisk(gib, paths = {}) {
   /** @type {string[]} */
   const measured = [];
   return {
-    hostname: fakeEngineMachine,
+    hostname: () => fakeEngineMachine,
     measured,
     statfs: async (path) => {
       measured.push(path);

@@ -22,12 +22,12 @@ import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  *
  * @typedef {object} DiskFreePorts what the free disk is measured by
- * @property {string} hostname this machine's
+ * @property {() => string} hostname this machine's, asked each measurement
  * @property {(path: string) => Promise<{bavail: number, bsize: number}>} statfs
  */
 
 /** @type {DiskFreePorts} */
-export const diskFreePorts = { hostname: hostname(), statfs };
+export const diskFreePorts = { hostname, statfs };
 
 /** Where containerd keeps what it holds unless its own configuration moves it. */
 const containerdRoot = "/var/lib/containerd";
@@ -100,9 +100,10 @@ export async function engineDiskFree(name, engine, ports) {
   const stores = engineStores(name, info.stdout);
   if (stores === undefined)
     return { unknown: `${name} answered an info this runner cannot read` };
-  if (stores.machine !== ports.hostname)
+  const machine = ports.hostname();
+  if (stores.machine !== machine)
     return {
-      unknown: `${name} names its machine ${stores.machine}, not ${ports.hostname}, so it stores what it holds on another machine's disk, such as a VM's`,
+      unknown: `${name} names its machine ${stores.machine}, not ${machine}, so it stores what it holds on another machine's disk, such as a VM's`,
     };
   /** @type {{free: number, where: string} | undefined} */
   let lowest;

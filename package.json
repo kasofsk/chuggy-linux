@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@chuggy/worker-contract": "file:../../chuggy-effort/runner-disk-2026-10-24/b-floor/pack-b/chuggy-worker-contract-1.17.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#04fa97c1f74c7511fe99727ad0ef5729fd01d931",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#74bcc56c2d151bd5b0e7d70bbed13244650d6a25",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.5.4"
   },

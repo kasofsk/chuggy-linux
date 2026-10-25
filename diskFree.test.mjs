@@ -116,7 +116,7 @@ test("an engine naming another machine, one that cannot be asked or answers othe
   assert.deepEqual(disk.measured, []);
   assert.deepEqual(
     await engineDiskFree("docker", engineSaying(dockerInfo), {
-      hostname: fakeEngineMachine,
+      hostname: () => fakeEngineMachine,
       statfs: async (path) => {
         throw new Error(`EACCES: permission denied, statfs '${path}'`);
       },
@@ -126,6 +126,20 @@ test("an engine naming another machine, one that cannot be asked or answers othe
         "/srv/docker could not be measured: EACCES: permission denied, statfs '/srv/docker'",
     },
   );
+});
+
+test("the machine an engine names is held to this one's name as it is at each measurement", async () => {
+  const disk = fakeDisk(30);
+  const names = ["shame", fakeEngineMachine];
+  const renamed = { ...disk, hostname: () => names.shift() ?? "" };
+  const engine = engineSaying(dockerInfo);
+  assert.deepEqual(await engineDiskFree("docker", engine, renamed), {
+    unknown: `docker names its machine ${fakeEngineMachine}, not shame, so it stores what it holds on another machine's disk, such as a VM's`,
+  });
+  assert.deepEqual(await engineDiskFree("docker", engine, renamed), {
+    free: 30 * gib,
+    where: "/srv/docker",
+  });
 });
 
 test("doctor and status say the free disk against the floor, warning where it is unmeasured or under, and none is held at 0", async () => {
