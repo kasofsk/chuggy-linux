@@ -187,7 +187,7 @@ export function runnerUpdates(setup, copy, ports) {
 /**
  * The capabilities each poll of a pool's run advertises, found when it
  * starts: this machine's platform, the agents the runner's file can run, and
- * what the file's `capabilities` declares or, where it declares none, the
+ * what the file's `capabilities` declares or, where it is absent, the
  * rest of what the pool was registered with. A machine no pool runs on, and
  * a set past the contract's bound, are refused.
  *
