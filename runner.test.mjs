@@ -1578,6 +1578,50 @@ test("a job and a session in a container are each told the kind of Claude creden
   }
 });
 
+/**
+ * The environment the core of a job placed on this machine itself starts
+ * with, its spawn stood in for by one that exits at once.
+ *
+ * @param {Awaited<ReturnType<typeof runnerSetup>>} setup
+ * @param {readonly string[]} capabilities the assignment's
+ * @returns {Promise<Record<string, string>>}
+ */
+async function hostStartedWith(setup, capabilities) {
+  /** @type {Array<Record<string, string>>} */
+  const started = [];
+  /** @type {Promise<unknown>[]} */
+  const closed = [];
+  const runner = await runnerParts(setup, {
+    uid: ownUid,
+    log: () => undefined,
+    engine: fakeEngine().engine,
+    spawn: /** @type {any} */ (
+      (
+        /** @type {string} */ _command,
+        /** @type {string[]} */ _argv,
+        /** @type {{env: Record<string, string>}} */ options,
+      ) => {
+        started.push(options.env);
+        const child = spawn(process.execPath, ["-e", ""], {
+          detached: true,
+          stdio: "ignore",
+        });
+        closed.push(once(child, "close"));
+        return child;
+      }
+    ),
+  });
+  const placed = await runner.backend.place(
+    { ...runnerAssignment("asg-1", undefined), capabilities },
+    "Job",
+  );
+  assert.equal(placed.placed, "Placed", placed.evidence);
+  await Promise.all(closed);
+  await runner.backend.settled();
+  assert.equal(started.length, 1);
+  return started[0];
+}
+
 test("a job on this machine itself is told the kind of Claude credential the runner's file names, a subscription's where it names claudeTokenFile, and reads its file where it is", async (t) => {
   const file = await claudeCredentialFixture(t);
   for (const [named, setting] of claudeNamings(file)) {
@@ -1589,56 +1633,180 @@ test("a job on this machine itself is told the kind of Claude credential the run
         host: true,
       },
     });
-    /** @type {Array<Record<string, string>>} */
-    const started = [];
-    /** @type {Promise<unknown>[]} */
-    const closed = [];
-    const runner = await runnerParts(
+    const started = await hostStartedWith(
       await runnerSetup(poolFile, environment, home),
-      {
-        uid: ownUid,
-        log: () => undefined,
-        engine: fakeEngine().engine,
-        spawn: /** @type {any} */ (
-          (
-            /** @type {string} */ _command,
-            /** @type {string[]} */ _argv,
-            /** @type {{env: Record<string, string>}} */ options,
-          ) => {
-            started.push(options.env);
-            const child = spawn(process.execPath, ["-e", ""], {
-              detached: true,
-              stdio: "ignore",
-            });
-            closed.push(once(child, "close"));
-            return child;
-          }
-        ),
-      },
+      ["Platform:Linux:Amd64", "Agent:Claude"],
     );
-    const placed = await runner.backend.place(
-      {
-        assignment: "asg-1",
-        capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
-        cpuMillis: 1,
-        memoryMib: 1,
-        deadlineSecs: 60,
-        callbackUrl: "https://chuggy.example/worker",
-        bearer: "attempt-bearer",
-      },
-      "Job",
-    );
-    assert.equal(placed.placed, "Placed", placed.evidence);
-    await Promise.all(closed);
-    await runner.backend.settled();
-    assert.equal(started.length, 1);
-    const variables = Object.entries(started[0]).map(
+    const variables = Object.entries(started).map(
       ([name, value]) => `${name}=${value}`,
     );
     assert.deepEqual(claudeToldOf(variables), setting);
     assert.equal(
-      JSON.parse(started[0][workerTaskVariable]).providerCredentialFile,
+      JSON.parse(started[workerTaskVariable]).providerCredentialFile,
       file,
     );
   }
+});
+
+const codexImages = [
+  { image: registryImage, capabilities: ["Agent:Claude", "Agent:Codex"] },
+];
+
+/**
+ * An assignment requiring one agent, pinning no image.
+ *
+ * @param {string} assignment
+ * @param {string} agent
+ */
+const agentRequired = (assignment, agent) => ({
+  ...runnerAssignment(assignment, undefined),
+  capabilities: ["Platform:Linux:Amd64", agent],
+});
+
+/**
+ * A run's backend over a fake engine holding the image `codexImages` lists,
+ * as this uid, for a runner whose file says `runner`.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {Record<string, unknown>} runner
+ * @param {number} uid
+ */
+async function codexPlacing(t, runner, uid) {
+  const { home, environment, poolFile } = await runnerFixture(t, { runner });
+  const { engine, state } = fakeEngine();
+  state.images.add(registryImage);
+  const parts = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    { uid, log: () => undefined, engine },
+  );
+  return { backend: parts.backend, state };
+}
+
+/**
+ * Catches a job requiring Codex mounted the Claude credential or told its
+ * kind, or one requiring Claude mounted the Codex file.
+ */
+test("a runner whose file names a Codex credential mounts it into a job requiring Agent:Codex, told no Claude kind, and the Claude one into a job requiring Claude", async (t) => {
+  const claude = await claudeCredentialFixture(t);
+  const codex = await claudeCredentialFixture(t);
+  const { backend, state } = await codexPlacing(
+    t,
+    {
+      claudeTokenFile: claude,
+      codexCredential: { authFile: codex },
+      images: codexImages,
+    },
+    ownUid,
+  );
+  for (const [assignment, agent] of [
+    ["asg-codex", "Agent:Codex"],
+    ["asg-claude", "Agent:Claude"],
+  ])
+    assert.equal(
+      (await backend.place(agentRequired(assignment, agent), "Job")).placed,
+      "Placed",
+    );
+  await backend.settled();
+  /** @param {string} assignment */
+  const ran = (assignment) => {
+    const call = state.calls.find(
+      ({ argv }) =>
+        argv[0] === "run" &&
+        argv.includes(`io.chuggy.assignment=${assignment}`),
+    );
+    assert.ok(call !== undefined, assignment);
+    return call;
+  };
+  /** @param {string} file */
+  const mount = (file) =>
+    `type=bind,source=${file},target=${jobProviderCredentialFile},readonly`;
+  const codexJob = ran("asg-codex");
+  assert.ok(codexJob.argv.includes(mount(codex)));
+  assert.ok(!codexJob.argv.includes(mount(claude)));
+  assert.doesNotMatch(
+    codexJob.envFile ?? "",
+    new RegExp(claudeCredentialVariable, "u"),
+  );
+  const claudeJob = ran("asg-claude");
+  assert.ok(claudeJob.argv.includes(mount(claude)));
+  assert.deepEqual(claudeToldOf((claudeJob.envFile ?? "").split("\n")), {
+    kind: "Subscription",
+  });
+});
+
+/**
+ * Catches the runner's check of the Codex file naming it as Claude's, or a
+ * Codex job run by a runner whose file names no Codex credential.
+ */
+test("a runner refuses a job requiring Agent:Codex where its Codex credential's file is not its to hand over, naming that file, or where its file names none", async (t) => {
+  const claude = await claudeCredentialFixture(t);
+  const codex = await claudeCredentialFixture(t);
+  const other = await codexPlacing(
+    t,
+    {
+      claudeTokenFile: claude,
+      codexCredential: { authFile: codex },
+      images: codexImages,
+    },
+    ownUid + 1,
+  );
+  const refused = await other.backend.place(
+    agentRequired("asg-1", "Agent:Codex"),
+    "Job",
+  );
+  assert.match(
+    refused.evidence ?? "",
+    new RegExp(`^the Codex auth file ${codex} is owned by uid`, "u"),
+  );
+  const without = await codexPlacing(
+    t,
+    { claudeTokenFile: claude, images: codexImages },
+    ownUid,
+  );
+  assert.deepEqual(
+    await without.backend.place(agentRequired("asg-1", "Agent:Codex"), "Job"),
+    {
+      placed: "Refused",
+      evidence:
+        "the assignment requires Agent:Codex, and this runner names no Codex credential; name one in the runner's configuration",
+    },
+  );
+  for (const { state } of [other, without])
+    assert.ok(!state.calls.some(({ argv }) => argv[0] === "run"));
+});
+
+/**
+ * Catches a host job requiring Codex handed the Claude credential, or told
+ * its kind, or the runner's check of the Codex file naming it as Claude's.
+ */
+test("a pool registered with --host hands a job requiring Agent:Codex the Codex credential's file where it is, told no Claude kind, and refuses one it is not its to hand over", async (t) => {
+  const codex = await claudeCredentialFixture(t);
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { codexCredential: { authFile: codex } },
+    pool: {
+      ...fixturePool,
+      capabilities: ["Platform:Linux:Amd64", "Agent:Codex"],
+      host: true,
+    },
+  });
+  const setup = await runnerSetup(poolFile, environment, home);
+  const started = await hostStartedWith(setup, [
+    "Platform:Linux:Amd64",
+    "Agent:Codex",
+  ]);
+  assert.equal(
+    JSON.parse(started[workerTaskVariable]).providerCredentialFile,
+    codex,
+  );
+  assert.ok(!Object.hasOwn(started, claudeCredentialVariable));
+  const other = await runnerParts(setup, {
+    uid: ownUid + 1,
+    log: () => undefined,
+    engine: fakeEngine().engine,
+  });
+  assert.match(
+    (await other.backend.place(agentRequired("asg-2", "Agent:Codex"), "Job"))
+      .evidence ?? "",
+    new RegExp(`^the Codex auth file ${codex} is owned by uid`, "u"),
+  );
 });

@@ -22,7 +22,7 @@ import {
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { diskFloorSaid, diskFreePorts } from "./diskFree.mjs";
-import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
+import { agentVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
   legacyService,
@@ -32,6 +32,7 @@ import {
   serviceUnitText,
 } from "./poolService.mjs";
 import {
+  registerAgents,
   registerPoolDirectory,
   registerPoolFileWritten,
   registerRedeemed,
@@ -50,7 +51,9 @@ import {
 } from "./runner.mjs";
 import {
   podmanRegistriesConf,
+  runnerConfig,
   runnerConfigLimits,
+  runnerCredentialsHanded,
   runnerPaths,
 } from "./runnerConfig.mjs";
 import {
@@ -106,10 +109,11 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
                           their personal runner's file, and start its service
-                          where it can; it declares this machine's platform
-                          and each --capability, which the token must permit,
-                          and with --host runs a job that pins no image on
-                          this machine itself
+                          where it can; it declares this machine's platform,
+                          the agents runner.json can run, and each
+                          --capability, which the token must permit, and with
+                          --host runs a job that pins no image on this
+                          machine itself
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -335,7 +339,7 @@ function doctorFound(host, poolFile) {
     cli: host.cli,
     path: host.environment.PATH,
     servicePath: () => servicePath(host, poolFile),
-    claudeVersion: claudeVersionAsked,
+    agentVersion: agentVersionAsked,
     disk: host.disk ?? diskFreePorts,
     parts: {
       engine: (config) => host.engine ?? runnerEngine(config),
@@ -672,15 +676,21 @@ async function registerServed(host, pool, file, written) {
  * @param {Omit<import("@chuggy/worker-core/register.mjs").RegisterAsked, "capabilities"> & {capability?: string[] | undefined}} asked each `--capability` once per token
  */
 async function register(host, { capability, ...asked }) {
+  const { pools, config } = runnerPaths(host.environment, host.home);
+  const agents = await registerAgentsRead(config, asked.host === true);
   const requested = registerRequest(
     { ...asked, capabilities: capability },
-    host,
+    {
+      hostname: host.hostname,
+      arch: host.arch,
+      agents: "agents" in agents ? agents.agents : [],
+    },
   );
   if ("refused" in requested) {
     host.err(requested.refused);
     return 2;
   }
-  const { pools } = runnerPaths(host.environment, host.home);
+  if ("none" in agents) host.err(agents.none);
   await registerPoolDirectory(pools);
   const pool = await registerRedeemed(requested.request, host.fetch);
   const { file, replaced } = await registerPoolFileWritten(
@@ -700,6 +710,33 @@ async function register(host, { capability, ...asked }) {
   if (served.then !== undefined) host.out(served.then);
   for (const command of served.left) host.out(`  ${command}`);
   return 0;
+}
+
+/**
+ * The agents the runner's file can run, as a registration declares them, or
+ * why it declares none where the file cannot be read, which a registration
+ * goes on without.
+ *
+ * @param {string} file the runner's file
+ * @param {boolean} hostJobs whether the pool runs jobs on this machine itself
+ * @returns {Promise<{agents: string[]} | {none: string}>}
+ */
+async function registerAgentsRead(file, hostJobs) {
+  let config;
+  try {
+    config = await runnerConfig(file);
+  } catch (failure) {
+    return {
+      none: `runner.json declared no agents, since it could not be read: ${failureMessage(failure)}`,
+    };
+  }
+  return {
+    agents: registerAgents(
+      runnerCredentialsHanded(config),
+      config.images,
+      hostJobs,
+    ),
+  };
 }
 
 /** The options only `mcp` takes. */

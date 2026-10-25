@@ -52,8 +52,9 @@ import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { diskFloorBytes, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
 import {
-  claudeCredentialFileRefusal,
-  runnerClaudeHanded,
+  credentialFileRefusal,
+  runnerCredentialDescribed,
+  runnerCredentialsHanded,
   runnerConfig,
   runnerPaths,
   runnerPoolLimits,
@@ -395,13 +396,13 @@ export async function runnerParts(setup, host) {
     cpuMillis: availableParallelism() * 1000,
     memoryMib: Math.floor(totalmem() / (1024 * 1024)),
   };
-  const claude = runnerClaudeHanded(config);
+  const handed = runnerCredentialsHanded(config);
   const disk = host.disk ?? diskFreePorts;
   const container = containerBackend(
     {
       engine: config.engine,
       pool: credentials,
-      ...claude,
+      ...handed,
       registryHost: credentials.registryHost,
       dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
@@ -425,9 +426,9 @@ export async function runnerParts(setup, host) {
       nowMs: Date.now,
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
-      tokenFileRefusal: (file) =>
-        claudeCredentialFileRefusal(
-          claude.claudeCredential,
+      tokenFileRefusal: (file, agent) =>
+        credentialFileRefusal(
+          runnerCredentialDescribed(handed.claudeCredential, agent),
           file,
           config.engine,
           host.uid,
@@ -460,7 +461,7 @@ function runnerHostRouted(setup, container, machine, host) {
   const { credentials, config, paths } = setup;
   const platforms = hostPlatformsDeclared(credentials, "Linux");
   if (platforms.length === 0) return container;
-  const claude = runnerClaudeHanded(config);
+  const handed = runnerCredentialsHanded(config);
   return hostRoutedBackend(
     container,
     hostBackend(
@@ -468,7 +469,7 @@ function runnerHostRouted(setup, container, machine, host) {
         platforms,
         directory: join(paths.jobs, poolIdentityDigest(credentials)),
         logDir: paths.logs,
-        ...claude,
+        ...handed,
         timeoutSecsMax: config.timeoutSecsMax,
         outputBytesMax: config.outputBytesMax,
         environment: config.environment,
@@ -477,9 +478,9 @@ function runnerHostRouted(setup, container, machine, host) {
       {
         log: host.log,
         ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
-        tokenFileRefusal: (file) =>
-          claudeCredentialFileRefusal(
-            claude.claudeCredential,
+        tokenFileRefusal: (file, agent) =>
+          credentialFileRefusal(
+            runnerCredentialDescribed(handed.claudeCredential, agent),
             file,
             "host",
             host.uid,

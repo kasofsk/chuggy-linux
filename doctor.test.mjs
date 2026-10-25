@@ -18,6 +18,7 @@ import { runnerPaths } from "./runnerConfig.mjs";
 import {
   engineSocketFixture,
   fixturePool,
+  poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
@@ -55,17 +56,20 @@ async function installedCopy(home, paths, options) {
 
 /**
  * Writes each pool file named in the pools directory, which doctor reads the
- * names `pools` may key from, and gives the engine each named volume.
+ * names `pools` may key from, each registration given as one, and gives the
+ * engine each named volume.
  *
  * @param {import("./runnerConfig.mjs").RunnerPaths} paths
  * @param {ReturnType<typeof fakeEngine>["state"]} state
- * @param {{poolFiles?: string[], volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>}} options
+ * @param {{poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>}} options
  */
 async function doctoredMachine(paths, state, options) {
   for (const file of options.poolFiles ?? []) {
     await mkdir(paths.pools, { recursive: true });
     await writeFile(join(paths.pools, file), "{}");
   }
+  for (const [file, pool] of Object.entries(options.registered ?? {}))
+    await poolFileWritten(join(paths.pools, file), pool);
   for (const volume of options.volumes ?? []) state.volumes.set(volume, {});
   for (const [volume, labels] of Object.entries(options.labelledVolumes ?? {}))
     state.volumes.set(volume, labels);
@@ -73,7 +77,7 @@ async function doctoredMachine(paths, state, options) {
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, claudeVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, agentVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory and the registrations among them, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` or `codex` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -125,7 +129,7 @@ async function doctored(t, options = {}) {
     uid: options.uid ?? process.getuid?.() ?? -1,
     path: options.path,
     servicePath: async () => options.servicePath,
-    claudeVersion: async (file) => options.claudeVersions?.[file],
+    agentVersion: async (file) => options.agentVersions?.[file],
     disk: options.disk ?? fakeDisk(100),
     parts: {
       engine: () => engine,
@@ -1301,7 +1305,7 @@ test("on a pool registered with --host, the Claude credential check names the cl
   const claude = join(bin, "claude");
   const serviceBin = await filesWritten(t, { claude: "#!/bin/sh\n" }, 0o700);
   const pool = { ...fixturePool, host: true };
-  const claudeVersions = { [claude]: "2.1.282 (Claude Code)" };
+  const agentVersions = { [claude]: "2.1.282 (Claude Code)" };
   /**
    * Whether the check passed or warned, and what it says past the credential.
    *
@@ -1310,7 +1314,7 @@ test("on a pool registered with --host, the Claude credential check names the cl
   const found = async (options) => {
     const { findings } = await doctored(t, {
       pool,
-      claudeVersions,
+      agentVersions,
       ...options,
     });
     const finding = findings.find(
@@ -1346,7 +1350,7 @@ test("on a pool registered with --host, the Claude credential check names the cl
       warning: false,
       host: `a job on this machine itself runs ${claude}, 2.1.282 (Claude Code), found on ${whose}`,
     });
-  assert.deepEqual(await found({ path: bin, claudeVersions: {} }), {
+  assert.deepEqual(await found({ path: bin, agentVersions: {} }), {
     passed: true,
     warning: false,
     host: `a job on this machine itself runs ${claude}, which says no version, found on doctor's own PATH`,
@@ -1366,5 +1370,203 @@ test("on a pool registered with --host, the Claude credential check names the cl
     passed: true,
     warning: false,
     host: "",
+  });
+});
+
+/** The remedy a refusal of the Codex credential's file names. */
+const codexRemedy = "run codex login, which writes it to ~/.codex/auth.json";
+
+/** What the Codex fixture file holds that is secret, which no finding may print. */
+const codexSecret = "codex-refresh-token-fixture";
+
+/** A pool declaring `Agent:Codex`. */
+const codexPool = {
+  ...fixturePool,
+  capabilities: ["container", "Agent:Codex"],
+};
+
+/**
+ * Catches the Codex file's check printing what it holds, or appearing on a
+ * runner neither whose file nor whose pool names Codex.
+ */
+test("the Codex credential check names its file and never what it holds, and is made only where the runner's file or the pool names Codex", async (t) => {
+  const directory = await filesWritten(t, {
+    "auth.json": JSON.stringify({ tokens: { refresh_token: codexSecret } }),
+  });
+  const authFile = join(directory, "auth.json");
+  const { findings } = await doctored(t, {
+    pool: codexPool,
+    runner: { codexCredential: { authFile } },
+  });
+  assert.deepEqual(
+    findings.find((found) => found.check === "Codex credential"),
+    {
+      check: "Codex credential",
+      passed: true,
+      detail: `the Codex auth file ${authFile}, this runner's own`,
+    },
+  );
+  assert.equal(
+    findings.map(findingLine).join("\n").includes(codexSecret),
+    false,
+  );
+  const unnamed = await doctored(t);
+  assert.equal(
+    unnamed.findings.some((found) => found.check === "Codex credential"),
+    false,
+  );
+});
+
+/**
+ * Catches a Codex file no core could read passed, its text or a parser's
+ * message printed, or one a job cannot be handed passed.
+ */
+test("a Codex credential's file that is no JSON object, or that a job cannot be handed, fails the check, never naming what it holds", async (t) => {
+  for (const text of [
+    `["${codexSecret}"]`,
+    `{"refresh_token": ${codexSecret}`,
+    "null",
+    `"${codexSecret}"`,
+  ]) {
+    const directory = await filesWritten(t, { "auth.json": text });
+    const authFile = join(directory, "auth.json");
+    const { findings } = await doctored(t, {
+      pool: codexPool,
+      runner: { codexCredential: { authFile } },
+    });
+    assert.deepEqual(
+      findings.find((found) => found.check === "Codex credential"),
+      {
+        check: "Codex credential",
+        passed: false,
+        detail: `the Codex auth file ${authFile} is not a JSON object; ${codexRemedy}`,
+      },
+      text,
+    );
+    assert.equal(
+      findings.map(findingLine).join("\n").includes(codexSecret),
+      false,
+    );
+  }
+  const shared = await filesWritten(t, { "auth.json": "{}" }, 0o640);
+  const missing = join(shared, "missing.json");
+  for (const [authFile, detail] of [
+    [
+      join(shared, "auth.json"),
+      /is mode 640; only its owner may read or write it/u,
+    ],
+    [
+      missing,
+      new RegExp(`^the Codex auth file ${missing} cannot be found; `, "u"),
+    ],
+  ]) {
+    const { findings } = await doctored(t, {
+      pool: codexPool,
+      runner: { codexCredential: { authFile } },
+    });
+    const finding = findings.find(
+      (found) => found.check === "Codex credential",
+    );
+    assert.equal(finding?.passed, false);
+    assert.match(finding?.detail ?? "", detail);
+  }
+});
+
+/**
+ * Catches a pool whose Codex jobs every one would be refused passing doctor.
+ */
+test("a pool declaring Agent:Codex fails the Codex credential check where the runner's file names no codexCredential", async (t) => {
+  const { findings } = await doctored(t, { pool: codexPool });
+  const finding = findings.find((found) => found.check === "Codex credential");
+  assert.equal(finding?.passed, false);
+  assert.match(
+    finding?.detail ?? "",
+    /^this pool declares Agent:Codex and \/.*\/runner\.json names no codexCredential, so its Codex jobs are refused; add codexCredential to it$/u,
+  );
+});
+
+/**
+ * Catches a Codex credential no pool brings a job to passing unwarned, the
+ * remedy offered where registering again would not declare it, or a warning
+ * where another pool file here declares it.
+ */
+test("a Codex credential no pool file declares Agent:Codex for is warned of, with what registering again would do, and passes where any pool file here declares it", async (t) => {
+  const directory = await filesWritten(t, { "auth.json": "{}" });
+  const authFile = join(directory, "auth.json");
+  const codexImages = [
+    { image: "registry.example/codex", capabilities: ["Agent:Codex"] },
+  ];
+  /** @param {Parameters<typeof doctored>[1]} options */
+  const found = async (options) =>
+    (await doctored(t, options)).findings.find(
+      (finding) => finding.check === "Codex credential",
+    );
+  const unread = `the Codex auth file ${authFile}, this runner's own; no pool file declares Agent:Codex, so no Codex job reaches this runner`;
+  for (const [options, then] of [
+    [
+      { runner: { codexCredential: { authFile }, images: codexImages } },
+      "register again, which declares it",
+    ],
+    [
+      {
+        pool: { ...fixturePool, host: true },
+        runner: { codexCredential: { authFile } },
+      },
+      "register again, which declares it",
+    ],
+    [
+      { runner: { codexCredential: { authFile } } },
+      "registering again would not declare it, since no images entry declares Agent:Codex and this pool was not registered with --host",
+    ],
+  ])
+    assert.deepEqual(await found(options), {
+      check: "Codex credential",
+      passed: true,
+      warning: true,
+      detail: `${unread}; ${then}`,
+    });
+  assert.deepEqual(
+    await found({
+      runner: { codexCredential: { authFile } },
+      registered: { "vteng.chuggy.other.json": codexPool },
+    }),
+    {
+      check: "Codex credential",
+      passed: true,
+      detail: `the Codex auth file ${authFile}, this runner's own`,
+    },
+  );
+});
+
+/**
+ * Catches a host job's Codex left unnamed, or its absence passing unwarned.
+ */
+test("on a pool registered with --host, the Codex credential check names the codex a job on this machine itself runs, and warns, passing, where there is none", async (t) => {
+  const directory = await filesWritten(t, { "auth.json": "{}" });
+  const authFile = join(directory, "auth.json");
+  const bin = await filesWritten(t, { codex: "#!/bin/sh\n" }, 0o700);
+  const empty = await filesWritten(t, {});
+  const codex = join(bin, "codex");
+  /** @param {string} path */
+  const found = async (path) =>
+    (
+      await doctored(t, {
+        pool: { ...codexPool, host: true },
+        runner: { codexCredential: { authFile } },
+        path,
+        agentVersions: { [codex]: "codex-cli 0.50.0" },
+      })
+    ).findings.find((finding) => finding.check === "Codex credential");
+  const own = `the Codex auth file ${authFile}, this runner's own`;
+  assert.deepEqual(await found(bin), {
+    check: "Codex credential",
+    passed: true,
+    detail: `${own}; a job on this machine itself runs ${codex}, codex-cli 0.50.0, found on doctor's own PATH`,
+  });
+  assert.deepEqual(await found(empty), {
+    check: "Codex credential",
+    passed: true,
+    warning: true,
+    detail: `${own}; no codex is on doctor's own PATH, ${empty}, so a job on this machine itself runs no Codex`,
   });
 });
