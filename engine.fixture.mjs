@@ -20,6 +20,8 @@ import { dirname } from "node:path";
  * @property {string} image
  * @property {string[]} [env] each `NAME=value`, as an inspection lists them
  * @property {number} [exitCode]
+ * @property {number} [memoryBytes] the cap `--memory` ran it with, none where 0
+ * @property {number} [usedBytes] what `stats` says it uses
  *
  * @typedef {object} FakeCall
  * @property {string[]} argv
@@ -160,7 +162,8 @@ function fakeEngineState() {
         ["Backing Filesystem", "extfs"],
         ["Supports d_type", "true"],
       ],
-      host: { hostname: fakeEngineMachine },
+      MemTotal: 16 * 2 ** 30,
+      host: { hostname: fakeEngineMachine, memTotal: 16 * 2 ** 30 },
       store: {
         graphRoot: "/home/runner/.local/share/containers/storage",
         volumePath: "/home/runner/.local/share/containers/storage/volumes",
@@ -224,6 +227,7 @@ function run(state, call) {
   );
   const id = `c${String(state.nextId++).padStart(63, "0")}`;
   const image = argv.at(-1) ?? "";
+  const [memory] = flagValues(argv, "--memory");
   const env = [
     imagePath,
     ...call.envFile.split("\n").filter((line) => line.length > 0),
@@ -236,6 +240,8 @@ function run(state, call) {
     image,
     env,
     exitCode: 0,
+    memoryBytes:
+      memory === undefined ? 0 : Number(memory.replace(/m$/u, "")) * 2 ** 20,
   });
   if (state.runInterrupted)
     return { code: -1, stdout: "", stderr: "", failed: "Interrupted" };
@@ -258,6 +264,7 @@ function inspected(state, references) {
             Name: `/${container.name}`,
             Config: { Labels: container.labels, Env: container.env ?? null },
             State: { Status: container.status, ExitCode: container.exitCode },
+            HostConfig: { Memory: container.memoryBytes ?? 0 },
           },
         ],
   );
@@ -331,20 +338,95 @@ function networked(state, network, verb) {
 }
 
 /**
- * A `volume inspect` of one volume.
+ * A `volume inspect` of the volumes named.
  *
  * @param {FakeEngineState} state
- * @param {string} name
+ * @param {string[]} names
  */
-function volumeInspected(state, name) {
+function volumeInspected(state, names) {
   if (state.volumesUnanswered)
     return failed("Error response from daemon: i/o timeout");
-  const labels = state.volumes.get(name);
-  return labels === undefined
-    ? failed(`Error response from daemon: get ${name}: no such volume`)
-    : answered(
-        `${JSON.stringify([{ Driver: "local", Labels: labels, Name: name }])}\n`,
-      );
+  const absent = names.find((name) => !state.volumes.has(name));
+  return absent === undefined
+    ? answered(
+        `${JSON.stringify(names.map((name) => ({ Driver: "local", Labels: state.volumes.get(name), Name: name })))}\n`,
+      )
+    : failed(`Error response from daemon: get ${absent}: no such volume`);
+}
+
+/**
+ * The label filters of a listing, each as key and value, the value none
+ * where it asks only that the label is there.
+ *
+ * @param {string[]} argv
+ * @returns {[string, string | undefined][]}
+ */
+function labelFilters(argv) {
+  return flagValues(argv, "--filter").map((filter) => {
+    const [key, ...value] = filter.replace(/^label=/u, "").split("=");
+    return [key ?? "", value.length === 0 ? undefined : value.join("=")];
+  });
+}
+
+/**
+ * @param {Record<string, string>} labels
+ * @param {[string, string | undefined][]} wanted
+ */
+function labelsMatched(labels, wanted) {
+  return wanted.every(([key, value]) =>
+    value === undefined ? Object.hasOwn(labels, key) : labels[key] === value,
+  );
+}
+
+/**
+ * A `volume` call other than an inspection: a listing, a creation or a
+ * removal.
+ *
+ * @param {FakeEngineState} state
+ * @param {string[]} argv
+ */
+function volumed(state, argv) {
+  const last = argv.at(-1) ?? "";
+  if (argv[1] === "ls") {
+    const wanted = labelFilters(argv);
+    return answered(
+      [...state.volumes.entries()]
+        .filter(([, labels]) => labelsMatched(labels, wanted))
+        .map(([name]) => `${name}\n`)
+        .join(""),
+    );
+  }
+  if (argv[1] === "create") {
+    state.volumes.set(
+      last,
+      Object.fromEntries(
+        flagValues(argv, "--label").map((label) => {
+          const equals = label.indexOf("=");
+          return [label.slice(0, equals), label.slice(equals + 1)];
+        }),
+      ),
+    );
+    return answered(`${last}\n`);
+  }
+  if (argv[1] === "rm" && state.volumes.delete(last))
+    return answered(`${last}\n`);
+  return failed(`Error response from daemon: get ${last}: no such volume`);
+}
+
+/**
+ * What `stats` prints of each running container: its name, and its use and
+ * limit in docker's binary units.
+ *
+ * @param {FakeEngineState} state
+ */
+function statsPrinted(state) {
+  return [...state.containers.values()]
+    .filter((container) => container.status === "running")
+    .map(
+      (container) =>
+        `${container.name} ${String((container.usedBytes ?? 0) / 2 ** 20)}MiB / 16GiB\n`,
+    )
+    .join("");
 }
 
 /**
@@ -385,14 +467,13 @@ function answer(state, call) {
       : answered(`${state.contextHost}\n`);
   if (verb === "run") return run(state, call);
   if (verb === "ps") {
-    const wanted = flagValues(call.argv, "--filter").map((filter) => {
-      const [key, ...value] = filter.replace(/^label=/u, "").split("=");
-      return [key, value.join("=")];
-    });
+    const wanted = labelFilters(call.argv);
     return answered(
       [...state.containers.values()]
-        .filter((container) =>
-          wanted.every(([key, value]) => container.labels[key] === value),
+        .filter(
+          (container) =>
+            (call.argv.includes("--all") || container.status === "running") &&
+            labelsMatched(container.labels, wanted),
         )
         .map((container) => `${container.id}\n`)
         .join(""),
@@ -406,7 +487,9 @@ function answer(state, call) {
     });
   if (verb === "network") return networked(state, last, second);
   if (verb === "volume" && second === "inspect")
-    return volumeInspected(state, last);
+    return volumeInspected(state, call.argv.slice(2));
+  if (verb === "volume") return volumed(state, call.argv);
+  if (verb === "stats") return answered(statsPrinted(state));
   return failed(`unknown command: ${call.argv.join(" ")}`);
 }
 

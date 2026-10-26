@@ -109,6 +109,7 @@ test("a minimal file is read with every default", async (t) => {
     autoUpdate: true,
     imageUnusedSecsMax: 604_800,
     diskFreeGibMin: 20,
+    memoryFreeGibMin: 2,
   });
 });
 
@@ -132,23 +133,28 @@ test("a job's image this runner pulled is kept a week unused unless the file say
     );
 });
 
-test("the engine's storage keeps 20 GiB free unless the file says otherwise, and 0 keeps no floor", async (t) => {
+test("what the engine keeps free of its storage and of its memory is any whole GiB the file sets, 0 among them", async (t) => {
   const directory = await scratch(t);
   const most = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
-  for (const diskFreeGibMin of [0, 50, most])
-    assert.equal(
-      (
-        await runnerConfig(
-          await written(directory, { ...minimal, diskFreeGibMin }),
-        )
-      ).diskFreeGibMin,
-      diskFreeGibMin,
-    );
-  for (const diskFreeGibMin of [-1, 1.5, "20", most + 1])
-    await assert.rejects(
-      runnerConfig(await written(directory, { ...minimal, diskFreeGibMin })),
-      /diskFreeGibMin/u,
-    );
+  for (const key of /** @type {const} */ ([
+    "diskFreeGibMin",
+    "memoryFreeGibMin",
+  ])) {
+    for (const gib of [0, 50, most])
+      assert.equal(
+        (
+          await runnerConfig(
+            await written(directory, { ...minimal, [key]: gib }),
+          )
+        )[key],
+        gib,
+      );
+    for (const gib of [-1, 1.5, "20", most + 1])
+      await assert.rejects(
+        runnerConfig(await written(directory, { ...minimal, [key]: gib })),
+        new RegExp(key, "u"),
+      );
+  }
 });
 
 test("the runner updates itself unless its file turns that off", async (t) => {
@@ -436,6 +442,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         autoUpdate: true,
         imageUnusedSecsMax: 604_800,
         diskFreeGibMin: 20,
+        memoryFreeGibMin: 2,
       },
     );
   for (const [sessionsMax, why] of [

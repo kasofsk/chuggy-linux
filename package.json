@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.19.0/chuggy-worker-contract-1.19.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#c3c6aff54add513a7c30041e8dcc561a05259b42",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#f10faa84bead6d97e3254015d7dfb58fd7599923",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.5.4"
   },
@@ -38,6 +38,7 @@
     "diskFree.mjs",
     "doctor.mjs",
     "mcp.mjs",
+    "memoryFree.mjs",
     "nodeFloor.mjs",
     "poolService.mjs",
     "runner.mjs",

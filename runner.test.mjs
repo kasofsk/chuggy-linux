@@ -38,6 +38,7 @@ import {
   runnerParts,
   runnerReleasePrefix,
   runnerSetup,
+  runnerMemoryLock,
   runnerUpdateLock,
   runnerUpdates,
 } from "./runner.mjs";
@@ -223,12 +224,23 @@ test("a run updates itself as the runner's file says, from this package's own re
   );
 });
 
-test("every pool's service of a user takes one install lock, in the runner's runtime directory", async (t) => {
+test("every pool's service of a user takes one install lock, and one memory lock an engine, in the runner's runtime directory", async (t) => {
   const { home, environment } = await runnerFixture(t);
+  const paths = runnerPaths(environment, home);
   assert.equal(
-    runnerUpdateLock(runnerPaths(environment, home)),
+    runnerUpdateLock(paths),
     join(environment.XDG_RUNTIME_DIR, "chuggy-linux", "update.lock"),
   );
+  for (const engine of /** @type {const} */ (["docker", "podman"]))
+    assert.equal(
+      runnerMemoryLock(paths, engine),
+      join(
+        environment.XDG_RUNTIME_DIR,
+        "chuggy-linux",
+        "memory",
+        `${engine}.lock`,
+      ),
+    );
 });
 
 test("a job network another run made between the inspection and the creation is present", async () => {
@@ -810,9 +822,10 @@ test(
     assert.deepEqual(
       state.calls.map((call) => call.argv[0]),
       [
-        ...["info", "context"],
-        ...["image", "pull", "image", "run"],
-        ...["image", "pull", "image", "run"],
+        ...["info", "context", "image", "pull", "image"],
+        ...["info", "ps", "volume", "volume", "run", "volume"],
+        ...["image", "pull", "image"],
+        ...["info", "ps", "container", "volume", "volume", "run", "volume"],
       ],
     );
     const record = JSON.parse(
@@ -926,6 +939,35 @@ test("a run holds the floor its file sets in GiB free where the engine stores, t
         !taken,
         `${label}: ${logged.join("; ")}`,
       );
+  }
+});
+
+test("a run's memory budget is its engine's memory less the GiB its file keeps free, 2 unless it says, and it takes no job without room", async (t) => {
+  for (const [memoryFreeGibMin, usedGib, taken] of /** @type {const} */ ([
+    [undefined, 13.5, true],
+    [undefined, 13.6, false],
+    [4, 11.6, false],
+    [0, 15.5, true],
+  ])) {
+    const label = `${String(memoryFreeGibMin)} with ${String(usedGib)} used`;
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: memoryFreeGibMin === undefined ? {} : { memoryFreeGibMin },
+    });
+    const { engine, state } = fakeEngine();
+    state.containers.set("chuggy-jobs-postgres", {
+      id: "id-postgres",
+      name: "chuggy-jobs-postgres",
+      labels: {},
+      status: "running",
+      image: "postgres",
+      usedBytes: usedGib * 2 ** 30,
+    });
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: ownUid, log: () => undefined, engine, disk: fakeDisk(100) },
+    );
+    await runner.client.backend.held();
+    assert.equal(runner.client.backend.jobsTaken?.(), taken, label);
   }
 });
 
