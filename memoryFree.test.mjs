@@ -20,12 +20,13 @@ const config = (memoryFreeGibMin) =>
 
 /**
  * An engine whose containers outside every pool use `usedGib`, holding
- * `held` jobs of 2 GiB each.
+ * `held` jobs of 2 GiB each, held for room or starting.
  *
  * @param {number} usedGib
  * @param {number} [held]
+ * @param {boolean} [starting]
  */
-async function engineUsing(usedGib, held = 0) {
+async function engineUsing(usedGib, held = 0, starting = false) {
   const { engine, state } = fakeEngine();
   state.containers.set("chuggy-jobs-postgres", {
     id: "id-postgres",
@@ -45,6 +46,7 @@ async function engineUsing(usedGib, held = 0) {
         heldMs: index,
         pid: process.pid,
         untilMs: Date.now() + 3_600_000,
+        starting,
       }),
     );
   return { engine, state };
@@ -71,6 +73,10 @@ test("status says the room, the budget and the budget's state, or why it could n
   assert.equal(
     await memoryBudgetSaid(config(2), (await engineUsing(4, 2)).engine),
     "6 GiB room · 14 GiB budget · Held",
+  );
+  assert.equal(
+    await memoryBudgetSaid(config(2), (await engineUsing(4, 1, true)).engine),
+    "8 GiB room · 14 GiB budget · Starting",
   );
   assert.equal(
     await memoryBudgetSaid(

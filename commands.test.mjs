@@ -773,6 +773,7 @@ test("status names a job held for room and what it waits for, and the memory it 
       heldMs: 1,
       pid: process.pid,
       untilMs: Date.now() + 3_600_000,
+      starting: false,
     }),
   );
   const status = await called(["status", "--pool", poolFile], {
