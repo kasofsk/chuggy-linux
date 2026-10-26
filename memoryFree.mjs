@@ -8,10 +8,10 @@ import { diskGib } from "@chuggy/worker-core/diskFloor.mjs";
 import { fileLockHolderAlive } from "@chuggy/worker-core/fileLock.mjs";
 import {
   memoryBudgetBytes,
+  memoryBudgetState,
   memoryCountMsMax,
   memoryCounted,
   memoryRoomBytes,
-  memoryRoomMibMin,
 } from "@chuggy/worker-core/memoryBudget.mjs";
 
 /**
@@ -30,7 +30,9 @@ export function memoryFreeBytes(config) {
 
 /**
  * The engine's memory against the runner's budget, as `status` says it: the
- * room, the budget, and what holds the service from taking a job.
+ * room, the budget and the budget's state, or why it could not be counted;
+ * and where the engine refused to say what its containers use, that what no
+ * runner capped was counted at none.
  *
  * @param {RunnerConfig} config
  * @param {Engine} engine
@@ -45,17 +47,15 @@ export async function memoryBudgetSaid(
     engine,
     name: config.engine,
     holderAlive,
+    nowMs: Date.now,
     signal: globalThis.AbortSignal.timeout(memoryCountMsMax),
   });
-  if ("unknown" in counted)
-    return `none counted, so the service takes no job: ${counted.unknown}`;
+  if ("unknown" in counted) return `Unknown · ${counted.unknown}`;
   const bytesFree = memoryFreeBytes(config);
-  const room = memoryRoomBytes(bytesFree, counted);
-  const said = `${diskGib(Math.max(0, room))} GiB of room in a budget of ${diskGib(memoryBudgetBytes(bytesFree, counted))} GiB, the engine's ${diskGib(counted.engineBytes)} GiB less the ${String(config.memoryFreeGibMin)} GiB kept free`;
-  const held = counted.holds.length;
-  if (held > 0)
-    return `${said}; ${String(held)} held for room on this engine, so the service takes no job until ${held === 1 ? "it starts" : "they start"}`;
-  if (room < memoryRoomMibMin * 2 ** 20)
-    return `${said}; under the ${diskGib(memoryRoomMibMin * 2 ** 20)} GiB a job needs, so the service takes no job until it has more`;
-  return said;
+  return [
+    `${diskGib(Math.max(0, memoryRoomBytes(bytesFree, counted)))} GiB room`,
+    `${diskGib(memoryBudgetBytes(bytesFree, counted))} GiB budget`,
+    memoryBudgetState(bytesFree, counted, 0),
+    ...(counted.unmeasured === undefined ? [] : ["uncapped use unmeasured"]),
+  ].join(" · ");
 }

@@ -109,7 +109,7 @@ test("a minimal file is read with every default", async (t) => {
     autoUpdate: true,
     imageUnusedSecsMax: 604_800,
     diskFreeGibMin: 20,
-    memoryFreeGibMin: 2,
+    memoryFreeGibMin: 0,
   });
 });
 
@@ -442,7 +442,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         autoUpdate: true,
         imageUnusedSecsMax: 604_800,
         diskFreeGibMin: 20,
-        memoryFreeGibMin: 2,
+        memoryFreeGibMin: 0,
       },
     );
   for (const [sessionsMax, why] of [

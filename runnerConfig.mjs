@@ -187,13 +187,15 @@ export const runnerConfigSchema = z
      */
     diskFreeGibMin: nonnegativeSchema.max(freeGibMax).default(20),
     /**
-     * The GiB of the engine's memory its containers leave free. The rest is
-     * the budget every running container and every held job is counted
-     * against: a job is held until it has room and refused where it asks
-     * more than the whole budget, and no job is taken while one is held or
-     * the room is short. 0 makes the whole of the engine's memory the budget.
+     * The GiB of the engine's memory its containers leave free, a reserve
+     * for what the engine and its machine use outside every container. The
+     * rest is the budget every running container and every held job is
+     * counted against: a job is held until it has room and refused where it
+     * asks more than the whole budget, and no job is taken while one is held
+     * or the room is short. None is kept unless the file sets it, so the
+     * whole of the engine's memory is the budget.
      */
-    memoryFreeGibMin: nonnegativeSchema.max(freeGibMax).default(2),
+    memoryFreeGibMin: nonnegativeSchema.max(freeGibMax).default(0),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

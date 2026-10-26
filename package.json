@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.19.0/chuggy-worker-contract-1.19.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#f10faa84bead6d97e3254015d7dfb58fd7599923",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#246b6fe5b44b258b5f58b5c0b2bc255e81ac9f53",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.5.4"
   },

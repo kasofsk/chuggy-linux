@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -47,6 +48,7 @@ import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 import {
   engineSocketFixture,
   fixturePool,
+  poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
 
@@ -823,9 +825,9 @@ test(
       state.calls.map((call) => call.argv[0]),
       [
         ...["info", "context", "image", "pull", "image"],
-        ...["info", "ps", "volume", "volume", "run", "volume"],
+        ...["info", "volume", "ps", "volume", "run", "volume"],
         ...["image", "pull", "image"],
-        ...["info", "ps", "container", "volume", "volume", "run", "volume"],
+        ...["info", "volume", "ps", "container", "volume", "run", "volume"],
       ],
     );
     const record = JSON.parse(
@@ -942,12 +944,12 @@ test("a run holds the floor its file sets in GiB free where the engine stores, t
   }
 });
 
-test("a run's memory budget is its engine's memory less the GiB its file keeps free, 2 unless it says, and it takes no job without room", async (t) => {
+test("a run's memory budget is its engine's memory less the GiB its file keeps free, none unless it says, and it takes no job without room", async (t) => {
   for (const [memoryFreeGibMin, usedGib, taken] of /** @type {const} */ ([
-    [undefined, 13.5, true],
-    [undefined, 13.6, false],
+    [undefined, 15.5, true],
+    [undefined, 15.6, false],
     [4, 11.6, false],
-    [0, 15.5, true],
+    [2, 13.5, true],
   ])) {
     const label = `${String(memoryFreeGibMin)} with ${String(usedGib)} used`;
     const { home, environment, poolFile } = await runnerFixture(t, {
@@ -969,6 +971,67 @@ test("a run's memory budget is its engine's memory less the GiB its file keeps f
     await runner.client.backend.held();
     assert.equal(runner.client.backend.jobsTaken?.(), taken, label);
   }
+});
+
+test("every pool's service of a user starts its jobs under the one memory lock of its engine", async (t) => {
+  const pool = { ...fixturePool, registryHost: "registry.chuggy.example" };
+  const { home, environment, poolFile } = await runnerFixture(t, { pool });
+  const otherFile = await poolFileWritten(join(home, "other.json"), {
+    ...pool,
+    pool: "other",
+  });
+  const lock = runnerMemoryLock(runnerPaths(environment, home), "podman");
+  const { engine } = fakeEngine();
+  /** @type {boolean[]} */
+  const lockedAtHold = [];
+  const watched = {
+    ...engine,
+    /** @type {typeof engine.exec} */
+    exec: (argv, options) => {
+      if (
+        argv[0] === "volume" &&
+        argv[1] === "create" &&
+        argv.includes("--label") &&
+        argv.some((arg) => arg.startsWith("io.chuggy.held="))
+      )
+        lockedAtHold.push(existsSync(lock));
+      return engine.exec(argv, options);
+    },
+  };
+  for (const [file, assignment] of /** @type {const} */ ([
+    [poolFile, "asg-1"],
+    [otherFile, "asg-2"],
+  ])) {
+    const runner = await runnerParts(
+      await runnerSetup(file, environment, home),
+      {
+        uid: ownUid,
+        log: () => undefined,
+        engine: watched,
+        disk: fakeDisk(100),
+        tokens: {
+          acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+          invalidate: () => undefined,
+        },
+      },
+    );
+    await runner.client.backend.held();
+    await runner.backend.place(
+      {
+        assignment,
+        capabilities: ["container"],
+        image: `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`,
+        cpuMillis: 1000,
+        memoryMib: 512,
+        deadlineSecs: 600,
+        callbackUrl: "https://chuggy.example/worker",
+        bearer: "attempt-bearer",
+      },
+      "Job",
+    );
+    await runner.backend.settled();
+  }
+  assert.deepEqual(lockedAtHold, [true, true]);
 });
 
 test("docker is refused when it cannot be asked, or its context names no local socket", async () => {
