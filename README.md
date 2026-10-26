@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.28.0/chuggy-linux-0.28.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.29.0/chuggy-linux-0.29.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -68,7 +68,8 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
   "pools": {},
   "autoUpdate": true,
   "imageUnusedSecsMax": 604800,
-  "diskFreeGibMin": 20
+  "diskFreeGibMin": 20,
+  "memoryFreeGibMin": 0
 }
 ```
 
@@ -92,8 +93,9 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
 | `imageUnusedSecsMax` | no     | How long a job's image this runner pulled may go unused before it is removed; 0 keeps them until the disk is under `diskFreeGibMin`. Default a week, 604800. |
 | `diskFreeGibMin`   | no       | The GiB the engine's storage keeps free, below; 0 keeps no floor; 0.23.0 or later. Default 20.             |
+| `memoryFreeGibMin` | no       | The GiB of the engine's memory its containers leave free for the engine and its machine, below; 0.29.0 or later. Default 0, which makes all of it the budget. |
 
-Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
+Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; a job also starts only into the room the memory budget below leaves. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
 
 `pools` sets one pool's service apart from the rest. It is keyed by the pool file's name without `.json`, as `register` wrote it, and each limit it names replaces the file's for that service alone; one leaving that service 0 jobs and 0 sessions is refused. A personal runner that takes jobs beside a project's pool kept for its lead:
 
@@ -160,6 +162,8 @@ A personal runner mounts a scoped volume from chuggy-linux 0.19.0: chuggy tells 
 An unscoped volume is shared by every project and every job this machine serves. Jobs running at once use it at once, with nothing between them but the tool's own care for a shared cache, which npm's and cargo's take; and what one project's job writes there, another's can read and change. Jobs of one project share its scoped volume the same way.
 
 **The disk floor** is `diskFreeGibMin`, held each pass against the space free where the engine stores what it holds: the least of the filesystems under docker's root directory, and under `/var/lib/containerd` where docker stores images through containerd, or under podman's graph root and volume path. Under it, the service removes the images it may, at most once a minute and under half of it every pass, as the hourly removal below does but keeping only the newest of chuggy's runtime and session images, and removing a job's image this runner pulled whatever `imageUnusedSecsMax` says, and takes no job until the disk is over it; sessions and jobs already running go on, and an hourly removal under way stops for it. Under half of it once that removal has begun, and is done or has run out its 30 s, it kills one job a pass, never a session: on docker with several running, the one whose container and workspace hold the most, and otherwise the newest. chuggy shows that job's ticket as Disk low, waiting for you to free space on this machine and resume it. The service's log says when the disk goes under the floor and when it is over again. `doctor` and `status` say what is free against the floor. From chuggy-linux 0.23.0 the floor is held at its default unless the file sets it; an earlier copy refuses a file that names `diskFreeGibMin`, so check `chuggy-linux --version` before writing it.
+
+**The memory budget** is the engine's memory, as the engine's own `info` says, so a VM's where the engine runs in one, less `memoryFreeGibMin`. That reserve is for the memory the engine and its machine use outside every container; none is kept unless the file sets one. Every running container on the engine counts against the budget, whichever service started it: a job or session a runner ran at its memory cap, and anything else, such as a database or what a job starts through `engineSocket`, at what `docker stats` or `podman stats` says it uses. A job is started only into room. Once its image is here it is held, still this service's and shown in chuggy as starting, until the room left takes its cap; if its assignment's deadline comes too near for it to start, or its start has not ended shortly before that deadline, it fails as a job lost on its runner, which chuggy resumes by itself up to its retry limit and after that leaves to you. A held job counts at its cap on every service using the engine, as a volume named for its container with `-held`, until its container runs; the volume goes once the job starts, is stopped or fails, and one a service that has since ended left, or one past its job's deadline, is removed by the next service to count. No service takes a job while any job on the engine is held or starting, or while the room is under the least memory a job may ask, and a held job starts only once every job held before it has, so held jobs start in the order they were held. A job asking more than the whole budget is refused, and chuggy shows its ticket as Nowhere to run this work. Sessions are counted but never held. Where the engine refuses to say what its containers use, as rootless podman on cgroup v1 does, what no runner capped is counted as using none, and the service's log and `status` say so. The count is approximate: a container counted by its use is counted at what it used when the service last counted, use outside every container is covered only by `memoryFreeGibMin`, jobs a pool registered with `--host` runs on this machine itself are not counted, and a service of another user on the same engine shares no lock with this user's, so the two can start into the same room. A job's deadline counts from when its container starts. `status` says the room, the budget and whether the service takes jobs, and why a held job waits. From chuggy-linux 0.29.0 the budget is kept, with no reserve unless the file sets one; an earlier copy refuses a file that names `memoryFreeGibMin`, so check `chuggy-linux --version` before writing it.
 
 No floor is held where the space cannot be measured, as where docker names a machine other than this one, which Docker Desktop's VM is; the service's log says so. Nor does the floor see a filesystem mounted below those directories, or a directory `volumes` mounts into a job.
 
@@ -241,7 +245,7 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
 | `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | This pool's limits, the engine's free disk against the floor, its containers, the service's jobs on this machine itself and what it is still pulling or starting, each named a job or a session. |
+| `status`            | This pool's limits, the engine's free disk against the floor, the room in its memory budget, its containers, the service's jobs on this machine itself and what it is still pulling, starting or holding for room, each named a job or a session. |
 | `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |

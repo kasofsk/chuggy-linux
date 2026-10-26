@@ -22,6 +22,7 @@ import {
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { diskFloorSaid, diskFreePorts } from "./diskFree.mjs";
+import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { agentVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
@@ -247,9 +248,12 @@ async function status(call) {
   call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
   const disk = await diskFloorSaid(setup.config, runner.engine, runner.disk);
   call.host.out(`disk floor: ${disk.detail}`);
+  call.host.out(
+    `memory: ${await memoryBudgetSaid(setup.config, runner.engine)}`,
+  );
   for (const placement of answered?.inFlight ?? [])
     call.host.out(
-      `${placement.name}  ${statusKind(placement)}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
+      `${placement.name}  ${statusKind(placement)}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}${placement.waiting === undefined ? "" : `  waiting: ${placement.waiting}`}`,
     );
   for (const container of containers)
     call.host.out(

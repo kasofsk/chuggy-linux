@@ -62,8 +62,8 @@ const positiveSchema = z.number().int().positive().safe();
 
 const nonnegativeSchema = z.number().int().nonnegative().safe();
 
-/** The most GiB of a floor whose bytes are still a safe integer. */
-const diskFreeGibMax = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
+/** The most GiB kept free whose bytes are still a safe integer. */
+const freeGibMax = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
 
 /** A pool's service's own limits, each in place of the file's for that service alone. */
 const poolLimitsSchema = z.strictObject({
@@ -185,7 +185,17 @@ export const runnerConfigSchema = z
      * the images it may and takes no job, and under half of it stops one.
      * None is kept where it is 0.
      */
-    diskFreeGibMin: nonnegativeSchema.max(diskFreeGibMax).default(20),
+    diskFreeGibMin: nonnegativeSchema.max(freeGibMax).default(20),
+    /**
+     * The GiB of the engine's memory its containers leave free, a reserve
+     * for what the engine and its machine use outside every container. The
+     * rest is the budget every running container and every held job is
+     * counted against: a job is held until it has room and refused where it
+     * asks more than the whole budget, and no job is taken while one is held
+     * or the room is short. None is kept unless the file sets it, so the
+     * whole of the engine's memory is the budget.
+     */
+    memoryFreeGibMin: nonnegativeSchema.max(freeGibMax).default(0),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

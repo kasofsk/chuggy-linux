@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -38,6 +39,7 @@ import {
   runnerParts,
   runnerReleasePrefix,
   runnerSetup,
+  runnerMemoryLock,
   runnerUpdateLock,
   runnerUpdates,
 } from "./runner.mjs";
@@ -46,6 +48,7 @@ import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 import {
   engineSocketFixture,
   fixturePool,
+  poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
 
@@ -223,12 +226,23 @@ test("a run updates itself as the runner's file says, from this package's own re
   );
 });
 
-test("every pool's service of a user takes one install lock, in the runner's runtime directory", async (t) => {
+test("every pool's service of a user takes one install lock, and one memory lock an engine, in the runner's runtime directory", async (t) => {
   const { home, environment } = await runnerFixture(t);
+  const paths = runnerPaths(environment, home);
   assert.equal(
-    runnerUpdateLock(runnerPaths(environment, home)),
+    runnerUpdateLock(paths),
     join(environment.XDG_RUNTIME_DIR, "chuggy-linux", "update.lock"),
   );
+  for (const engine of /** @type {const} */ (["docker", "podman"]))
+    assert.equal(
+      runnerMemoryLock(paths, engine),
+      join(
+        environment.XDG_RUNTIME_DIR,
+        "chuggy-linux",
+        "memory",
+        `${engine}.lock`,
+      ),
+    );
 });
 
 test("a job network another run made between the inspection and the creation is present", async () => {
@@ -810,9 +824,10 @@ test(
     assert.deepEqual(
       state.calls.map((call) => call.argv[0]),
       [
-        ...["info", "context"],
-        ...["image", "pull", "image", "run"],
-        ...["image", "pull", "image", "run"],
+        ...["info", "context", "image", "pull", "image"],
+        ...["info", "volume", "ps", "volume", "run", "volume"],
+        ...["image", "pull", "image"],
+        ...["info", "volume", "ps", "container", "volume", "run", "volume"],
       ],
     );
     const record = JSON.parse(
@@ -927,6 +942,96 @@ test("a run holds the floor its file sets in GiB free where the engine stores, t
         `${label}: ${logged.join("; ")}`,
       );
   }
+});
+
+test("a run's memory budget is its engine's memory less the GiB its file keeps free, none unless it says, and it takes no job without room", async (t) => {
+  for (const [memoryFreeGibMin, usedGib, taken] of /** @type {const} */ ([
+    [undefined, 15.5, true],
+    [undefined, 15.6, false],
+    [4, 11.6, false],
+    [2, 13.5, true],
+  ])) {
+    const label = `${String(memoryFreeGibMin)} with ${String(usedGib)} used`;
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: memoryFreeGibMin === undefined ? {} : { memoryFreeGibMin },
+    });
+    const { engine, state } = fakeEngine();
+    state.containers.set("chuggy-jobs-postgres", {
+      id: "id-postgres",
+      name: "chuggy-jobs-postgres",
+      labels: {},
+      status: "running",
+      image: "postgres",
+      usedBytes: usedGib * 2 ** 30,
+    });
+    const runner = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: ownUid, log: () => undefined, engine, disk: fakeDisk(100) },
+    );
+    await runner.client.backend.held();
+    assert.equal(runner.client.backend.jobsTaken?.(), taken, label);
+  }
+});
+
+test("every pool's service of a user starts its jobs under the one memory lock of its engine", async (t) => {
+  const pool = { ...fixturePool, registryHost: "registry.chuggy.example" };
+  const { home, environment, poolFile } = await runnerFixture(t, { pool });
+  const otherFile = await poolFileWritten(join(home, "other.json"), {
+    ...pool,
+    pool: "other",
+  });
+  const lock = runnerMemoryLock(runnerPaths(environment, home), "podman");
+  const { engine } = fakeEngine();
+  /** @type {boolean[]} */
+  const lockedAtHold = [];
+  const watched = {
+    ...engine,
+    /** @type {typeof engine.exec} */
+    exec: (argv, options) => {
+      if (
+        argv[0] === "volume" &&
+        argv[1] === "create" &&
+        argv.includes("--label") &&
+        argv.some((arg) => arg.startsWith("io.chuggy.held="))
+      )
+        lockedAtHold.push(existsSync(lock));
+      return engine.exec(argv, options);
+    },
+  };
+  for (const [file, assignment] of /** @type {const} */ ([
+    [poolFile, "asg-1"],
+    [otherFile, "asg-2"],
+  ])) {
+    const runner = await runnerParts(
+      await runnerSetup(file, environment, home),
+      {
+        uid: ownUid,
+        log: () => undefined,
+        engine: watched,
+        disk: fakeDisk(100),
+        tokens: {
+          acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+          invalidate: () => undefined,
+        },
+      },
+    );
+    await runner.client.backend.held();
+    await runner.backend.place(
+      {
+        assignment,
+        capabilities: ["container"],
+        image: `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`,
+        cpuMillis: 1000,
+        memoryMib: 512,
+        deadlineSecs: 600,
+        callbackUrl: "https://chuggy.example/worker",
+        bearer: "attempt-bearer",
+      },
+      "Job",
+    );
+    await runner.backend.settled();
+  }
+  assert.deepEqual(lockedAtHold, [true, true]);
 });
 
 test("docker is refused when it cannot be asked, or its context names no local socket", async () => {

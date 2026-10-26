@@ -57,6 +57,7 @@ import {
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { diskFloorBytes, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
+import { memoryFreeBytes } from "./memoryFree.mjs";
 import {
   credentialFileRefusal,
   runnerCredentialDescribed,
@@ -157,6 +158,17 @@ export function poolRuntimeDirectory(paths, identity) {
  */
 export function runnerUpdateLock(paths) {
   return join(runtimeDirectory(paths), "update.lock");
+}
+
+/**
+ * The lock a service takes to start a job into its engine's memory: one for
+ * every pool's service of this user on that engine.
+ *
+ * @param {RunnerPaths} paths
+ * @param {"docker" | "podman"} engine
+ */
+export function runnerMemoryLock(paths, engine) {
+  return join(runtimeDirectory(paths), "memory", `${engine}.lock`);
 }
 
 /**
@@ -459,6 +471,8 @@ export async function runnerParts(setup, host) {
       imageRecord: join(paths.images, `${config.engine}.json`),
       imageUnusedSecsMax: config.imageUnusedSecsMax,
       diskFreeBytesMin: diskFloorBytes(config),
+      memoryFreeBytesMin: memoryFreeBytes(config),
+      memoryLock: runnerMemoryLock(paths, config.engine),
     },
     {
       engine,

@@ -16,6 +16,7 @@ import test, { after } from "node:test";
 
 import { cliMain } from "./commands.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
+import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
 import {
@@ -632,13 +633,14 @@ test("status and stop reach this pool's service, and status names each workload'
     controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
   );
   const { engine, state } = fakeEngine();
-  for (const [name, labels] of [
-    ["chuggy-shame-a", { "io.chuggy.assignment": "asg-2" }],
+  for (const [name, labels, gib] of /** @type {const} */ ([
+    ["chuggy-shame-a", { "io.chuggy.assignment": "asg-2" }, 4],
     [
       "chuggy-shame-b",
       { "io.chuggy.assignment": "ses-1", "io.chuggy.kind": "Session" },
+      2,
     ],
-  ])
+  ]))
     state.containers.set(name, {
       id: `id-${name}`,
       name,
@@ -649,6 +651,7 @@ test("status and stop reach this pool's service, and status names each workload'
         "io.chuggy.deadline": "1800000000",
         ...labels,
       },
+      memoryBytes: gib * 2 ** 30,
     });
   const status = await called(["status", "--pool", poolFile], {
     home,
@@ -661,6 +664,7 @@ test("status and stop reach this pool's service, and status names each workload'
       "service: running",
       "limits: concurrencyMax 3, sessionsMax 4",
       `disk floor: 100 GiB free at ${podmanStore}, over the floor of 20 GiB`,
+      "memory: 10 GiB room · 16 GiB budget · Taking",
       `${inFlightFixture.name}  session  pulling  i  asg-1`,
       "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
       "chuggy-shame-b  session  running  deadline 2027-01-15T08:00:00.000Z  ses-1",
@@ -730,9 +734,57 @@ test("status names a job what a service from before sessions answers it is placi
       "service: running",
       "limits: concurrencyMax 1, sessionsMax 2",
       `disk floor: 100 GiB free at ${podmanStore}, over the floor of 20 GiB`,
+      "memory: 16 GiB room · 16 GiB budget · Taking",
       `${inFlightFixture.name}  job  pulling  i  asg-1`,
     ].join("\n"),
   );
+});
+
+test("status names a job held for room and what it waits for, and the memory it waits on", async (t) => {
+  const { home, environment, poolFile, paths } = await served(t);
+  await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+    [
+      {
+        ...inFlightFixture,
+        kind: "Job",
+        phase: "Held",
+        memoryMib: 8192,
+        waiting: "needs 8 GiB, room 8 GiB",
+      },
+    ],
+  );
+  const { engine, state } = fakeEngine();
+  state.containers.set("chuggy-jobs-postgres", {
+    id: "id-postgres",
+    name: "chuggy-jobs-postgres",
+    labels: {},
+    status: "running",
+    image: "postgres",
+    usedBytes: 8 * 2 ** 30,
+  });
+  await engine.exec(
+    heldCreateArgv({
+      name: `${inFlightFixture.name}-held`,
+      pool: "vteng/chuggy/shame",
+      assignment: inFlightFixture.assignment,
+      memoryMib: 8192,
+      heldMs: 1,
+      pid: process.pid,
+      untilMs: Date.now() + 3_600_000,
+      starting: false,
+    }),
+  );
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+    engine,
+  });
+  assert.deepEqual(status.out.split("\n").slice(3), [
+    "memory: 0 GiB room · 16 GiB budget · Held",
+    `${inFlightFixture.name}  job  held  i  asg-1  waiting: needs 8 GiB, room 8 GiB`,
+  ]);
 });
 
 test("status names the limits this pool's entry in pools sets its service", async (t) => {

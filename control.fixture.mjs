@@ -17,6 +17,7 @@ export const inFlightFixture = {
   image: "i",
   phase: "Pulling",
   deadlineEpochSecs: 1,
+  memoryMib: 4096,
 };
 
 /**
