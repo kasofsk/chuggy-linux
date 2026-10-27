@@ -110,6 +110,7 @@ test("a minimal file is read with every default", async (t) => {
     imageUnusedSecsMax: 604_800,
     diskFreeGibMin: 20,
     memoryFreeGibMin: 0,
+    memoryReservedGib: 0,
   });
 });
 
@@ -133,12 +134,13 @@ test("a job's image this runner pulled is kept a week unused unless the file say
     );
 });
 
-test("what the engine keeps free of its storage and of its memory is any whole GiB the file sets, 0 among them", async (t) => {
+test("what the engine keeps free of its storage and of its memory, and what it reserves of that memory from jobs, is any whole GiB the file sets, 0 among them", async (t) => {
   const directory = await scratch(t);
   const most = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
   for (const key of /** @type {const} */ ([
     "diskFreeGibMin",
     "memoryFreeGibMin",
+    "memoryReservedGib",
   ])) {
     for (const gib of [0, 50, most])
       assert.equal(
@@ -443,6 +445,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         imageUnusedSecsMax: 604_800,
         diskFreeGibMin: 20,
         memoryFreeGibMin: 0,
+        memoryReservedGib: 0,
       },
     );
   for (const [sessionsMax, why] of [

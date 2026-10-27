@@ -664,7 +664,7 @@ test("status and stop reach this pool's service, and status names each workload'
       "service: running",
       "limits: concurrencyMax 3, sessionsMax 4",
       `disk floor: 100 GiB free at ${podmanStore}, over the floor of 20 GiB`,
-      "memory: 10 GiB room · 16 GiB budget · Taking",
+      "memory: 10 GiB room · 16 GiB budget · 16 GiB ceiling · 2 GiB sessions · Taking",
       `${inFlightFixture.name}  session  pulling  i  asg-1`,
       "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
       "chuggy-shame-b  session  running  deadline 2027-01-15T08:00:00.000Z  ses-1",
@@ -734,7 +734,7 @@ test("status names a job what a service from before sessions answers it is placi
       "service: running",
       "limits: concurrencyMax 1, sessionsMax 2",
       `disk floor: 100 GiB free at ${podmanStore}, over the floor of 20 GiB`,
-      "memory: 16 GiB room · 16 GiB budget · Taking",
+      "memory: 16 GiB room · 16 GiB budget · 16 GiB ceiling · 0 GiB sessions · Taking",
       `${inFlightFixture.name}  job  pulling  i  asg-1`,
     ].join("\n"),
   );
@@ -782,7 +782,7 @@ test("status names a job held for room and what it waits for, and the memory it 
     engine,
   });
   assert.deepEqual(status.out.split("\n").slice(3), [
-    "memory: 0 GiB room · 16 GiB budget · Held",
+    "memory: 0 GiB room · 16 GiB budget · 16 GiB ceiling · 0 GiB sessions · Held",
     `${inFlightFixture.name}  job  held  i  asg-1  waiting: needs 8 GiB, room 8 GiB`,
   ]);
 });
