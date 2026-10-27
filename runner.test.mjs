@@ -39,6 +39,7 @@ import {
   runnerParts,
   runnerReleasePrefix,
   runnerSetup,
+  runnerClaimLock,
   runnerMemoryLock,
   runnerUpdateLock,
   runnerUpdates,
@@ -226,7 +227,7 @@ test("a run updates itself as the runner's file says, from this package's own re
   );
 });
 
-test("every pool's service of a user takes one install lock, and one memory lock an engine, in the runner's runtime directory", async (t) => {
+test("every pool's service of a user takes one install lock, and one memory lock and one claim lock an engine, in the runner's runtime directory", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const paths = runnerPaths(environment, home);
   assert.equal(
@@ -241,6 +242,16 @@ test("every pool's service of a user takes one install lock, and one memory lock
         "chuggy-linux",
         "memory",
         `${engine}.lock`,
+      ),
+    );
+  for (const engine of /** @type {const} */ (["docker", "podman"]))
+    assert.equal(
+      runnerClaimLock(paths, engine),
+      join(
+        environment.XDG_RUNTIME_DIR,
+        "chuggy-linux",
+        "memory",
+        `${engine}.claim`,
       ),
     );
 });
@@ -824,10 +835,10 @@ test(
     assert.deepEqual(
       state.calls.map((call) => call.argv[0]),
       [
-        ...["info", "context", "image", "pull", "image"],
-        ...["info", "volume", "ps", "volume", "run", "volume"],
-        ...["image", "pull", "image"],
-        ...["info", "volume", "ps", "container", "volume", "run", "volume"],
+        ...["info", "context", "info", "volume", "ps", "volume", "image"],
+        ...["pull", "image", "run", "volume"],
+        ...["info", "volume", "ps", "container", "volume", "image", "pull"],
+        ...["image", "run", "volume"],
       ],
     );
     const record = JSON.parse(
@@ -970,6 +981,37 @@ test("a run's memory budget is its engine's memory less the GiB its file keeps f
     );
     await runner.client.backend.held();
     assert.equal(runner.client.backend.jobsTaken?.(), taken, label);
+  }
+});
+
+test("a run's ceiling for a job is its budget less the GiB its file reserves, none unless it says, and its service claims jobs under its engine's claim lock", async (t) => {
+  for (const [memoryReservedGib, ceilingMib] of /** @type {const} */ ([
+    [undefined, 16 * 1024],
+    [6, 10 * 1024],
+    [20, 0],
+  ])) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: memoryReservedGib === undefined ? {} : { memoryReservedGib },
+    });
+    const { engine } = fakeEngine();
+    const setup = await runnerSetup(poolFile, environment, home);
+    const runner = await runnerParts(setup, {
+      uid: ownUid,
+      log: () => undefined,
+      engine,
+      disk: fakeDisk(100),
+    });
+    await runner.client.backend.held();
+    assert.deepEqual(runner.client.backend.memoryRoom?.(), {
+      roomMib: 16 * 1024,
+      ceilingMib,
+    });
+    const lock = runnerClaimLock(setup.paths, setup.config.engine);
+    const release = await runner.client.backend.claimed?.();
+    assert.ok(release !== undefined);
+    assert.equal(existsSync(lock), true);
+    await release();
+    assert.equal(existsSync(lock), false);
   }
 });
 
@@ -1322,10 +1364,11 @@ test("a pass places a session the plane offers as a session, and its end reaches
     placed: 0,
     ended: 2,
   });
+  const memory = (roomMib) => ({ memory: { roomMib, ceilingMib: 16 * 1024 } });
   assert.deepEqual(pollsAsked, [
-    ["pool-token", [], 1, 2],
-    ["pool-token", ["asg-1", "ses-1"], 0, 1],
-    ["pool-token", [], 1, 2],
+    ["pool-token", [], 1, 2, memory(16 * 1024)],
+    ["pool-token", ["asg-1", "ses-1"], 0, 1, memory(0)],
+    ["pool-token", [], 1, 2, memory(16 * 1024)],
   ]);
   assert.deepEqual(askedUnder(asked, "ses-1"), [
     [

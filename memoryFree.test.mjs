@@ -4,18 +4,28 @@ import test from "node:test";
 import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
 
 import { fakeEngine } from "./engine.fixture.mjs";
-import { memoryBudgetSaid, memoryFreeBytes } from "./memoryFree.mjs";
+import {
+  memoryBudgetSaid,
+  memoryFreeBytes,
+  memoryReservedBytes,
+} from "./memoryFree.mjs";
 
 const gib = 2 ** 30;
 
 /**
- * A runner's file keeping `memoryFreeGibMin` free on docker.
+ * A runner's file keeping `memoryFreeGibMin` free on docker, and reserving
+ * `memoryReservedGib` of the budget from jobs.
  *
  * @param {number} memoryFreeGibMin
+ * @param {number} [memoryReservedGib]
  */
-const config = (memoryFreeGibMin) =>
+const config = (memoryFreeGibMin, memoryReservedGib = 0) =>
   /** @type {import("./runnerConfig.mjs").RunnerConfig} */ (
-    /** @type {unknown} */ ({ engine: "docker", memoryFreeGibMin })
+    /** @type {unknown} */ ({
+      engine: "docker",
+      memoryFreeGibMin,
+      memoryReservedGib,
+    })
   );
 
 /**
@@ -52,31 +62,41 @@ async function engineUsing(usedGib, held = 0, starting = false) {
   return { engine, state };
 }
 
-test("what the file keeps free is its GiB in bytes", () => {
+test("what the file keeps free and what it reserves are their GiB in bytes", () => {
   assert.equal(memoryFreeBytes(config(2)), 2 * gib);
   assert.equal(memoryFreeBytes(config(0)), 0);
+  assert.equal(memoryReservedBytes(config(0, 3)), 3 * gib);
+  assert.equal(memoryReservedBytes(config(0)), 0);
 });
 
-test("status says the room, the budget and the budget's state, or why it could not be counted", async () => {
+test("status says the room, the budget, the ceiling, the sessions' caps and the budget's state, or why it could not be counted", async () => {
   assert.equal(
     await memoryBudgetSaid(config(2), (await engineUsing(4)).engine),
-    "10 GiB room · 14 GiB budget · Taking",
+    "10 GiB room · 14 GiB budget · 14 GiB ceiling · 0 GiB sessions · Taking",
   );
   assert.equal(
     await memoryBudgetSaid(config(0), (await engineUsing(4)).engine),
-    "12 GiB room · 16 GiB budget · Taking",
+    "12 GiB room · 16 GiB budget · 16 GiB ceiling · 0 GiB sessions · Taking",
+  );
+  assert.equal(
+    await memoryBudgetSaid(config(2, 6), (await engineUsing(4)).engine),
+    "10 GiB room · 14 GiB budget · 8 GiB ceiling · 0 GiB sessions · Taking",
+  );
+  assert.equal(
+    await memoryBudgetSaid(config(2, 20), (await engineUsing(4)).engine),
+    "10 GiB room · 14 GiB budget · 0 GiB ceiling · 0 GiB sessions · Taking",
   );
   assert.equal(
     await memoryBudgetSaid(config(2), (await engineUsing(13.75)).engine),
-    "0.3 GiB room · 14 GiB budget · Full",
+    "0.3 GiB room · 14 GiB budget · 14 GiB ceiling · 0 GiB sessions · Full",
   );
   assert.equal(
     await memoryBudgetSaid(config(2), (await engineUsing(4, 2)).engine),
-    "6 GiB room · 14 GiB budget · Held",
+    "6 GiB room · 14 GiB budget · 14 GiB ceiling · 0 GiB sessions · Held",
   );
   assert.equal(
     await memoryBudgetSaid(config(2), (await engineUsing(4, 1, true)).engine),
-    "8 GiB room · 14 GiB budget · Starting",
+    "8 GiB room · 14 GiB budget · 14 GiB ceiling · 0 GiB sessions · Taking",
   );
   assert.equal(
     await memoryBudgetSaid(
@@ -84,7 +104,27 @@ test("status says the room, the budget and the budget's state, or why it could n
       (await engineUsing(4, 1)).engine,
       () => false,
     ),
-    "10 GiB room · 14 GiB budget · Taking",
+    "10 GiB room · 14 GiB budget · 14 GiB ceiling · 0 GiB sessions · Taking",
+  );
+  const sessions = await engineUsing(4);
+  for (const [name, kind, capGib] of /** @type {const} */ ([
+    ["chuggy-shame-session", "Session", 3],
+    ["chuggy-shame-job", "Job", 2],
+  ]))
+    sessions.state.containers.set(name, {
+      id: `id-${name}`,
+      name,
+      status: "running",
+      image: "i",
+      labels: {
+        "io.chuggy.pool": "vteng/chuggy/shame",
+        "io.chuggy.kind": kind,
+      },
+      memoryBytes: capGib * gib,
+    });
+  assert.equal(
+    await memoryBudgetSaid(config(2), sessions.engine),
+    "5 GiB room · 14 GiB budget · 14 GiB ceiling · 3 GiB sessions · Taking",
   );
   const { engine, state } = await engineUsing(4);
   state.unreachable = true;
@@ -111,6 +151,6 @@ test("status says where what no runner capped was counted at none, since the eng
   };
   assert.equal(
     await memoryBudgetSaid(config(0), refusing),
-    "16 GiB room · 16 GiB budget · Taking · uncapped use unmeasured",
+    "16 GiB room · 16 GiB budget · 16 GiB ceiling · 0 GiB sessions · Taking · uncapped use unmeasured",
   );
 });

@@ -1,7 +1,8 @@
 /**
  * The memory budget a run keeps of its engine, which the worker core's
- * `memoryBudget.mjs` holds: the engine's memory less `memoryFreeGibMin`, and
- * what `status` says of it.
+ * `memoryBudget.mjs` holds: the engine's memory less `memoryFreeGibMin`, its
+ * ceiling for a job that budget less `memoryReservedGib`, and what `status`
+ * says of them.
  */
 
 import { diskGib } from "@chuggy/worker-core/diskFloor.mjs";
@@ -29,10 +30,20 @@ export function memoryFreeBytes(config) {
 }
 
 /**
+ * What the runner's file reserves of the budget from jobs, in bytes.
+ *
+ * @param {RunnerConfig} config
+ */
+export function memoryReservedBytes(config) {
+  return config.memoryReservedGib * 2 ** 30;
+}
+
+/**
  * The engine's memory against the runner's budget, as `status` says it: the
- * room, the budget and the budget's state, or why it could not be counted;
- * and where the engine refused to say what its containers use, that what no
- * runner capped was counted at none.
+ * room, the budget, the ceiling for a job, the running sessions' caps and the
+ * budget's state, or why it could not be counted; and where the engine
+ * refused to say what its containers use, that what no runner capped was
+ * counted at none.
  *
  * @param {RunnerConfig} config
  * @param {Engine} engine
@@ -52,9 +63,12 @@ export async function memoryBudgetSaid(
   });
   if ("unknown" in counted) return `Unknown · ${counted.unknown}`;
   const bytesFree = memoryFreeBytes(config);
+  const budgetBytes = memoryBudgetBytes(bytesFree, counted);
   return [
     `${diskGib(Math.max(0, memoryRoomBytes(bytesFree, counted)))} GiB room`,
-    `${diskGib(memoryBudgetBytes(bytesFree, counted))} GiB budget`,
+    `${diskGib(budgetBytes)} GiB budget`,
+    `${diskGib(Math.max(0, budgetBytes - memoryReservedBytes(config)))} GiB ceiling`,
+    `${diskGib(counted.sessionBytes)} GiB sessions`,
     memoryBudgetState(bytesFree, counted, 0),
     ...(counted.unmeasured === undefined ? [] : ["uncapped use unmeasured"]),
   ].join(" · ");

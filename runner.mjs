@@ -57,7 +57,7 @@ import {
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { diskFloorBytes, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
-import { memoryFreeBytes } from "./memoryFree.mjs";
+import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import {
   credentialFileRefusal,
   runnerCredentialDescribed,
@@ -169,6 +169,35 @@ export function runnerUpdateLock(paths) {
  */
 export function runnerMemoryLock(paths, engine) {
   return join(runtimeDirectory(paths), "memory", `${engine}.lock`);
+}
+
+/**
+ * The lock a service takes to ask a plane that claims by room for jobs, so
+ * no two are given the same room: one for every pool's service of this user
+ * on that engine, beside the memory lock.
+ *
+ * @param {RunnerPaths} paths
+ * @param {"docker" | "podman"} engine
+ */
+export function runnerClaimLock(paths, engine) {
+  return join(runtimeDirectory(paths), "memory", `${engine}.claim`);
+}
+
+/**
+ * What the container backend is told of its engine's memory: the budget the
+ * runner's file keeps and reserves, and the two locks every pool's service of
+ * this user on that engine shares.
+ *
+ * @param {RunnerConfig} config
+ * @param {RunnerPaths} paths
+ */
+function runnerMemorySettings(config, paths) {
+  return {
+    memoryFreeBytesMin: memoryFreeBytes(config),
+    memoryReservedBytes: memoryReservedBytes(config),
+    memoryLock: runnerMemoryLock(paths, config.engine),
+    memoryClaimLock: runnerClaimLock(paths, config.engine),
+  };
 }
 
 /**
@@ -471,8 +500,7 @@ export async function runnerParts(setup, host) {
       imageRecord: join(paths.images, `${config.engine}.json`),
       imageUnusedSecsMax: config.imageUnusedSecsMax,
       diskFreeBytesMin: diskFloorBytes(config),
-      memoryFreeBytesMin: memoryFreeBytes(config),
-      memoryLock: runnerMemoryLock(paths, config.engine),
+      ...runnerMemorySettings(config, paths),
     },
     {
       engine,
