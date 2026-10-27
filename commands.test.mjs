@@ -892,7 +892,7 @@ test("a run names its copy on each poll, and takes the release chuggy names unle
       out,
     );
   }
-  assert.deepEqual(named, Array(4).fill("chuggy-linux/9.8.7"));
+  assert.deepEqual(named, Array(6).fill("chuggy-linux/9.8.7"));
 });
 
 /**
@@ -938,7 +938,7 @@ test("a run advertises its capabilities on each poll, and doctor's poll advertis
     },
   });
   assert.equal(status, 3);
-  assert.deepEqual(advertised, Array(2).fill("Platform:Linux:Arm64,gpu"));
+  assert.deepEqual(advertised, Array(3).fill("Platform:Linux:Arm64,gpu"));
   advertised.length = 0;
   const doctor = await called(["doctor", "--pool", poolFile], {
     home,

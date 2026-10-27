@@ -246,7 +246,7 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
 | `run`               | The service: polls until the plane denies the pool.                                                                                     |
-| `once`              | One poll, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
+| `once`              | One pass, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
 | `status`            | This pool's limits, the engine's free disk against the floor, the room, ceiling and sessions in its memory budget, its containers, the service's jobs on this machine itself and what it is still pulling, starting or holding for room, each named a job or a session. |
 | `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
 | `doctor`            | The checks above.                                                                                                                       |
