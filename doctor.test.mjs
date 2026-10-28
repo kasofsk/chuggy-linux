@@ -201,7 +201,7 @@ test("doctor names a personal runner's jobs alone, ignoring a sessionsMax, and f
   assert.equal(idle.findings[1]?.passed, false);
   assert.match(
     idle.findings[1]?.detail ?? "",
-    /\/runner\.json: concurrencyMax 0, as pools\.pool sets it; pools\.pool\.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools\.pool\.concurrencyMax above 0, or stop and disable its service$/u,
+    /^runner configuration \/.*\/runner\.json: pools\.pool\.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools\.pool\.concurrencyMax above 0 and start its service again, or run your chats on a chat host \(chuggy-linux register --chat\) and disable this service$/u,
   );
 });
 

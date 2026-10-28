@@ -424,7 +424,8 @@ test("a personal runner holds no session whatever the file or its entry in pools
     runnerConfigLimits(sessions, poolFile, true),
     "concurrencyMax 2",
   );
-  assert.equal(runnerPersonalIdleRefusal(sessions, poolFile), undefined);
+  const file = "/home/you/.config/chuggy-linux/runner.json";
+  assert.equal(runnerPersonalIdleRefusal(sessions, file, poolFile), undefined);
   const own = await read({
     pools: { [name]: { concurrencyMax: 0, sessionsMax: 1 } },
   });
@@ -432,13 +433,18 @@ test("a personal runner holds no session whatever the file or its entry in pools
     runnerConfigLimits(own, poolFile, true),
     `concurrencyMax 0, as pools.${name} sets it`,
   );
+  const remedy = `set pools.${name}.concurrencyMax above 0 and start its service again, or run your chats on a chat host (chuggy-linux register --chat) and disable this service`;
   assert.equal(
-    runnerPersonalIdleRefusal(own, poolFile),
-    `pools.${name}.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.${name}.concurrencyMax above 0, or stop and disable its service`,
+    runnerPersonalIdleRefusal(own, file, poolFile),
+    `runner configuration ${file}: pools.${name}.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; ${remedy}`,
   );
   assert.equal(
-    runnerPersonalIdleRefusal(await read({ concurrencyMax: 0 }), poolFile),
-    "concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set concurrencyMax above 0, or stop and disable its service",
+    runnerPersonalIdleRefusal(
+      await read({ concurrencyMax: 0 }),
+      file,
+      poolFile,
+    ),
+    `runner configuration ${file}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; ${remedy}`,
   );
 });
 

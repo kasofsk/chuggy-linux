@@ -1,16 +1,21 @@
 /**
  * The systemd user unit a pool's service runs under, one per pool file, so
  * several pools serve from one machine. It restarts the runner after any exit
- * but one: a pool the plane denied exits `deniedExitStatus`, and no restart of
- * it would be answered differently. A run that installed a release of itself
- * exits `updatedExitStatus`, and is restarted on that release.
+ * but one, `unrestartedExitStatus`, of a run no restart would answer
+ * differently. A run that installed a release of itself exits
+ * `updatedExitStatus`, and is restarted on that release.
  */
 
 import { Buffer } from "node:buffer";
 import { basename } from "node:path";
 
-/** The exit status of a run the plane ended by denying the pool. */
-export const deniedExitStatus = 3;
+/**
+ * The exit status of a run no restart would answer differently: the plane
+ * denied the pool, or the runner's file leaves it no work. A release that
+ * updates itself never writes its unit again, so this is the one status
+ * every unit it ever wrote does not restart after.
+ */
+export const unrestartedExitStatus = 3;
 
 /**
  * The exit status of a run that installed a release of itself, to be started
@@ -138,7 +143,7 @@ export function serviceUnit(service) {
     `ExecStart=${command}`,
     "Restart=always",
     "RestartSec=10",
-    `RestartPreventExitStatus=${String(deniedExitStatus)}`,
+    `RestartPreventExitStatus=${String(unrestartedExitStatus)}`,
     "UMask=0077",
     "",
     "[Install]",

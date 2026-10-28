@@ -404,19 +404,24 @@ export function runnerPoolLimits(config, poolFile, personal) {
 /**
  * Why a personal runner's service would take no work, or nothing: one whose
  * `concurrencyMax` is 0 was kept for sessions, which it is no longer handed.
+ * The remedy names its own entry in `pools`, since the file's
+ * `concurrencyMax` would hand jobs to a pool sharing the file that is kept
+ * for sessions too.
  *
  * @param {RunnerConfig} config
+ * @param {string} file the runner's file
  * @param {string} poolFile a personal runner's
  * @returns {string | undefined}
  */
-export function runnerPersonalIdleRefusal(config, poolFile) {
+export function runnerPersonalIdleRefusal(config, file, poolFile) {
   if (runnerPoolLimits(config, poolFile, true).concurrencyMax > 0)
     return undefined;
+  const own = `pools.${runnerPoolName(poolFile)}.concurrencyMax`;
   const key =
     runnerPoolOwn(config, poolFile)?.concurrencyMax === undefined
       ? "concurrencyMax"
-      : `pools.${runnerPoolName(poolFile)}.concurrencyMax`;
-  return `${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set ${key} above 0, or stop and disable its service`;
+      : own;
+  return `runner configuration ${file}: ${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set ${own} above 0 and start its service again, or run your chats on a chat host (chuggy-linux register --chat) and disable this service`;
 }
 
 /**
