@@ -46,6 +46,8 @@ chuggy-linux register --api <chuggy's origin> --token=<token> --personal
 
 It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over and restarts its service on it; the registration it held before stays in chuggy, offline, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
+A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host).
+
 ## Configure
 
 **The pool file** is what registering the pool wrote, such as `~/.config/chuggy/pools/vteng.chuggy.shame.json`. Every command but `register` takes it as `--pool <file>`, or from `CHUGGY_LINUX_POOL`. It must be mode 600.
@@ -96,6 +98,7 @@ It takes no `--pool`, and the file is named for the tenant and the member: `vten
 | `diskFreeGibMin`   | no       | The GiB the engine's storage keeps free, below; 0 keeps no floor; 0.23.0 or later. Default 20.             |
 | `memoryFreeGibMin` | no       | The GiB of the engine's memory its containers leave free for the engine and its machine, below; 0.29.0 or later. Default 0, which makes all of it the budget. |
 | `memoryReservedGib` | no      | The GiB of the memory budget no job may ask, kept for what always runs beside the jobs, below; 0.31.0 or later. Default 0, which lets a job ask the whole budget. |
+| `chat`             | no       | A chat host's own settings, in [A chat host](#a-chat-host); 0.35.0 or later. Default none, every setting its default. |
 
 Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; a job also starts only into the room the memory budget below leaves. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
 
@@ -202,6 +205,46 @@ docker run -d --name jobs-postgres --network chuggy-jobs --restart unless-stoppe
 
 Every job this machine runs, of every pool, then reaches that one server.
 
+## A chat host
+
+A member's chat host runs that member's chats with chuggy, each a session, on their own machine and their own Claude credential, in one container of chuggy's chat image that it keeps running. It is one per member in a tenant. A tenant administrator grants the member the right to register one; the member mints a chat host registration token through chuggy's API, `POST /api/v1/tenants/:tenant/chat-host-registration-tokens`, then:
+
+```sh
+chuggy-linux register --api <chuggy's origin> --token=<token> --chat
+```
+
+It takes no `--pool`, `--host` or `--capability`, and declares nothing: the file is named for the tenant and the member, then `chat.host`, such as `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.chat.host.json`, and its unit for the file, `chuggy-linux-vteng.….chat.host.service`. Registering again, from here or any machine, replaces the host: chuggy denies the earlier one, so its service stops, and `register` here restarts this machine's on the new file. `run`, `status`, `doctor` and `install-service` take the file as they take a pool's; `once` and `stop` refuse it, since a chat host runs only as its service and a session is stopped in chuggy.
+
+It reads the same runner's file as a pool's service: its `engine`, Claude credential, `network`, `autoUpdate`, and `timeoutSecsMax` and `outputBytesMax`, which the file still requires. What is its own is under `chat`, each key optional and any other an error:
+
+```json
+"chat": {
+  "image": { "image": "ghcr.io/you/chuggy-chat:1", "pull": "missing" },
+  "sessionsMax": 4,
+  "idleSecs": 600,
+  "outputBytesMax": 1048576
+}
+```
+
+| Key              | Meaning                                                                                                                       |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `image`          | The image to run in place of the one chuggy names, and `pull`: `missing` (the default) pulls it where it is not here, `always` before each start, `never` not at all. Pulled as the engine's own login pulls it. Default none, which runs chuggy's. |
+| `sessionsMax`    | Sessions run at once. Default 32, as many as one container runs.                                                              |
+| `idleSecs`       | How long a session may sit idle before it ends, which chuggy caps. Default 600.                                               |
+| `outputBytesMax` | The most output a session may report. Default the file's `outputBytesMax`.                                                   |
+
+`chat` needs chuggy-linux 0.35.0 or later, and so does a chat host's file: an earlier copy refuses a runner.json naming `chat`, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
+
+The container is chuggy's supervisor, run as root inside with every capability dropped but `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `SETUID`, `SETGID` and `SETPCAP`, and no privilege escalation. It runs each session as a user of its own, uids 20000 to 20031 of the image, which it clears once the session ends, and keeps their directories and the repositories they read in two volumes named for the host, `chuggy-chat-<digest>-sessions` and `-mirrors`, which nothing removes. It is named for the host too, `chuggy-chat-<digest>`, so a second started beside it is refused. It joins `network`, and a session reaches whatever that reaches. Its input is the service's, so it ends with the service, and every session with it.
+
+The Claude credential's directory is mounted into the container read-only, whole, so the credential must be alone in a directory of its own, such as `~/.config/chuggy-linux/claude/token`; `run` and `doctor` refuse one with anything beside it. The supervisor reads it again as its owner for each session and hands the session a copy only that session's user reads, so a credential renewed in place serves the next session. Every session uses your Claude plan, or whatever provider the credential names.
+
+**Podman** runs the container in your own user namespace, whatever `containers.conf` says, so root inside is you, the credential is yours, and each session's user is one of your subordinate ids. Your ranges in `/etc/subuid` and `/etc/subgid` must give podman's namespace 20032 uids and 31024 gids from 0 without a gap, as `you:100000:65536` in both does; after changing them, run `podman system migrate`. **Docker** maps no user, so root inside is root here, behind the capabilities above, and each session runs as this machine's uid of its number: run the host as a user whose uid is not 20000 to 20031, which `run` and `doctor` refuse. A session's user owns nothing of yours.
+
+`doctor` checks the chat host's file and the runner's, the Claude credential, that it is alone in its directory, podman's credential helpers, the unit, updates, the engine and the host's containers, the network, that the engine can run each session's user as above, a token and one poll of the plane, and that the image the host would run is here or can be pulled: it pulls it where it is not, as the host would before starting, under the host's token where it is in chuggy's registry. `status` prints the `chat` settings, whether the service is running, and from the service, the supervisor's phase and the image it runs against the one chuggy names. Each session's log is kept in `~/.local/state/chuggy-linux/logs/chuggy-chat-<digest>.log`, opening with its assignment, up to 10 MiB.
+
+The service updates itself as a pool's does: once chuggy names a release, the host takes no new session, installs the release once its sessions have ended, ends its container and exits 75, and systemd starts it again on the new copy, which starts the container afresh.
+
 ## Check
 
 ```sh
@@ -218,7 +261,7 @@ Its first line names the copy speaking and the Node it runs under. It checks bot
 chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again from the new copy after upgrading Node or moving the install; until then `doctor` warns that the service runs another.
+This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. A chat host's unit is the same, saying it is one. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again from the new copy after upgrading Node or moving the install; until then `doctor` warns that the service runs another.
 
 chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-linux.service`, and it keeps working after an upgrade. Where it serves the pool being installed, `install-service` prints the commands that stop and remove it before starting the pool's own. A pool's service refuses to start while another service of the pool runs, or while the old unit's service runs a pool file this runner cannot read, which may be the same pool. It cannot see a 0.1 runner started by hand rather than by that unit. Where the old unit serves another pool, it runs on beside the new unit. The containers it started are found by their labels, so `status` and `stop` still see them.
 
@@ -244,11 +287,11 @@ claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace
 
 | Command             | What it does                                                                                                                            |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `register`          | Redeems a registration token for a pool file, and starts its service where it can.                                                      |
-| `run`               | The service: polls until the plane denies the pool.                                                                                     |
-| `once`              | One pass, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs. |
-| `status`            | This pool's limits, the engine's free disk against the floor, the room, ceiling and sessions in its memory budget, its containers, the service's jobs on this machine itself and what it is still pulling, starting or holding for room, each named a job or a session. |
-| `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. |
+| `register`          | Redeems a registration token for a pool file, a personal runner's with `--personal` or a chat host's with `--chat`, and starts its service where it can. |
+| `run`               | The service: polls until the plane denies the pool or chat host.                                                                        |
+| `once`              | One pass, then waits for what it placed to start, and for a job on this machine itself to end. Refused while the pool's own service, or a 0.1 service known to serve the pool, runs, and of a chat host. |
+| `status`            | This pool's limits, the engine's free disk against the floor, the room, ceiling and sessions in its memory budget, its containers, the service's jobs on this machine itself and what it is still pulling, starting or holding for room, each named a job or a session; of a chat host, its settings and its supervisor. |
+| `stop <assignment>` | Stops one assignment's container, through the service when it is running; a job on this machine itself only through the service. Refused of a chat host. |
 | `doctor`            | The checks above.                                                                                                                       |
 | `install-service`   | Writes the pool's systemd user unit.                                                                                                    |
 | `mcp`               | Serves the `chuggy` tools for one project to your own coding agent on stdio. |
