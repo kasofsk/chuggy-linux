@@ -630,6 +630,20 @@ test("once is refused while a legacy service serving this pool runs, and not whi
   assert.match(refused.err, /^a chuggy-linux service is running this pool/u);
 });
 
+test("status of a personal runner names its jobs' limit alone, whatever sessionsMax the file sets", async (t) => {
+  const { home, environment, poolFile } = await served(t, {
+    runner: { concurrencyMax: 3, sessionsMax: 4 },
+    pool: registeredPersonalFixture,
+  });
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+    engine: fakeEngine().engine,
+  });
+  assert.equal(status.status, 0, status.err);
+  assert.equal(status.out.split("\n")[1], "limits: concurrencyMax 3");
+});
+
 test("status and stop reach this pool's service, and status names each workload's kind and the runner's limits", async (t) => {
   const { home, environment, poolFile, paths } = await served(t, {
     runner: { concurrencyMax: 3, sessionsMax: 4 },

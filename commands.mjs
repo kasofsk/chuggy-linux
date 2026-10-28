@@ -266,7 +266,9 @@ async function status(call) {
   call.host.out(
     answered === undefined ? "service: not running" : "service: running",
   );
-  call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
+  call.host.out(
+    `limits: ${runnerConfigLimits(setup.config, setup.poolFile, poolIdentityPersonal(setup.credentials))}`,
+  );
   const disk = await diskFloorSaid(setup.config, runner.engine, runner.disk);
   call.host.out(`disk floor: ${disk.detail}`);
   call.host.out(

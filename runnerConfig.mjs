@@ -388,13 +388,35 @@ export function runnerPoolName(poolFile) {
 
 /**
  * The limits a pool's service holds: those its entry in `pools` names, and
- * the file's for the rest.
+ * the file's for the rest. A personal runner holds no sessions whatever the
+ * file says, since chuggy hands sessions only to a dedicated pool or a chat
+ * host, so its `sessionsMax` is ignored rather than refused.
  *
  * @param {RunnerConfig} config
  * @param {string} poolFile
+ * @param {boolean} personal whether the pool file is a personal runner's
  */
-export function runnerPoolLimits(config, poolFile) {
-  return runnerPoolLimitsOver(config, runnerPoolOwn(config, poolFile));
+export function runnerPoolLimits(config, poolFile, personal) {
+  const limits = runnerPoolLimitsOver(config, runnerPoolOwn(config, poolFile));
+  return personal ? { ...limits, sessionsMax: 0 } : limits;
+}
+
+/**
+ * Why a personal runner's service would take no work, or nothing: one whose
+ * `concurrencyMax` is 0 was kept for sessions, which it is no longer handed.
+ *
+ * @param {RunnerConfig} config
+ * @param {string} poolFile a personal runner's
+ * @returns {string | undefined}
+ */
+export function runnerPersonalIdleRefusal(config, poolFile) {
+  if (runnerPoolLimits(config, poolFile, true).concurrencyMax > 0)
+    return undefined;
+  const key =
+    runnerPoolOwn(config, poolFile)?.concurrencyMax === undefined
+      ? "concurrencyMax"
+      : `pools.${runnerPoolName(poolFile)}.concurrencyMax`;
+  return `${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set ${key} above 0, or stop and disable its service`;
 }
 
 /**
@@ -421,18 +443,24 @@ function runnerPoolOwn(config, poolFile) {
 
 /**
  * How many jobs and sessions a pool's service holds at once, in the file's
- * own terms, and whether its entry in `pools` sets them.
+ * own terms, and whether its entry in `pools` sets them; of a personal
+ * runner, which holds no sessions, its jobs alone.
  *
  * @param {RunnerConfig} config
  * @param {string} poolFile
+ * @param {boolean} personal whether the pool file is a personal runner's
  */
-export function runnerConfigLimits(config, poolFile) {
-  const { concurrencyMax, sessionsMax } = runnerPoolLimits(config, poolFile);
-  const own =
-    runnerPoolOwn(config, poolFile) === undefined
-      ? ""
-      : `, as pools.${runnerPoolName(poolFile)} sets them`;
-  return `concurrencyMax ${String(concurrencyMax)}, sessionsMax ${String(sessionsMax)}${own}`;
+export function runnerConfigLimits(config, poolFile, personal) {
+  const { concurrencyMax, sessionsMax } = runnerPoolLimits(
+    config,
+    poolFile,
+    personal,
+  );
+  const own = runnerPoolOwn(config, poolFile);
+  const name = runnerPoolName(poolFile);
+  if (personal)
+    return `concurrencyMax ${String(concurrencyMax)}${own?.concurrencyMax === undefined ? "" : `, as pools.${name} sets it`}`;
+  return `concurrencyMax ${String(concurrencyMax)}, sessionsMax ${String(sessionsMax)}${own === undefined ? "" : `, as pools.${name} sets them`}`;
 }
 
 /**
