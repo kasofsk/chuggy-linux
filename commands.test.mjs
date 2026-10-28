@@ -15,7 +15,11 @@ import { dirname, join } from "node:path";
 import test, { after } from "node:test";
 
 import { cliMain } from "./commands.mjs";
-import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
+import { chatHostControl } from "@chuggy/worker-core/chatHost.mjs";
+import {
+  controlServer,
+  controlSocketPath,
+} from "@chuggy/worker-core/control.mjs";
 import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
@@ -2045,26 +2049,27 @@ test("status of a chat host says its settings, and its supervisor where its serv
     stopped.out,
     [
       "service: not running",
-      "chat: sessionsMax 32, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
+      "chat: sessionsMax 4, sessionMemoryMib 2048, the supervisor capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
     ].join("\n"),
   );
-  await controlServed(
-    t,
-    controlSocketPath(
-      poolRuntimeDirectory(
-        paths,
-        /** @type {any} */ (registeredChatHostFixture),
-      ),
-    ),
-    [
-      {
-        named: "registry.example/chat:2",
-        used: "registry.example/chat:1",
-        supervisor: "Draining",
-        starting: true,
-      },
-    ],
+  const socket = controlSocketPath(
+    poolRuntimeDirectory(paths, /** @type {any} */ (registeredChatHostFixture)),
   );
+  await mkdir(dirname(socket), { recursive: true, mode: 0o700 });
+  const server = await controlServer(
+    socket,
+    chatHostControl(
+      /** @type {any} */ ({
+        status: () => ({
+          named: "registry.example/chat:2",
+          used: "registry.example/chat:1",
+          supervisor: "Draining",
+          starting: true,
+        }),
+      }),
+    ),
+  );
+  t.after(() => server.close());
   const running = await called(["status", "--pool", poolFile], {
     home,
     environment,
@@ -2073,7 +2078,7 @@ test("status of a chat host says its settings, and its supervisor where its serv
     running.out,
     [
       "service: running",
-      "chat: sessionsMax 32, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
+      "chat: sessionsMax 4, sessionMemoryMib 2048, the supervisor capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
       "supervisor: draining, starting",
       "image: running registry.example/chat:1; chuggy names registry.example/chat:2",
     ].join("\n"),
@@ -2122,7 +2127,7 @@ test("a chat host's run is refused where its Claude credential shares its direct
   assert.match(
     err,
     new RegExp(
-      `^${home} holds .* beside the credential ${shared}, and the chat supervisor is given the directory whole`,
+      `^${home} holds .* beside the credential ${shared}, and a chat host's supervisor is handed the directory whole`,
       "u",
     ),
   );

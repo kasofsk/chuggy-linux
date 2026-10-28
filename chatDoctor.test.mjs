@@ -5,10 +5,19 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  chatHostMemoryBytes,
+  chatHostSessionsMaxDefault,
+  chatSessionMemoryBytesDefault,
+  chatSupervisorName,
+} from "@chuggy/worker-core/chatHost.mjs";
+
+import {
   chatCredentialDirectoryFinding,
   chatImageFinding,
   chatPodmanIdsRefusal,
   chatSessionUsersFinding,
+  chatSettingsFinding,
+  chatSupervisorFinding,
   idMapContiguous,
 } from "./chatDoctor.mjs";
 import { doctorFindings } from "./doctor.mjs";
@@ -60,7 +69,7 @@ test("podman's namespace must map every session's uid and every mirror's group",
   assert.equal(chatPodmanIdsRefusal({ uids: 20_032, gids: 31_024 }), undefined);
   assert.equal(
     chatPodmanIdsRefusal({ uids: 20_031, gids: 31_024 }),
-    "podman's namespace for this user maps 20031 uids where its sessions need 20032; give this user a larger range in /etc/subuid and /etc/subgid, such as 100000:65536, then run podman system migrate",
+    "podman's namespace for this user maps 20031 uids where its sessions need 20032; give this user a range in /etc/subuid and /etc/subgid at least that large, then run podman system migrate",
   );
   assert.match(
     chatPodmanIdsRefusal({ uids: 1, gids: 31_023 }) ?? "",
@@ -127,6 +136,94 @@ test("the credential's directory must hold nothing else", async (t) => {
   const shared = await chatCredentialDirectoryFinding(config);
   assert.equal(shared.passed, false);
   assert.match(shared.detail, /holds other beside the credential/u);
+});
+
+test("the settings say the supervisor's memory cap, and a docker user a session would be fails them", () => {
+  const config = /** @type {any} */ ({
+    engine: "docker",
+    claudeTokenFile: "/home/m/claude/token",
+    network: "chuggy-jobs",
+    outputBytesMax: 65536,
+  });
+  const mib = (bytes) => String(bytes / 2 ** 20);
+  const cap = chatHostMemoryBytes({
+    sessionsMax: chatHostSessionsMaxDefault,
+    sessionMemoryBytes: chatSessionMemoryBytesDefault,
+  });
+  assert.deepEqual(
+    chatSettingsFinding(chatHostPool, config, { uid: 1000, gid: 1000 }),
+    {
+      check: "chat settings",
+      passed: true,
+      detail: `the supervisor is capped at ${mib(cap)} MiB, ${mib(chatSessionMemoryBytesDefault)} MiB for each of its ${String(chatHostSessionsMaxDefault)} sessions at once, with no swap past it`,
+    },
+  );
+  const inside = chatSettingsFinding(chatHostPool, config, {
+    uid: 20_001,
+    gid: 20_001,
+  });
+  assert.equal(inside.passed, false);
+  assert.match(inside.detail, /so a session would be this user/u);
+});
+
+test("a supervisor's container no service here runs fails, naming its removal; the service's own, an exited one, or none passes", async () => {
+  const { engine, state } = fakeEngine();
+  const name = chatSupervisorName(chatHostPool);
+  const none = await chatSupervisorFinding(
+    engine,
+    "docker",
+    chatHostPool,
+    undefined,
+  );
+  assert.deepEqual(none, {
+    check: "chat supervisor",
+    passed: true,
+    detail: `no container ${name} is here`,
+  });
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "running",
+    image: sessionImage,
+  });
+  const status = {
+    supervisor: /** @type {const} */ ("Ready"),
+    starting: false,
+  };
+  assert.deepEqual(
+    await chatSupervisorFinding(engine, "docker", chatHostPool, status),
+    {
+      check: "chat supervisor",
+      passed: true,
+      detail: `${name} is the service's supervisor, ready`,
+    },
+  );
+  for (const answered of [undefined, { ...status, supervisor: "Ended" }]) {
+    const left = await chatSupervisorFinding(
+      engine,
+      "podman",
+      chatHostPool,
+      /** @type {any} */ (answered),
+    );
+    assert.equal(left.passed, false);
+    assert.equal(
+      left.detail,
+      `${name} is running and no service here runs it, so every start of this host's supervisor is refused; remove it with podman rm -f ${name}, which ends every session it runs`,
+    );
+  }
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "exited",
+    image: sessionImage,
+  });
+  assert.equal(
+    (await chatSupervisorFinding(engine, "docker", chatHostPool, undefined))
+      .detail,
+    `${name} has exited, and the next start removes it`,
+  );
 });
 
 /**
@@ -290,6 +387,7 @@ async function doctoredChat(t, options = {}) {
     arch: "x64",
     registriesConf: [],
     uid: options.uid ?? process.getuid?.() ?? -1,
+    gid: process.getgid?.() ?? -1,
     path: undefined,
     servicePath: async () => undefined,
     agentVersion: async () => undefined,
@@ -329,12 +427,14 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
       ["runtime directory", true],
       ["Claude credential", true],
       ["chat credential directory", true],
+      ["chat settings", true],
       ["podman credential helpers", true],
       ["service unit", true],
       ["updates", true],
       ["container engine", true],
       ["job network", true],
       ["chat session users", true],
+      ["chat supervisor", true],
       ["pool token", true],
       ["plane", true],
       ["chat image", true],
@@ -346,17 +446,17 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
   );
   assert.equal(
     findings[1].detail,
-    `${paths.config}: sessionsMax 32, idleSecs 600, outputBytesMax 65536, running the image chuggy names`,
+    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, the supervisor capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names`,
   );
   assert.match(
     findings[3].detail,
     new RegExp(`from the .* ${tokenFile}, this runner's own$`, "u"),
   );
   assert.equal(
-    findings[8].detail,
+    findings[9].detail,
     "podman lists 0 of this chat host's containers",
   );
-  assert.equal(findings[13].detail, `the plane's ${sessionImage} was pulled`);
+  assert.equal(findings[15].detail, `the plane's ${sessionImage} was pulled`);
 });
 
 test("a chat host on docker is held to no session's uid rather than a job's, its credential's directory to hold it alone, and a plane naming no image fails it", async (t) => {

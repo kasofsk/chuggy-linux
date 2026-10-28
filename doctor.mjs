@@ -1,12 +1,13 @@
 /**
  * What `doctor` checks, in the order a run depends on them, each answered as
  * passed or not with what was found, and before the engine whether the pool
- * file's unit runs this copy. It changes nothing: a missing network is
- * reported for a run to make, and its one poll names nothing held, wants
- * nothing and advertises nothing, which the plane answers without granting
- * or releasing a lease or changing what the pool advertised. Of a member's
- * chat host it checks what `chatDoctor.mjs` says, and pulls its image where
- * it is not here, as the host's run would pull it first.
+ * file's unit runs this copy. Of a pool it changes nothing: a missing
+ * network is reported for a run to make, and its one poll names nothing
+ * held, wants nothing and advertises nothing, which the plane answers
+ * without granting or releasing a lease or changing what the pool
+ * advertised. Of a member's chat host it checks what `chatDoctor.mjs` says,
+ * and makes one change: the image its supervisor runs is pulled where it is
+ * not here, as the host's run would pull it before starting.
  */
 
 import { execFile } from "node:child_process";
@@ -33,6 +34,8 @@ import {
   hostTimeoutSecsMax,
 } from "@chuggy/worker-core/hostBackend.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
+import { chatHostStatusAsked } from "@chuggy/worker-core/chatHost.mjs";
+import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 
 import {
   listArgv,
@@ -60,6 +63,8 @@ import {
   chatEngineFinding,
   chatImageFinding,
   chatSessionUsersFinding,
+  chatSettingsFinding,
+  chatSupervisorFinding,
 } from "./chatDoctor.mjs";
 import { diskFloorSaid } from "./diskFree.mjs";
 import { serviceUnitText } from "./poolService.mjs";
@@ -91,6 +96,7 @@ import {
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").ChatHostIdentity} ChatHostIdentity
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
  * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
@@ -113,6 +119,7 @@ import {
  * @property {RunnerPaths} paths
  * @property {string} arch this machine, as `process.arch` names it
  * @property {number} uid this process's
+ * @property {number} gid this process's, which owns a chat host's credential as docker shows it
  * @property {readonly string[]} registriesConf podman's registries.conf files and drop-in directories
  * @property {string} node the Node binary running this
  * @property {string} cli this CLI's entry, as an absolute path
@@ -797,6 +804,16 @@ async function chatEngineChecks(engine, credentials, config, input, findings) {
   findings.push(
     await chatSessionUsersFinding(engine, config.engine, input.uid),
   );
+  findings.push(
+    await chatSupervisorFinding(
+      engine,
+      config.engine,
+      /** @type {ChatHostIdentity} */ (credentials),
+      await chatHostStatusAsked(
+        controlSocketPath(poolRuntimeDirectory(input.paths, credentials)),
+      ).catch(() => undefined),
+    ),
+  );
   return { endpoint };
 }
 
@@ -817,6 +834,13 @@ async function chatHostChecks(input, credentials, config, runtime, findings) {
   if (config !== undefined) {
     findings.push(await claudeCredentialFinding(input, config, false, "host"));
     findings.push(await chatCredentialDirectoryFinding(config));
+    findings.push(
+      chatSettingsFinding(
+        /** @type {ChatHostIdentity} */ (credentials),
+        config,
+        { uid: input.uid, gid: input.gid },
+      ),
+    );
   }
   if (config?.engine === "podman")
     findings.push(await podmanHelpersFinding(input.registriesConf));

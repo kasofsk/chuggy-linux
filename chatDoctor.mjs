@@ -1,32 +1,46 @@
 /**
  * What `doctor` checks of a member's chat host beyond what it checks of any
- * pool: the Claude credential's directory, which the supervisor is given
- * whole; whether a session's user can be run beside this one; and the image
- * the supervisor runs, which doctor pulls where it is not here, as a run
- * would before starting it.
+ * pool: its settings and the memory its supervisor is capped at; the Claude
+ * credential's directory, which the supervisor is given whole; whether a
+ * session's user can be run beside this one; a supervisor's container no
+ * service here runs, which refuses every start; and the image the
+ * supervisor runs, which doctor pulls where it is not here, as a run would
+ * before starting it.
  */
 
 import { claudeCredentialFile } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
+  chatCredentialAloneRefusal,
+  chatHostMemoryBytes,
+  chatSessionIdsNeeded,
+  chatSupervisorName,
+} from "@chuggy/worker-core/chatHost.mjs";
+import {
   chatSessionUidCount,
   chatSessionUidFirst,
 } from "@chuggy/worker-core/chatSession.mjs";
-import { imageInspectArgv, listArgv } from "@chuggy/worker-core/engineArgv.mjs";
-import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
+import {
+  imageInspectArgv,
+  inspectArgv,
+  listArgv,
+} from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  engineFailure,
+  engineFailureLine,
+} from "@chuggy/worker-core/engineErrors.mjs";
 import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   imageRegistryHost,
   registryPull,
 } from "@chuggy/worker-core/registryAuth.mjs";
 
-import {
-  chatCredentialDirectoryRefusal,
-  chatDockerUidRefusal,
-  chatSessionIdsNeeded,
-} from "./chatRunner.mjs";
+import { chatDockerUidRefusal, chatHostSettings } from "./chatRunner.mjs";
 import { runnerClaudeCredential } from "./runnerConfig.mjs";
 
 /**
+ * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus} ChatHostStatus
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").ChatHostIdentity} ChatHostIdentity
+ * @typedef {import("./chatRunner.mjs").ChatUser} ChatUser
  * @typedef {import("./doctor.mjs").DoctorFinding} DoctorFinding
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
@@ -80,7 +94,7 @@ export function chatPodmanIdsRefusal(mapped) {
       : undefined,
   ].filter((line) => line !== undefined);
   if (short.length === 0) return undefined;
-  return `podman's namespace for this user maps ${short.join(", and ")}; give this user a larger range in /etc/subuid and /etc/subgid, such as 100000:65536, then run podman system migrate`;
+  return `podman's namespace for this user maps ${short.join(", and ")}; give this user a range in /etc/subuid and /etc/subgid at least that large, then run podman system migrate`;
 }
 
 /**
@@ -155,7 +169,7 @@ export async function chatSessionUsersFinding(engine, name, uid) {
 export async function chatCredentialDirectoryFinding(config) {
   const check = "chat credential directory";
   const file = claudeCredentialFile(runnerClaudeCredential(config));
-  const refusal = await chatCredentialDirectoryRefusal(file);
+  const refusal = await chatCredentialAloneRefusal(file);
   return refusal === undefined
     ? {
         check,
@@ -252,5 +266,87 @@ export async function chatImageFinding(reach, chat, named) {
         check,
         passed: false,
         detail: `${whose} ${image} could not be pulled: ${engineFailureLine(answer)}`,
+      };
+}
+
+/**
+ * Whether the host's settings start a supervisor on its engine, as a run
+ * checks them, and the memory it is capped at: room for each session it runs
+ * at once, with no swap past it.
+ *
+ * @param {ChatHostIdentity} identity
+ * @param {RunnerConfig} config
+ * @param {ChatUser} user
+ * @returns {DoctorFinding}
+ */
+export function chatSettingsFinding(identity, config, user) {
+  const check = "chat settings";
+  try {
+    const settings = chatHostSettings(identity, config, user);
+    const mib = (bytes) => String(Math.floor(bytes / 2 ** 20));
+    return {
+      check,
+      passed: true,
+      detail: `the supervisor is capped at ${mib(chatHostMemoryBytes(settings))} MiB, ${mib(settings.sessionMemoryBytes)} MiB for each of its ${String(settings.sessionsMax)} sessions at once, with no swap past it`,
+    };
+  } catch (failure) {
+    return {
+      check,
+      passed: false,
+      detail: failure instanceof Error ? failure.message : String(failure),
+    };
+  }
+}
+
+/**
+ * Whether a supervisor's container is left that no service here runs: one of
+ * the host's name that is running while no service answers, or while the
+ * one that answers runs no supervisor, refuses every start of the host's,
+ * which never kills it. One that has exited is removed by the next start.
+ *
+ * @param {Engine} engine
+ * @param {RunnerConfig["engine"]} name
+ * @param {ChatHostIdentity} identity
+ * @param {ChatHostStatus | undefined} status what the host's service said of itself, where one answered
+ * @returns {Promise<DoctorFinding>}
+ */
+export async function chatSupervisorFinding(engine, name, identity, status) {
+  const check = "chat supervisor";
+  const container = chatSupervisorName(identity);
+  const inspected = await engine.exec(inspectArgv([container]));
+  if (inspected.code !== 0)
+    return engineFailure(inspected) === "NoSuchContainer"
+      ? { check, passed: true, detail: `no container ${container} is here` }
+      : { check, passed: false, detail: engineFailureLine(inspected) };
+  let running;
+  try {
+    running = JSON.parse(inspected.stdout)[0]?.State?.Status === "running";
+  } catch {
+    return {
+      check,
+      passed: false,
+      detail: `${name} container inspect ${container} answered no JSON`,
+    };
+  }
+  if (!running)
+    return {
+      check,
+      passed: true,
+      detail: `${container} has exited, and the next start removes it`,
+    };
+  const served =
+    status !== undefined &&
+    status.supervisor !== "Absent" &&
+    status.supervisor !== "Ended";
+  return served
+    ? {
+        check,
+        passed: true,
+        detail: `${container} is the service's supervisor, ${status.supervisor.toLowerCase()}`,
+      }
+    : {
+        check,
+        passed: false,
+        detail: `${container} is running and no service here runs it, so every start of this host's supervisor is refused; remove it with ${name} rm -f ${container}, which ends every session it runs`,
       };
 }

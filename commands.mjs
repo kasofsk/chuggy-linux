@@ -29,9 +29,9 @@ import {
 } from "@chuggy/worker-core/control.mjs";
 import {
   chatHostControl,
-  chatRunnerLoop,
-  chatRunnerParts,
-} from "./chatRunner.mjs";
+  chatHostStatusAsked,
+} from "@chuggy/worker-core/chatHost.mjs";
+import { chatRunnerLoop, chatRunnerParts } from "./chatRunner.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { diskFloorSaid, diskFreePorts } from "./diskFree.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
@@ -360,6 +360,7 @@ function doctorFound(host, poolFile) {
     paths,
     arch: host.arch,
     uid: host.uid,
+    gid: host.gid,
     registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
     node: host.node,
     cli: host.cli,
@@ -869,15 +870,11 @@ async function chatStatus(call) {
     call.host.home,
   );
   const runtime = poolRuntimeDirectory(setup.paths, setup.credentials);
-  const answered =
-    /** @type {{inFlight?: import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus[]} | undefined} */ (
-      await controlAsked(controlSocketPath(runtime), { op: "status" })
-    );
+  const host = await chatHostStatusAsked(controlSocketPath(runtime));
   call.host.out(
-    answered === undefined ? "service: not running" : "service: running",
+    host === undefined ? "service: not running" : "service: running",
   );
   call.host.out(`chat: ${runnerChatSettingsLine(setup.config)}`);
-  const [host] = answered?.inFlight ?? [];
   if (host === undefined) return 0;
   call.host.out(
     `supervisor: ${host.supervisor.toLowerCase()}${host.starting ? ", starting" : ""}`,

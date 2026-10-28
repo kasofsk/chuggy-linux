@@ -28,10 +28,10 @@ import {
   claudeCredentialSetting,
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
-  chatHostIdleSecs,
-  chatHostImageSettingSchema,
+  chatHostConfigSchema,
+  chatHostConfigured,
+  chatHostMemoryBytes,
 } from "@chuggy/worker-core/chatHost.mjs";
-import { chatSessionUidCount } from "@chuggy/worker-core/chatSession.mjs";
 import {
   ownerImagesSchema,
   ownerVolumesSchema,
@@ -78,18 +78,6 @@ const freeGibMax = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
 const poolLimitsSchema = z.strictObject({
   concurrencyMax: nonnegativeSchema.optional(),
   sessionsMax: nonnegativeSchema.optional(),
-});
-
-/** A member's chat host's own settings, each a default where it is absent, as `runnerChatSettings` gives them. */
-const chatSchema = z.strictObject({
-  /** The image its supervisor runs in place of the one chuggy names, and when it is pulled. */
-  image: chatHostImageSettingSchema.optional(),
-  /** The most sessions it runs at once, whatever its supervisor's room. */
-  sessionsMax: positiveSchema.optional(),
-  /** How long a session it claims may sit idle, which chuggy caps. */
-  idleSecs: positiveSchema.optional(),
-  /** The most output a session may report. */
-  outputBytesMax: positiveSchema.optional(),
 });
 
 /** A name docker and podman both give a network, less the host's own. */
@@ -197,7 +185,7 @@ export const runnerConfigSchema = z
     /** Whether the service installs the release of itself chuggy names. */
     autoUpdate: z.boolean().default(true),
     /** A member's chat host's own settings. */
-    chat: chatSchema.optional(),
+    chat: chatHostConfigSchema.optional(),
     /**
      * How long a job's image this runner pulled may go unused before it is
      * removed, 0 keeping them until the disk is under `diskFreeGibMin`.
@@ -368,35 +356,22 @@ export function runnerCredentialDescribed(claudeCredential, agent) {
 }
 
 /**
- * A member's chat host's settings from a checked file: its `chat` keys, and
- * where one is absent, as many sessions as a supervisor runs, the core's
- * idle bound, and the file's own `outputBytesMax`.
- *
- * @param {RunnerConfig} config
- */
-export function runnerChatSettings(config) {
-  const chat = config.chat ?? {};
-  return {
-    sessionsMax: chat.sessionsMax ?? chatSessionUidCount,
-    idleSecs: chat.idleSecs ?? chatHostIdleSecs,
-    outputBytesMax: chat.outputBytesMax ?? config.outputBytesMax,
-    ...(chat.image === undefined ? {} : { image: chat.image }),
-  };
-}
-
-/**
- * A chat host's settings as `status` and `doctor` say them.
+ * A chat host's settings as `status` and `doctor` say them, each its
+ * default where the file names none, and the memory its supervisor is
+ * capped at.
  *
  * @param {RunnerConfig} config
  */
 export function runnerChatSettingsLine(config) {
-  const { sessionsMax, idleSecs, outputBytesMax, image } =
-    runnerChatSettings(config);
+  const settings = chatHostConfigured(config.chat, config.outputBytesMax);
+  const { sessionsMax, sessionMemoryBytes, idleSecs, outputBytesMax, image } =
+    settings;
+  const mib = (bytes) => String(Math.floor(bytes / 2 ** 20));
   const run =
     image === undefined
       ? "the image chuggy names"
       : `${image.image}, pulled ${image.pull === "missing" ? "where it is missing" : image.pull}`;
-  return `sessionsMax ${String(sessionsMax)}, idleSecs ${String(idleSecs)}, outputBytesMax ${String(outputBytesMax)}, running ${run}`;
+  return `sessionsMax ${String(sessionsMax)}, sessionMemoryMib ${mib(sessionMemoryBytes)}, the supervisor capped at ${mib(chatHostMemoryBytes(settings))} MiB, idleSecs ${String(idleSecs)}, outputBytesMax ${String(outputBytesMax)}, running ${run}`;
 }
 
 /**

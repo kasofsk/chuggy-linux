@@ -28,6 +28,7 @@ const copy = {
   node: "/opt/node/bin/node",
   cli: "/opt/chuggy-linux/cli.mjs",
   arch: "x64",
+  gid: process.getgid?.() ?? -1,
 };
 
 /**

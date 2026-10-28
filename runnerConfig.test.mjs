@@ -9,8 +9,13 @@ import {
   claudeCredentialProviderVariables,
   claudeCredentialVariables,
 } from "@chuggy/worker-core/claudeCredential.mjs";
-import { chatHostIdleSecs } from "@chuggy/worker-core/chatHost.mjs";
-import { chatSessionUidCount } from "@chuggy/worker-core/chatSession.mjs";
+import {
+  chatHostConfigured,
+  chatHostIdleSecs,
+  chatHostMemoryBytes,
+  chatHostSessionsMaxDefault,
+  chatSessionMemoryBytesDefault,
+} from "@chuggy/worker-core/chatHost.mjs";
 import { ownerVolumeTargetsRefused } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   jobEngineSocketVariables,
@@ -19,7 +24,6 @@ import {
 
 import {
   credentialFileRefusal,
-  runnerChatSettings,
   runnerChatSettingsLine,
   runnerConfig,
   runnerCredentialDescribed,
@@ -968,41 +972,37 @@ test("a registries.conf the environment names is sought before the rest", () => 
   );
 });
 
-test("a chat host's settings are its chat keys, each absent one as many sessions as a supervisor runs, the core's idle bound and the file's outputBytesMax", async (t) => {
+test("a chat host's settings line says each of its chat keys, the core's default where one is absent, and the supervisor's memory cap", async (t) => {
   const directory = await scratch(t);
   const bare = await runnerConfig(await written(directory, minimal));
   assert.equal(bare.chat, undefined);
-  assert.deepEqual(runnerChatSettings(bare), {
-    sessionsMax: chatSessionUidCount,
-    idleSecs: chatHostIdleSecs,
-    outputBytesMax: minimal.outputBytesMax,
-  });
+  const defaults = chatHostConfigured(undefined, minimal.outputBytesMax);
+  const mib = (bytes) => String(bytes / 2 ** 20);
   assert.equal(
     runnerChatSettingsLine(bare),
-    `sessionsMax ${String(chatSessionUidCount)}, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, running the image chuggy names`,
+    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, the supervisor capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, running the image chuggy names`,
   );
   const empty = await runnerConfig(
     await written(directory, { ...minimal, chat: {} }),
   );
-  assert.deepEqual(runnerChatSettings(empty), runnerChatSettings(bare));
+  assert.equal(runnerChatSettingsLine(empty), runnerChatSettingsLine(bare));
   const chat = {
     image: { image: "registry.example/me/chat:1" },
-    sessionsMax: 4,
+    sessionsMax: 3,
+    sessionMemoryMib: 1024,
     idleSecs: 300,
     outputBytesMax: 1024,
   };
   const set = await runnerConfig(
     await written(directory, { ...minimal, chat }),
   );
-  assert.deepEqual(runnerChatSettings(set), {
-    sessionsMax: 4,
-    idleSecs: 300,
-    outputBytesMax: 1024,
+  assert.deepEqual(set.chat, {
+    ...chat,
     image: { image: "registry.example/me/chat:1", pull: "missing" },
   });
   assert.equal(
     runnerChatSettingsLine(set),
-    "sessionsMax 4, idleSecs 300, outputBytesMax 1024, running registry.example/me/chat:1, pulled where it is missing",
+    "sessionsMax 3, sessionMemoryMib 1024, the supervisor capped at 3072 MiB, idleSecs 300, outputBytesMax 1024, running registry.example/me/chat:1, pulled where it is missing",
   );
   for (const pull of ["always", "never"])
     assert.match(
@@ -1023,6 +1023,7 @@ test("what a chat section may not say is refused, naming where", async (t) => {
   const refused = [
     [{ sessionMax: 2 }, /chat Unrecognized key: "sessionMax"/u],
     [{ sessionsMax: 0 }, /chat\.sessionsMax /u],
+    [{ sessionMemoryMib: 1 }, /chat\.sessionMemoryMib /u],
     [{ idleSecs: 1.5 }, /chat\.idleSecs /u],
     [{ outputBytesMax: "1024" }, /chat\.outputBytesMax /u],
     [{ image: "registry.example/me/chat:1" }, /chat\.image /u],
