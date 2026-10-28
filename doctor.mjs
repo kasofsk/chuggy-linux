@@ -655,24 +655,66 @@ const podmanCgroupsSchema = z.object({
 const userDelegateDropIn = "/etc/systemd/system/user@.service.d/delegate.conf";
 
 /**
+ * Why podman sets no memory limit on what it runs, with what changes that,
+ * or undefined where it sets one. Rootless podman sets one only on cgroups
+ * v2, through systemd, in a user session the memory controller is delegated
+ * to; rootful podman needs the controller only, which a kernel may boot
+ * without.
+ *
+ * @param {z.infer<typeof podmanCgroupsSchema>["host"]} host
+ * @param {number} uid this user's, whose systemd a drop-in reaches
+ * @returns {string | undefined}
+ */
+function podmanMemoryCapLack(host, uid) {
+  const { cgroupManager, cgroupVersion, cgroupControllers, security } = host;
+  const memory = (cgroupControllers ?? []).includes("memory");
+  if (security.rootless && cgroupVersion !== "v2")
+    return `rootless podman sets no limit on cgroups ${cgroupVersion}; boot the unified hierarchy, with systemd.unified_cgroup_hierarchy=1 on the kernel command line`;
+  if (!security.rootless)
+    return memory
+      ? undefined
+      : "the kernel runs without the memory controller; enable it, with cgroup_enable=memory on the kernel command line, and reboot";
+  const manager = cgroupManager === "systemd";
+  if (manager && memory) return undefined;
+  const why = [
+    ...(manager ? [] : [`its cgroup manager is ${cgroupManager}`]),
+    ...(memory ? [] : ["the memory controller is not delegated to this user"]),
+  ];
+  const fixes = [
+    ...(manager
+      ? []
+      : ['set cgroup_manager = "systemd" under [engine] in containers.conf']),
+    ...(memory
+      ? []
+      : [
+          `write ${userDelegateDropIn} holding "[Service]" and "Delegate=cpu cpuset io memory pids", then run systemctl daemon-reload and systemctl restart user@${String(uid)}.service, or reboot, since register keeps this user's session running and logging in again does not restart it`,
+        ]),
+  ];
+  return `rootless podman sets no limit where ${why.join(" and ")}; ${fixes.join(", and ")}`;
+}
+
+/**
  * Whether podman holds a container to the memory it is run with: a job's cap
- * and a chat supervisor's. Rootless podman sets a limit only on cgroups v2,
- * through systemd, in a user session the memory controller is delegated to,
- * and runs a container without it, saying nothing, where it cannot; rootful
- * podman needs the controller only.
+ * and a chat supervisor's. Where it cannot, podman runs the container
+ * uncapped, warning only on its stderr, so this warns rather than refuses:
+ * the runner serves, and its jobs and supervisor run past their caps.
  *
  * @param {Engine} engine
+ * @param {number} uid
  * @returns {Promise<DoctorFinding>}
  */
-async function podmanMemoryCapFinding(engine) {
+export async function podmanMemoryCapFinding(engine, uid) {
   const check = "memory caps";
+  /** @param {string} why */
+  const unchecked = (why) => ({
+    check,
+    passed: true,
+    warning: /** @type {const} */ (true),
+    detail: `whether podman holds a job and a chat supervisor to the memory each is run with could not be checked: ${why}`,
+  });
   const info = await engine.exec(engineInfoArgv());
   if (info.code !== 0)
-    return {
-      check,
-      passed: false,
-      detail: `podman could not be asked of its cgroups: ${engineFailureLine(info)}`,
-    };
+    return unchecked(`podman info failed: ${engineFailureLine(info)}`);
   let parsed;
   try {
     parsed = podmanCgroupsSchema.safeParse(JSON.parse(info.stdout));
@@ -680,39 +722,22 @@ async function podmanMemoryCapFinding(engine) {
     parsed = undefined;
   }
   if (parsed === undefined || !parsed.success)
-    return {
-      check,
-      passed: false,
-      detail: "podman's info says nothing this runner reads of its cgroups",
-    };
-  const { cgroupManager, cgroupVersion, cgroupControllers, security } =
-    parsed.data.host;
-  const memory = (cgroupControllers ?? []).includes("memory");
-  const lacks = [
-    ...(security.rootless && cgroupVersion !== "v2"
-      ? [`cgroups ${cgroupVersion}, where rootless podman sets no limit`]
-      : []),
-    ...(security.rootless && cgroupManager !== "systemd"
-      ? [
-          `the cgroup manager ${cgroupManager}, where rootless podman sets no limit; set cgroup_manager = "systemd" under [engine] in containers.conf`,
-        ]
-      : []),
-    ...(memory
-      ? []
-      : [
-          `no memory controller delegated to it; write ${userDelegateDropIn} holding "[Service]" and "Delegate=cpu cpuset io memory pids", run systemctl daemon-reload, and log in again`,
-        ]),
-  ];
-  if (lacks.length === 0)
+    return unchecked(
+      "podman's info says nothing this runner reads of its cgroups",
+    );
+  const { host } = parsed.data;
+  const lack = podmanMemoryCapLack(host, uid);
+  if (lack === undefined)
     return {
       check,
       passed: true,
-      detail: `podman holds a job and a chat supervisor to the memory each is run with: cgroups ${cgroupVersion}, ${security.rootless ? "rootless through systemd, " : ""}the memory controller delegated`,
+      detail: `podman holds a job and a chat supervisor to the memory each is run with: cgroups ${host.cgroupVersion}, ${host.security.rootless ? "rootless through systemd, the memory controller delegated" : "the memory controller enabled"}`,
     };
   return {
     check,
-    passed: false,
-    detail: `podman runs a job or a chat supervisor past the memory it is run with, saying nothing, since it has ${lacks.join("; and ")}`,
+    passed: true,
+    warning: true,
+    detail: `podman does not hold a job or a chat supervisor to the memory it is run with, and runs each uncapped, warning only on its stderr: ${lack}`,
   };
 }
 
@@ -778,7 +803,7 @@ async function engineChecks(engine, credentials, config, input, findings) {
   findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
   findings.push(await diskFloorFinding(engine, config, input.disk));
   if (config.engine === "podman")
-    findings.push(await podmanMemoryCapFinding(engine));
+    findings.push(await podmanMemoryCapFinding(engine, input.uid));
 }
 
 /**
@@ -887,13 +912,14 @@ async function chatEngineChecks(engine, credentials, config, input, findings) {
       engine,
       config.engine,
       /** @type {ChatHostIdentity} */ (credentials),
-      await chatServiceAsked(
-        controlSocketPath(poolRuntimeDirectory(input.paths, credentials)),
-      ),
+      () =>
+        chatServiceAsked(
+          controlSocketPath(poolRuntimeDirectory(input.paths, credentials)),
+        ),
     ),
   );
   if (config.engine === "podman")
-    findings.push(await podmanMemoryCapFinding(engine));
+    findings.push(await podmanMemoryCapFinding(engine, input.uid));
   return { endpoint };
 }
 

@@ -333,13 +333,21 @@ export async function chatServiceAsked(socket) {
  * this copy cannot read is that service's, and is warned of, never named for
  * removal. One that has exited is removed by the next start.
  *
+ * The service is asked only once the container is seen running, so a start
+ * landing between the two finds the service already starting it.
+ *
  * @param {Engine} engine
  * @param {RunnerConfig["engine"]} name
  * @param {ChatHostIdentity} identity
- * @param {ChatDoctorService} service what the host's service said of itself
+ * @param {() => Promise<ChatDoctorService>} serviceAsked asks the host's service what it says of itself
  * @returns {Promise<DoctorFinding>}
  */
-export async function chatSupervisorFinding(engine, name, identity, service) {
+export async function chatSupervisorFinding(
+  engine,
+  name,
+  identity,
+  serviceAsked,
+) {
   const check = "chat supervisor";
   const container = chatSupervisorName(identity);
   const inspected = await engine.exec(inspectArgv([container]));
@@ -363,6 +371,7 @@ export async function chatSupervisorFinding(engine, name, identity, service) {
       passed: true,
       detail: `${container} has exited, and the next start removes it`,
     };
+  const service = await serviceAsked();
   if ("unreadable" in service)
     return {
       check,

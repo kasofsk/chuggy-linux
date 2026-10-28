@@ -573,8 +573,9 @@ async function registerRan(host, argvs, said, since, why) {
  *
  * @param {CliHost} host
  * @param {string} file
- * @param {boolean} denied where chuggy denies the registration the units run,
- *   as it does a pool's and a chat host's, and not a personal runner's
+ * @param {string | undefined} denied whose earlier registration chuggy
+ *   denies, so that the units running it have stopped: a pool's and a chat
+ *   host's, and not a personal runner's
  * @param {readonly string[]} units
  * @returns {Promise<RegisterServed>}
  */
@@ -586,7 +587,9 @@ async function registerRestarted(host, file, denied, units) {
   ];
   /** @param {string} what */
   const since = (what) =>
-    denied ? `chuggy denies the pool's earlier registration and ${what}` : what;
+    denied === undefined
+      ? what
+      : `chuggy denies ${denied} earlier registration and ${what}`;
   try {
     await installServiceUnit(host, file);
   } catch (failure) {
@@ -685,7 +688,11 @@ async function registerServed(host, pool, file, written) {
     return await registerRestarted(
       host,
       file,
-      !poolIdentityPersonal(pool),
+      poolIdentityPersonal(pool)
+        ? undefined
+        : poolIdentityChatHost(pool)
+          ? "the chat host's"
+          : "the pool's",
       units,
     );
   } catch (failure) {

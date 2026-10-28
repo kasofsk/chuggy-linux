@@ -21,6 +21,7 @@ import {
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
+import { registeredChatHostFixture } from "./register.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
 
 /** The copy doctor is run as, the Node it runs under, and the machine. */
@@ -175,6 +176,27 @@ test("doctor names a personal runner's file as one, by its tenant and member", a
     passed: true,
     detail: `${poolFile} names personal runner vteng/28:https:%2F%2Fauth.chuggy.example%2F0f3c9a52-member`,
   });
+});
+
+test("doctor fails the pool file of a chat host's declaring what a pool's or a personal runner's does, and checks nothing past the runner's own", async (t) => {
+  for (const declared of [{ capabilities: [] }, { host: true }]) {
+    const { findings, poolFile } = await doctored(t, {
+      pool: { ...registeredChatHostFixture, ...declared },
+    });
+    assert.equal(findings[0]?.check, "pool file");
+    assert.equal(findings[0]?.passed, false);
+    assert.match(
+      findings[0]?.detail ?? "",
+      new RegExp(
+        `^pool credentials ${poolFile}: .*${Object.keys(declared)[0]}`,
+        "u",
+      ),
+    );
+    assert.ok(
+      !findings.some((finding) => finding.check.startsWith("chat ")),
+      JSON.stringify(findings),
+    );
+  }
 });
 
 test("a pool registered with --host fails doctor where the runner's file names what a host job's places set", async (t) => {

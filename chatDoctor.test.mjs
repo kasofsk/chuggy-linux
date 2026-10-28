@@ -22,7 +22,7 @@ import {
   chatSupervisorFinding,
   idMapContiguous,
 } from "./chatDoctor.mjs";
-import { doctorFindings } from "./doctor.mjs";
+import { doctorFindings, podmanMemoryCapFinding } from "./doctor.mjs";
 import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
 import { runnerUpdates } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
@@ -172,8 +172,10 @@ test("a supervisor's container no service here runs fails, naming its removal; t
   const { engine, state } = fakeEngine();
   const name = chatSupervisorName(chatHostPool);
   const none = /** @type {const} */ ({ none: true });
+  /** @param {import("./chatDoctor.mjs").ChatDoctorService} service */
+  const said = (service) => async () => service;
   assert.deepEqual(
-    await chatSupervisorFinding(engine, "docker", chatHostPool, none),
+    await chatSupervisorFinding(engine, "docker", chatHostPool, said(none)),
     {
       check: "chat supervisor",
       passed: true,
@@ -192,7 +194,12 @@ test("a supervisor's container no service here runs fails, naming its removal; t
     starting: false,
   };
   assert.deepEqual(
-    await chatSupervisorFinding(engine, "docker", chatHostPool, { status }),
+    await chatSupervisorFinding(
+      engine,
+      "docker",
+      chatHostPool,
+      said({ status }),
+    ),
     {
       check: "chat supervisor",
       passed: true,
@@ -200,9 +207,12 @@ test("a supervisor's container no service here runs fails, naming its removal; t
     },
   );
   assert.deepEqual(
-    await chatSupervisorFinding(engine, "docker", chatHostPool, {
-      status: { supervisor: "Absent", starting: true },
-    }),
+    await chatSupervisorFinding(
+      engine,
+      "docker",
+      chatHostPool,
+      said({ status: { supervisor: "Absent", starting: true } }),
+    ),
     {
       check: "chat supervisor",
       passed: true,
@@ -217,7 +227,7 @@ test("a supervisor's container no service here runs fails, naming its removal; t
       engine,
       "podman",
       chatHostPool,
-      /** @type {any} */ (service),
+      said(/** @type {any} */ (service)),
     );
     assert.equal(left.passed, false);
     assert.equal(
@@ -225,17 +235,48 @@ test("a supervisor's container no service here runs fails, naming its removal; t
       `${name} is running and no service here runs it, so every start of this host's supervisor is refused; remove it with podman rm -f ${name}, which ends every session it runs`,
     );
   }
-  state.containers.set(name, {
-    id: "c1",
-    name,
-    labels: {},
-    status: "exited",
-    image: sessionImage,
-  });
+});
+
+test("the supervisor's container is inspected before the service is asked, and the service is not asked of one that is not running", async () => {
+  const { engine, state } = fakeEngine();
+  const name = chatSupervisorName(chatHostPool);
+  /** @type {string[]} */
+  const calls = [];
+  /** @type {typeof engine} */
+  const seen = {
+    ...engine,
+    exec: async (argv, engineCall) => {
+      calls.push(argv.slice(0, 2).join(" "));
+      return engine.exec(argv, engineCall);
+    },
+  };
+  const asked = async () => {
+    calls.push("service");
+    return /** @type {const} */ ({
+      status: { supervisor: "Starting", starting: true },
+    });
+  };
+  await chatSupervisorFinding(seen, "docker", chatHostPool, asked);
+  assert.deepEqual(calls, ["container inspect"]);
+  /** @param {string} status */
+  const contained = (status) => {
+    state.containers.set(name, {
+      id: "c1",
+      name,
+      labels: {},
+      status,
+      image: sessionImage,
+    });
+    calls.length = 0;
+    return chatSupervisorFinding(seen, "docker", chatHostPool, asked);
+  };
   assert.equal(
-    (await chatSupervisorFinding(engine, "docker", chatHostPool, none)).detail,
+    (await contained("exited")).detail,
     `${name} has exited, and the next start removes it`,
   );
+  assert.deepEqual(calls, ["container inspect"]);
+  assert.equal((await contained("running")).passed, true);
+  assert.deepEqual(calls, ["container inspect", "service"]);
 });
 
 test("a service that answers what this copy cannot read is there: its running supervisor is warned of as its own, and never named for removal", async (t) => {
@@ -268,7 +309,7 @@ test("a service that answers what this copy cannot read is there: its running su
     engine,
     "docker",
     chatHostPool,
-    service,
+    async () => service,
   );
   assert.equal(found.passed, true);
   assert.equal(found.warning, true);
@@ -564,7 +605,7 @@ test("a chat host's own image is checked whatever the plane names", async (t) =>
   });
 });
 
-test("podman that would run a supervisor or a job past its memory cap fails doctor, naming the drop-in that delegates the memory controller", async (t) => {
+test("podman that would run a supervisor or a job past its memory cap is warned of, never refused, naming the drop-in that delegates the memory controller", async (t) => {
   const passed = await doctoredChat(t, { chatImage: sessionImage });
   assert.deepEqual(
     passed.findings.find((finding) => finding.check === "memory caps"),
@@ -577,17 +618,22 @@ test("podman that would run a supervisor or a job past its memory cap fails doct
   );
   const { findings } = await doctoredChat(t, {
     chatImage: sessionImage,
+    uid: 1000,
     cgroups: {
       cgroupManager: "cgroupfs",
       cgroupVersion: "v2",
       cgroupControllers: ["cpu", "pids"],
     },
   });
-  const failed = findings.find((finding) => finding.check === "memory caps");
-  assert.equal(failed?.passed, false);
-  assert.equal(
-    failed?.detail,
-    'podman runs a job or a chat supervisor past the memory it is run with, saying nothing, since it has the cgroup manager cgroupfs, where rootless podman sets no limit; set cgroup_manager = "systemd" under [engine] in containers.conf; and no memory controller delegated to it; write /etc/systemd/system/user@.service.d/delegate.conf holding "[Service]" and "Delegate=cpu cpuset io memory pids", run systemctl daemon-reload, and log in again',
+  assert.deepEqual(
+    findings.find((finding) => finding.check === "memory caps"),
+    {
+      check: "memory caps",
+      passed: true,
+      warning: true,
+      detail:
+        'podman does not hold a job or a chat supervisor to the memory it is run with, and runs each uncapped, warning only on its stderr: rootless podman sets no limit where its cgroup manager is cgroupfs and the memory controller is not delegated to this user; set cgroup_manager = "systemd" under [engine] in containers.conf, and write /etc/systemd/system/user@.service.d/delegate.conf holding "[Service]" and "Delegate=cpu cpuset io memory pids", then run systemctl daemon-reload and systemctl restart user@1000.service, or reboot, since register keeps this user\'s session running and logging in again does not restart it',
+    },
   );
   const docker = await doctoredChat(t, {
     chatImage: sessionImage,
@@ -597,4 +643,81 @@ test("podman that would run a supervisor or a job past its memory cap fails doct
   assert.ok(
     !docker.findings.some((finding) => finding.check === "memory caps"),
   );
+});
+
+test("rootful podman needs only the memory controller, which a kernel booted without it is told to enable; rootless podman on cgroups v1 is told to boot the unified hierarchy", async () => {
+  /** @param {Record<string, unknown>} cgroups */
+  const found = (cgroups) =>
+    podmanMemoryCapFinding(cgroupedEngine(cgroups).engine, 1000);
+  assert.deepEqual(
+    await found({
+      cgroupManager: "cgroupfs",
+      cgroupVersion: "v1",
+      cgroupControllers: ["cpu", "memory", "pids"],
+      security: { rootless: false },
+    }),
+    {
+      check: "memory caps",
+      passed: true,
+      detail:
+        "podman holds a job and a chat supervisor to the memory each is run with: cgroups v1, the memory controller enabled",
+    },
+  );
+  const v1 = await found({
+    cgroupManager: "cgroupfs",
+    cgroupVersion: "v1",
+    cgroupControllers: ["cpu", "memory", "pids"],
+  });
+  assert.deepEqual(v1, {
+    check: "memory caps",
+    passed: true,
+    warning: true,
+    detail:
+      "podman does not hold a job or a chat supervisor to the memory it is run with, and runs each uncapped, warning only on its stderr: rootless podman sets no limit on cgroups v1; boot the unified hierarchy, with systemd.unified_cgroup_hierarchy=1 on the kernel command line",
+  });
+  const kernel = await found({
+    cgroupManager: "systemd",
+    cgroupVersion: "v2",
+    cgroupControllers: ["cpu", "pids"],
+    security: { rootless: false },
+  });
+  assert.deepEqual(kernel, {
+    check: "memory caps",
+    passed: true,
+    warning: true,
+    detail:
+      "podman does not hold a job or a chat supervisor to the memory it is run with, and runs each uncapped, warning only on its stderr: the kernel runs without the memory controller; enable it, with cgroup_enable=memory on the kernel command line, and reboot",
+  });
+  for (const finding of [v1, kernel])
+    assert.ok(!finding.detail.includes("delegate.conf"), finding.detail);
+});
+
+test("podman whose info fails or cannot be read is warned of as unchecked, never refused", async () => {
+  const failing = fakeEngine();
+  failing.state.info = undefined;
+  const failed = await podmanMemoryCapFinding(failing.engine, 1000);
+  assert.equal(failed.passed, true);
+  assert.equal(failed.warning, true);
+  assert.match(
+    failed.detail,
+    /^whether podman holds a job and a chat supervisor to the memory each is run with could not be checked: podman info failed: .*Cannot connect/u,
+  );
+  const { engine } = fakeEngine();
+  for (const stdout of ["not json\n", '{"host":{}}\n']) {
+    /** @type {typeof engine} */
+    const garbled = {
+      ...engine,
+      exec: async (argv, engineCall) => ({
+        ...(await engine.exec(argv, engineCall)),
+        stdout,
+      }),
+    };
+    assert.deepEqual(await podmanMemoryCapFinding(garbled, 1000), {
+      check: "memory caps",
+      passed: true,
+      warning: true,
+      detail:
+        "whether podman holds a job and a chat supervisor to the memory each is run with could not be checked: podman's info says nothing this runner reads of its cgroups",
+    });
+  }
 });

@@ -1991,6 +1991,45 @@ test("register --chat redeems a member's chat host token for its file, named for
   );
 });
 
+test("register --chat again restarts the chat host's unit, and where the restart fails says chuggy denies the chat host's earlier registration, leaving the restart", async (t) => {
+  const { home, environment } = await chatMachine(t);
+  const name = `chuggy-linux-${chatHostBase}.service`;
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    `${chatHostBase}.json`,
+  );
+  /** @param {Machine} [machine] */
+  const registered = (machine = {}) =>
+    called([...registerArgv, "--chat"], {
+      home,
+      environment,
+      fetch: answeringFetch(201, registeredChatHostFixture).fetch,
+      ...chatReady(),
+      ...machine,
+    });
+  assert.equal((await registered()).status, 0);
+  const restart = ["systemctl", "--user", "restart", name];
+  const failed = await registered({
+    systemd: { [restart.join(" ")]: { code: 1, stderr: "Failed\n" } },
+  });
+  assert.equal(failed.status, 0);
+  assert.equal(
+    failed.out,
+    [
+      `replaced ${file}; its service is not running, since chuggy denies the chat host's earlier registration and ${restart.join(" ")} failed; next:`,
+      `  ${restart.join(" ")}`,
+      "  loginctl enable-linger",
+    ].join("\n"),
+  );
+  const again = await registered();
+  assert.equal(
+    again.out,
+    `replaced ${file}; its service is running: restarted ${name}`,
+  );
+});
+
 test("register --chat beside --personal, --pool, --host or --capability is refused before a token is spent, and --chat is register's alone", async (t) => {
   const { home, environment } = await chatMachine(t);
   for (const [extra, why] of [
