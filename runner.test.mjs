@@ -54,7 +54,10 @@ import {
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
-import { registeredChatHostFixture } from "./register.fixture.mjs";
+import {
+  registeredChatHostFixture,
+  registeredPersonalFixture,
+} from "./register.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
@@ -671,6 +674,43 @@ test("a runner whose file sets concurrencyMax to 0 is given no room for a job, a
   );
   assert.equal(runner.client.settings.concurrencyMax, 0);
   assert.equal(runner.client.settings.sessionsMax, 2);
+});
+
+test("a personal runner's client is given no room for a session whatever the file sets, and one left no job is refused before anything runs", async (t) => {
+  const { engine } = fakeEngine();
+  for (const runner of [
+    { concurrencyMax: 3, sessionsMax: 4 },
+    { concurrencyMax: 3, pools: { pool: { sessionsMax: 4 } } },
+  ]) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner,
+      pool: registeredPersonalFixture,
+    });
+    const parts = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: 1000, log: () => undefined, engine },
+    );
+    assert.deepEqual(
+      [parts.client.settings.concurrencyMax, parts.client.settings.sessionsMax],
+      [3, 0],
+      JSON.stringify(runner),
+    );
+  }
+  const idle = await runnerFixture(t, {
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+    pool: registeredPersonalFixture,
+  });
+  await assert.rejects(
+    runnerParts(await runnerSetup(idle.poolFile, idle.environment, idle.home), {
+      uid: 1000,
+      log: () => undefined,
+      engine,
+    }),
+    {
+      message:
+        "concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set concurrencyMax above 0, or stop and disable its service",
+    },
+  );
 });
 
 test("a runner's client is given its own pool's limits from pools, and the file's where pools names another", async (t) => {

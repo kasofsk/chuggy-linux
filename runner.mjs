@@ -49,7 +49,10 @@ import {
   engineFailure,
   engineFailureLine,
 } from "@chuggy/worker-core/engineErrors.mjs";
-import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityDigest,
+  poolIdentityPersonal,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   registerAdvertised,
   registerPlatform,
@@ -64,6 +67,7 @@ import {
   runnerCredentialsHanded,
   runnerConfig,
   runnerPaths,
+  runnerPersonalIdleRefusal,
   runnerPoolLimits,
 } from "./runnerConfig.mjs";
 import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
@@ -468,12 +472,29 @@ export function heldEndingWithRunner(backend) {
 }
 
 /**
+ * The limits the pool's service holds, refused where a personal runner's
+ * leave it no work.
+ *
+ * @param {RunnerSetup} setup
+ */
+function runnerServiceLimits(setup) {
+  const { credentials, config, poolFile } = setup;
+  const personal = poolIdentityPersonal(credentials);
+  const idle = personal
+    ? runnerPersonalIdleRefusal(config, poolFile)
+    : undefined;
+  if (idle !== undefined) throw new Error(idle);
+  return runnerPoolLimits(config, poolFile, personal);
+}
+
+/**
  * @param {RunnerSetup} setup
  * @param {RunnerHost} host
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
   const { credentials, config, paths } = setup;
+  const limits = runnerServiceLimits(setup);
   const capabilities =
     host.places === false
       ? undefined
@@ -535,7 +556,7 @@ export async function runnerParts(setup, host) {
   const client = poolRunnerClient(
     credentials,
     config.engine === "podman" ? heldEndingWithRunner(backend) : backend,
-    runnerPoolLimits(config, setup.poolFile),
+    limits,
     { tokens, fetch: host.fetch, runner: host.runner, capabilities },
   );
   return { runtime: runtimeDir, engine, disk, backend, client };

@@ -46,6 +46,8 @@ chuggy-linux register --api <chuggy's origin> --token=<token> --personal
 
 It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over and restarts its service on it; the registration it held before stays in chuggy, offline, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
+A personal runner runs jobs alone. chuggy hands sessions only to a project's pool and a member's chat host, so a personal runner's service asks for none, whatever `sessionsMax` says, and `status` and `doctor` name only its `concurrencyMax`. A runner's file that sets `sessionsMax` still serves it, but `run` and `doctor` refuse a personal runner whose `concurrencyMax` is 0, since it would take no work.
+
 A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host).
 
 ## Configure
@@ -79,8 +81,8 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | Key                | Required | Meaning                                                                                                    |
 | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `engine`           | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions. Default 1. |
-| `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. Default 2.                        |
+| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions, never a personal runner's. Default 1. |
+| `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. A personal runner runs none whatever it says. Default 2. |
 | `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
 | `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, below, in place of `claudeTokenFile`.                     |
 | `codexCredential`  | no       | `{ "authFile": … }`, the `auth.json` Codex runs on, below; 0.25.0 or later. Default none.                 |
@@ -109,7 +111,7 @@ Each assignment's CPU and memory are checked against the whole machine, not what
 "pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
 ```
 
-The pool `vteng.chuggy.lead.json` runs one session and no job, and every other pool's service, the personal runner's among them, runs two jobs and two sessions. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
+The pool `vteng.chuggy.lead.json` runs one session and no job, every other pool's service runs two jobs and two sessions, and the personal runner's two jobs and no session. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
 
 A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing either.
 
