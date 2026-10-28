@@ -41,6 +41,7 @@ import {
   runnerSetup,
   runnerClaimLock,
   runnerMemoryLock,
+  runnerRuntimeLock,
   runnerUpdateLock,
   runnerUpdates,
 } from "./runner.mjs";
@@ -227,7 +228,7 @@ test("a run updates itself as the runner's file says, from this package's own re
   );
 });
 
-test("every pool's service of a user takes one install lock, and one memory lock and one claim lock an engine, in the runner's runtime directory", async (t) => {
+test("every pool's service of a user takes one install lock, and one memory lock, one claim lock and one runtime lock an engine, in the runner's runtime directory", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const paths = runnerPaths(environment, home);
   assert.equal(
@@ -252,6 +253,16 @@ test("every pool's service of a user takes one install lock, and one memory lock
         "chuggy-linux",
         "memory",
         `${engine}.claim`,
+      ),
+    );
+  for (const engine of /** @type {const} */ (["docker", "podman"]))
+    assert.equal(
+      runnerRuntimeLock(paths, engine),
+      join(
+        environment.XDG_RUNTIME_DIR,
+        "chuggy-linux",
+        "runtime",
+        `${engine}.lock`,
       ),
     );
 });

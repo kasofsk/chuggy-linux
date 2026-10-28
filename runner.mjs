@@ -184,6 +184,18 @@ export function runnerClaimLock(paths, engine) {
 }
 
 /**
+ * The lock a service takes to get and copy chuggy's runtime, so a pull for one
+ * platform never replaces the variant another is copying from: one for every
+ * pool's service of this user on that engine.
+ *
+ * @param {RunnerPaths} paths
+ * @param {"docker" | "podman"} engine
+ */
+export function runnerRuntimeLock(paths, engine) {
+  return join(runtimeDirectory(paths), "runtime", `${engine}.lock`);
+}
+
+/**
  * What the container backend is told of its engine's memory: the budget the
  * runner's file keeps and reserves, and the two locks every pool's service of
  * this user on that engine shares.
@@ -501,6 +513,7 @@ export async function runnerParts(setup, host) {
       imageUnusedSecsMax: config.imageUnusedSecsMax,
       diskFreeBytesMin: diskFloorBytes(config),
       ...runnerMemorySettings(config, paths),
+      runtimeLock: runnerRuntimeLock(paths, config.engine),
     },
     {
       engine,
