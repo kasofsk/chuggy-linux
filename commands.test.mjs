@@ -21,6 +21,7 @@ import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 import { fakeDisk, fakeEngine } from "./engine.fixture.mjs";
 import {
   answeringFetch,
+  registeredChatHostFixture,
   registeredFixture,
   registeredPersonalFixture,
 } from "./register.fixture.mjs";
@@ -112,6 +113,7 @@ async function called(argv, machine = {}) {
     environment: machine.environment ?? {},
     home: machine.home ?? "/nonexistent",
     uid: 1000,
+    gid: 1000,
     hostname: machine.hostname ?? "shame",
     arch: machine.arch ?? "x64",
     fetch:
@@ -1652,7 +1654,7 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   assert.deepEqual(requests, []);
   assert.match(
     (await called(["help"])).out,
-    /^ {7}chuggy-linux register --api <origin> --token=<token> \[--pool <name> \| --personal\]\n {29}\[--host\] \[--capability <token>\]\.\.\.$/mu,
+    /^ {7}chuggy-linux register --api <origin> --token=<token>\n {29}\[--pool <name> \| --personal \| --chat\]\n {29}\[--host\] \[--capability <token>\]\.\.\.$/mu,
   );
 });
 
@@ -1873,5 +1875,270 @@ test("a run is refused while a legacy service whose pool file cannot be read run
   assert.equal(
     err,
     "chuggy-linux.service is running a pool file this runner cannot read, which may be this pool's; stop it before starting another service of this pool",
+  );
+});
+
+/** The base a chat host's file and unit are named by: its tenant and member, then `chat` and `host`. */
+const chatHostBase =
+  "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.chat.host";
+
+/**
+ * A machine a member's chat host runs on: docker, whose registries.conf is
+ * no concern of a suite's, its Claude token alone in a directory of its own,
+ * and the chat host's file at `poolFile`.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+async function chatMachine(t) {
+  const fixture = await runnerFixture(t, {
+    runner: { engine: "docker" },
+    pool: registeredChatHostFixture,
+  });
+  const { home, environment } = fixture;
+  const tokenFile = join(home, "claude", "token");
+  await mkdir(dirname(tokenFile), { mode: 0o700 });
+  await writeFile(tokenFile, "claude-token-fixture", { mode: 0o600 });
+  await chmod(tokenFile, 0o600);
+  const config = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy-linux",
+    "runner.json",
+  );
+  await writeFile(
+    config,
+    JSON.stringify({
+      engine: "docker",
+      claudeTokenFile: tokenFile,
+      timeoutSecsMax: 3600,
+      outputBytesMax: 65536,
+    }),
+  );
+  return { ...fixture, paths: runnerPaths(environment, home) };
+}
+
+/** A plane naming the session image, and an engine holding it. */
+function chatReady() {
+  const { engine, state } = fakeEngine();
+  state.images.add("registry.example/chat:1");
+  return {
+    engine,
+    state,
+    ...ready,
+    plane: {
+      ...ready.plane,
+      poll: async () => ({
+        polled: /** @type {const} */ ("Reconciled"),
+        assignments: [],
+        stop: [],
+        chatImage: "registry.example/chat:1",
+      }),
+    },
+  };
+}
+
+test("register --chat redeems a member's chat host token for its file, named for its tenant and member, declaring nothing, and starts its own unit", async (t) => {
+  const { home, environment } = await chatMachine(t);
+  const { fetch, requests } = answeringFetch(201, registeredChatHostFixture);
+  const { status, out, err, systemd } = await called(
+    [...registerArgv, "--chat"],
+    { home, environment, fetch, ...chatReady() },
+  );
+  assert.equal(status, 0, err);
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    `${chatHostBase}.json`,
+  );
+  assert.equal(
+    out,
+    `wrote ${file}; its service is running: started chuggy-linux-${chatHostBase}.service`,
+  );
+  assert.equal(
+    requests[0].url,
+    "https://chuggy.example/api/v1/personal-runner-registrations",
+  );
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+    token: "registration-token-fixture",
+    capabilities: [],
+  });
+  assert.deepEqual(
+    JSON.parse(await readFile(file, "utf8")),
+    registeredChatHostFixture,
+  );
+  const unit = await readFile(
+    join(
+      environment.XDG_CONFIG_HOME,
+      "systemd",
+      "user",
+      `chuggy-linux-${chatHostBase}.service`,
+    ),
+    "utf8",
+  );
+  assert.match(
+    unit,
+    /^Description=chuggy-linux: a member's chat host, its sessions in a container$/mu,
+  );
+  assert.ok(unit.includes(`"run" "--pool" "${file}"`));
+  assert.ok(
+    !`${out}${err}${systemd.flat().join(" ")}`.includes(
+      registeredChatHostFixture.clientSecret,
+    ),
+  );
+});
+
+test("register --chat beside --personal, --pool, --host or --capability is refused before a token is spent, and --chat is register's alone", async (t) => {
+  const { home, environment } = await chatMachine(t);
+  for (const [extra, why] of [
+    [
+      ["--personal"],
+      /^--chat registers a chat host and --personal a personal runner/u,
+    ],
+    [["--pool", "shame"], /^--pool names a pool, and a chat host names none/u],
+    [["--host"], /^a chat host takes sessions alone and declares nothing/u],
+    [
+      ["--capability", "gpu"],
+      /^a chat host takes sessions alone and declares nothing/u,
+    ],
+  ]) {
+    const { fetch, requests } = answeringFetch(201, registeredChatHostFixture);
+    const { status, err } = await called(
+      [...registerArgv, "--chat", ...extra],
+      { home, environment, fetch },
+    );
+    assert.equal(status, 2);
+    assert.match(err, why);
+    assert.deepEqual(requests, []);
+  }
+  const { status, err } = await called(["status", "--pool", "/p", "--chat"]);
+  assert.equal(status, 2);
+  assert.match(err, /^usage: chuggy-linux/u);
+});
+
+test("once and stop are refused of a chat host's file", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  const once = await called(["once", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(once.status, 2);
+  assert.equal(
+    once.err,
+    "a chat host runs only as its service; start it with chuggy-linux run",
+  );
+  const stop = await called(["stop", "asg-1", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(stop.status, 2);
+  assert.equal(stop.err, "a chat host's sessions are stopped in chuggy");
+});
+
+test("status of a chat host says its settings, and its supervisor where its service is running", async (t) => {
+  const { home, environment, poolFile, paths } = await chatMachine(t);
+  const stopped = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(stopped.status, 0, stopped.err);
+  assert.equal(
+    stopped.out,
+    [
+      "service: not running",
+      "chat: sessionsMax 32, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
+    ].join("\n"),
+  );
+  await controlServed(
+    t,
+    controlSocketPath(
+      poolRuntimeDirectory(
+        paths,
+        /** @type {any} */ (registeredChatHostFixture),
+      ),
+    ),
+    [
+      {
+        named: "registry.example/chat:2",
+        used: "registry.example/chat:1",
+        supervisor: "Draining",
+        starting: true,
+      },
+    ],
+  );
+  const running = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(
+    running.out,
+    [
+      "service: running",
+      "chat: sessionsMax 32, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
+      "supervisor: draining, starting",
+      "image: running registry.example/chat:1; chuggy names registry.example/chat:2",
+    ].join("\n"),
+  );
+});
+
+test("a chat host's run whose plane denies it exits for its unit not to restart it, having started no supervisor", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  const { engine, state } = fakeEngine();
+  const { status, err } = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+    engine,
+  });
+  assert.equal(status, 3, err);
+  assert.ok(!state.calls.some((call) => call.argv[0] === "rm"));
+  assert.ok(
+    state.calls.some(
+      (call) => call.argv[0] === "network" && call.argv[1] === "create",
+    ),
+  );
+});
+
+test("a chat host's run is refused where its Claude credential shares its directory", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  const config = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy-linux",
+    "runner.json",
+  );
+  const shared = join(home, "claude-token");
+  await writeFile(
+    config,
+    JSON.stringify({
+      engine: "docker",
+      claudeTokenFile: shared,
+      timeoutSecsMax: 3600,
+      outputBytesMax: 65536,
+    }),
+  );
+  const { status, err } = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    new RegExp(
+      `^${home} holds .* beside the credential ${shared}, and the chat supervisor is given the directory whole`,
+      "u",
+    ),
+  );
+});
+
+test("a chat host's run is refused where its Claude credential is not this user's alone", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  const tokenFile = join(home, "claude", "token");
+  await chmod(tokenFile, 0o640);
+  const { status, err } = await called(["run", "--pool", poolFile], {
+    home,
+    environment,
+  });
+  assert.equal(status, 1);
+  assert.equal(
+    err,
+    `the Claude token file ${tokenFile} is mode 640; only its owner may read or write it (chmod 600)`,
   );
 });

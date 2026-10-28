@@ -4,7 +4,9 @@
  * file's unit runs this copy. It changes nothing: a missing network is
  * reported for a run to make, and its one poll names nothing held, wants
  * nothing and advertises nothing, which the plane answers without granting
- * or releasing a lease or changing what the pool advertised.
+ * or releasing a lease or changing what the pool advertised. Of a member's
+ * chat host it checks what `chatDoctor.mjs` says, and pulls its image where
+ * it is not here, as the host's run would pull it first.
  */
 
 import { execFile } from "node:child_process";
@@ -49,9 +51,16 @@ import {
   jobUid,
 } from "@chuggy/worker-core/job.mjs";
 import {
+  poolIdentityChatHost,
   poolIdentityPersonal,
   poolLabelValue,
 } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  chatCredentialDirectoryFinding,
+  chatEngineFinding,
+  chatImageFinding,
+  chatSessionUsersFinding,
+} from "./chatDoctor.mjs";
 import { diskFloorSaid } from "./diskFree.mjs";
 import { serviceUnitText } from "./poolService.mjs";
 import {
@@ -60,12 +69,14 @@ import {
   runnerClaudeCredential,
   runnerCodexAgent,
   runnerConfig,
+  runnerChatSettingsLine,
   runnerConfigLimits,
   runnerPoolName,
 } from "./runnerConfig.mjs";
 import {
   engineEndpoint,
   engineSocketHanded,
+  poolRuntimeDirectory,
   runnerCapabilities,
   runnerReleasePrefix,
   runtimeDirectory,
@@ -232,9 +243,10 @@ async function hostAgentFound(input, config, command, runtime) {
  * @param {DoctorInput} input
  * @param {RunnerConfig} config
  * @param {boolean} host whether a job may run on this machine itself
+ * @param {"docker" | "podman" | "host"} reader what reads the file: the engine's job, or this machine itself, as a chat host's supervisor reads it as this user
  * @returns {Promise<DoctorFinding>}
  */
-async function claudeCredentialFinding(input, config, host) {
+async function claudeCredentialFinding(input, config, host, reader) {
   const check = "Claude credential";
   const credential = runnerClaudeCredential(config);
   const file = claudeCredentialFile(credential);
@@ -243,7 +255,7 @@ async function claudeCredentialFinding(input, config, host) {
   let refusal = await credentialFileRefusal(
     claudeCredentialDescribed(setting),
     file,
-    config.engine,
+    reader,
     input.uid,
   );
   if (refusal === undefined)
@@ -639,6 +651,24 @@ async function diskFloorFinding(engine, config, disk) {
 }
 
 /**
+ * Whether the network every container here joins is present, or a run makes
+ * it.
+ *
+ * @param {Engine} engine
+ * @param {RunnerConfig} config
+ * @param {DoctorFinding[]} findings
+ */
+async function jobNetworkChecked(engine, config, findings) {
+  await checked(findings, "job network", async () => {
+    const inspected = await engine.exec(networkInspectArgv(config.network));
+    if (inspected.code === 0) return [true, `${config.network} is present`];
+    if (engineFailure(inspected) === "NotFound")
+      return [true, `${config.network} is missing, and a run makes it`];
+    throw new Error(engineFailureLine(inspected));
+  });
+}
+
+/**
  * @param {Engine} engine
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
@@ -661,13 +691,7 @@ async function engineChecks(engine, credentials, config, input, findings) {
   findings.push(
     await engineSocketFinding(engine, config, reachable.endpoint, uid),
   );
-  await checked(findings, "job network", async () => {
-    const inspected = await engine.exec(networkInspectArgv(config.network));
-    if (inspected.code === 0) return [true, `${config.network} is present`];
-    if (engineFailure(inspected) === "NotFound")
-      return [true, `${config.network} is missing, and a run makes it`];
-    throw new Error(engineFailureLine(inspected));
-  });
+  await jobNetworkChecked(engine, config, findings);
   findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
   findings.push(await diskFloorFinding(engine, config, input.disk));
 }
@@ -711,9 +735,13 @@ function capabilitiesFound(input, credentials, config) {
 }
 
 /**
+ * The pool's token, then one poll of its plane, answering the session image
+ * the plane names, where it names one.
+ *
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
  * @param {DoctorFinding[]} findings
+ * @returns {Promise<{chatImage: string | undefined} | undefined>}
  */
 async function planeChecks(input, credentials, findings) {
   const token = await checked(findings, "pool token", async () => {
@@ -721,14 +749,111 @@ async function planeChecks(input, credentials, findings) {
     if (acquired.acquired !== "Token") throw new Error(acquired.evidence);
     return [acquired.token, `issued by ${credentials.tokenUrl}`];
   });
-  if (token === undefined) return;
-  await checked(findings, "plane", async () => {
+  if (token === undefined) return undefined;
+  return checked(findings, "plane", async () => {
     const polled = await input.parts.plane(credentials).poll(token, [], 0, 0);
     if (polled.polled === "Stale")
       throw new Error("the plane rejected a token the issuer had just issued");
     if (polled.polled !== "Reconciled") throw new Error(polled.evidence);
-    return [true, `${credentials.planeUrl} answered a poll`];
+    return [
+      { chatImage: polled.chatImage },
+      `${credentials.planeUrl} answered a poll`,
+    ];
   });
+}
+
+/**
+ * The engine a chat host's supervisor is run by, and what it checks there:
+ * the host's containers, the network, and its sessions' users.
+ *
+ * @param {Engine} engine
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @param {DoctorInput} input
+ * @param {DoctorFinding[]} findings
+ * @returns {Promise<{endpoint: string | undefined} | undefined>} where the engine answered
+ */
+async function chatEngineChecks(engine, credentials, config, input, findings) {
+  let endpoint;
+  try {
+    endpoint = await engineEndpoint(config.engine, engine);
+  } catch (failure) {
+    findings.push({
+      check: "container engine",
+      passed: false,
+      detail: failureMessage(failure),
+    });
+    return undefined;
+  }
+  const listed = await chatEngineFinding(
+    engine,
+    config.engine,
+    endpoint,
+    credentials,
+  );
+  findings.push(listed);
+  if (!listed.passed) return undefined;
+  await jobNetworkChecked(engine, config, findings);
+  findings.push(
+    await chatSessionUsersFinding(engine, config.engine, input.uid),
+  );
+  return { endpoint };
+}
+
+/**
+ * What a member's chat host needs beyond its file, the runner's file and the
+ * runtime directory: its credential handed as the supervisor reads it, the
+ * service and updates as a pool's, its engine, the plane, and the image its
+ * supervisor runs, which is checked once the plane named one or the host
+ * sets its own.
+ *
+ * @param {DoctorInput} input
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig | undefined} config
+ * @param {boolean} runtime whether the runtime directory is known
+ * @param {DoctorFinding[]} findings
+ */
+async function chatHostChecks(input, credentials, config, runtime, findings) {
+  if (config !== undefined) {
+    findings.push(await claudeCredentialFinding(input, config, false, "host"));
+    findings.push(await chatCredentialDirectoryFinding(config));
+  }
+  if (config?.engine === "podman")
+    findings.push(await podmanHelpersFinding(input.registriesConf));
+  findings.push(await serviceUnitFinding(input));
+  if (config !== undefined && runtime)
+    findings.push(await updatesFinding(input.parts.updates(config)));
+  const engine = config === undefined ? undefined : input.parts.engine(config);
+  const reached =
+    engine === undefined || config === undefined
+      ? undefined
+      : await chatEngineChecks(engine, credentials, config, input, findings);
+  const polled = await planeChecks(input, credentials, findings);
+  if (
+    engine === undefined ||
+    config === undefined ||
+    reached === undefined ||
+    !runtime ||
+    (polled === undefined && config.chat?.image === undefined)
+  )
+    return findings;
+  findings.push(
+    await chatImageFinding(
+      {
+        engine,
+        site: {
+          engine: config.engine,
+          runtimeDir: poolRuntimeDirectory(input.paths, credentials),
+          dockerHost: reached.endpoint,
+        },
+        credentials,
+        tokens: input.parts.tokens(credentials),
+      },
+      config.chat,
+      polled?.chatImage,
+    ),
+  );
+  return findings;
 }
 
 /** The helper that is the auth file itself, podman's default. */
@@ -943,8 +1068,9 @@ export function findingLine(finding) {
  *
  * @param {DoctorInput} input
  * @param {DoctorFinding[]} findings
+ * @param {boolean} chat whether the pool file is a chat host's, whose settings are said in place of a pool's limits
  */
-async function runnerConfigChecked(input, findings) {
+async function runnerConfigChecked(input, findings, chat) {
   const check = "runner configuration";
   let config;
   try {
@@ -963,7 +1089,7 @@ async function runnerConfigChecked(input, findings) {
     (name) => !files.has(name),
   );
   const detail = [
-    `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile)}`,
+    `${input.paths.config}: ${chat ? runnerChatSettingsLine(config) : runnerConfigLimits(config, input.poolFile)}`,
     ...unmatched.map(
       (name) =>
         `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,
@@ -988,21 +1114,35 @@ export async function doctorFindings(input) {
     const read = await poolCredentials(input.poolFile);
     return [
       read,
-      `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
+      `${input.poolFile} names ${poolIdentityChatHost(read) ? "chat host" : poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
     ];
   });
-  const config = await runnerConfigChecked(input, findings);
+  const chat = credentials !== undefined && poolIdentityChatHost(credentials);
+  const config = await runnerConfigChecked(input, findings, chat);
   const runtime = await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),
   ]);
+  if (chat)
+    return chatHostChecks(
+      input,
+      credentials,
+      config,
+      runtime !== undefined,
+      findings,
+    );
   const capabilities =
     credentials === undefined || config === undefined
       ? undefined
       : capabilitiesFound(input, credentials, config);
   if (config !== undefined) {
     findings.push(
-      await claudeCredentialFinding(input, config, credentials?.host === true),
+      await claudeCredentialFinding(
+        input,
+        config,
+        credentials?.host === true,
+        config.engine,
+      ),
     );
     const codex = await codexCredentialFinding(
       input,

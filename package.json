@@ -33,6 +33,8 @@
     "typescript-eslint": "^8.68.0"
   },
   "files": [
+    "chatDoctor.mjs",
+    "chatRunner.mjs",
     "cli.mjs",
     "commands.mjs",
     "diskFree.mjs",

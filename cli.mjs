@@ -24,6 +24,7 @@ async function cliRun() {
     environment: process.env,
     home: os.homedir(),
     uid: typeof process.getuid === "function" ? process.getuid() : -1,
+    gid: typeof process.getgid === "function" ? process.getgid() : -1,
     hostname: os.hostname(),
     arch: process.arch,
     fetch: globalThis.fetch,

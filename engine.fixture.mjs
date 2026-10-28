@@ -132,6 +132,18 @@ function fakeEngineState() {
     /** What podman's `version` answers. */
     podmanVersion: "5.8.7",
     /**
+     * What podman's `unshare cat` answers of each id map, as podman maps a
+     * user given 100000:65536 in /etc/subuid and /etc/subgid.
+     *
+     * @type {Record<string, string>}
+     */
+    idMaps: /** @type {Record<string, string>} */ ({
+      "/proc/self/uid_map":
+        "         0       1000          1\n         1     100000      65536\n",
+      "/proc/self/gid_map":
+        "         0       1000          1\n         1     100000      65536\n",
+    }),
+    /**
      * What podman's `info` answers of whether its service is remote, or
      * nothing when that `info` fails.
      *
@@ -490,6 +502,10 @@ function answer(state, call) {
     return volumeInspected(state, call.argv.slice(2));
   if (verb === "volume") return volumed(state, call.argv);
   if (verb === "stats") return answered(statsPrinted(state));
+  if (verb === "unshare")
+    return state.idMaps[last] === undefined
+      ? failed(`cat: ${last}: No such file or directory`)
+      : answered(state.idMaps[last]);
   return failed(`unknown command: ${call.argv.join(" ")}`);
 }
 
