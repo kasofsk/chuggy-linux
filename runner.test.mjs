@@ -40,6 +40,7 @@ import {
   runnerReleasePrefix,
   runnerSetup,
   runnerClaimLock,
+  runnerEngineSettings,
   runnerMemoryLock,
   runnerRuntimeLock,
   runnerUpdateLock,
@@ -265,6 +266,22 @@ test("every pool's service of a user takes one install lock, and one memory lock
         `${engine}.lock`,
       ),
     );
+});
+
+test("a service's container backend is given its engine's runtime lock, beside the memory and claim locks", async (t) => {
+  for (const engine of /** @type {const} */ (["docker", "podman"])) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: { engine },
+    });
+    const setup = await runnerSetup(poolFile, environment, home);
+    const settings = runnerEngineSettings(setup.config, setup.paths);
+    assert.equal(settings.runtimeLock, runnerRuntimeLock(setup.paths, engine));
+    assert.equal(settings.memoryLock, runnerMemoryLock(setup.paths, engine));
+    assert.equal(
+      settings.memoryClaimLock,
+      runnerClaimLock(setup.paths, engine),
+    );
+  }
 });
 
 test("a job network another run made between the inspection and the creation is present", async () => {

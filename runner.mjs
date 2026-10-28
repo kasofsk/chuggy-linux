@@ -185,8 +185,8 @@ export function runnerClaimLock(paths, engine) {
 
 /**
  * The lock a service takes to get and copy chuggy's runtime, so a pull for one
- * platform never replaces the variant another is copying from: one for every
- * pool's service of this user on that engine.
+ * platform does not replace the variant another of this user's services is
+ * copying from: one for every pool's service of this user on that engine.
  *
  * @param {RunnerPaths} paths
  * @param {"docker" | "podman"} engine
@@ -196,19 +196,20 @@ export function runnerRuntimeLock(paths, engine) {
 }
 
 /**
- * What the container backend is told of its engine's memory: the budget the
- * runner's file keeps and reserves, and the two locks every pool's service of
- * this user on that engine shares.
+ * What the container backend is told of what every pool's service of this
+ * user on its engine shares: the memory budget the runner's file keeps and
+ * reserves, and the memory, claim and runtime locks.
  *
  * @param {RunnerConfig} config
  * @param {RunnerPaths} paths
  */
-function runnerMemorySettings(config, paths) {
+export function runnerEngineSettings(config, paths) {
   return {
     memoryFreeBytesMin: memoryFreeBytes(config),
     memoryReservedBytes: memoryReservedBytes(config),
     memoryLock: runnerMemoryLock(paths, config.engine),
     memoryClaimLock: runnerClaimLock(paths, config.engine),
+    runtimeLock: runnerRuntimeLock(paths, config.engine),
   };
 }
 
@@ -512,8 +513,7 @@ export async function runnerParts(setup, host) {
       imageRecord: join(paths.images, `${config.engine}.json`),
       imageUnusedSecsMax: config.imageUnusedSecsMax,
       diskFreeBytesMin: diskFloorBytes(config),
-      ...runnerMemorySettings(config, paths),
-      runtimeLock: runnerRuntimeLock(paths, config.engine),
+      ...runnerEngineSettings(config, paths),
     },
     {
       engine,
