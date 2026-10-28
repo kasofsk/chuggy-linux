@@ -54,6 +54,7 @@ import {
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
+import { registeredChatHostFixture } from "./register.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
@@ -175,6 +176,26 @@ test("on podman nothing a run holds outlives it, so an update waits for its cont
       [engineName === "podman" ? { assignment: "asg-1", kind: "Job" } : listed],
       engineName,
     );
+  }
+});
+
+test("a chat host's file is set up as one, and one declaring what a pool's or a personal runner's does is refused before anything runs", async (t) => {
+  const chat = await runnerFixture(t, { pool: registeredChatHostFixture });
+  assert.equal(
+    (await runnerSetup(chat.poolFile, chat.environment, chat.home)).credentials
+      .kind,
+    "ChatHost",
+  );
+  for (const declared of [{ capabilities: [] }, { host: true }]) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      pool: { ...registeredChatHostFixture, ...declared },
+    });
+    await assert.rejects(runnerSetup(poolFile, environment, home), {
+      message: new RegExp(
+        `^pool credentials ${poolFile}: .*${Object.keys(declared)[0]}`,
+        "u",
+      ),
+    });
   }
 });
 

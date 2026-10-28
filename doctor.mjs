@@ -1,10 +1,13 @@
 /**
  * What `doctor` checks, in the order a run depends on them, each answered as
  * passed or not with what was found, and before the engine whether the pool
- * file's unit runs this copy. It changes nothing: a missing network is
- * reported for a run to make, and its one poll names nothing held, wants
- * nothing and advertises nothing, which the plane answers without granting
- * or releasing a lease or changing what the pool advertised.
+ * file's unit runs this copy. Of a pool it changes nothing: a missing
+ * network is reported for a run to make, and its one poll names nothing
+ * held, wants nothing and advertises nothing, which the plane answers
+ * without granting or releasing a lease or changing what the pool
+ * advertised. Of a member's chat host it checks what `chatDoctor.mjs` says,
+ * and makes one change: the image its supervisor runs is pulled where it is
+ * not here, as the host's run would pull it before starting.
  */
 
 import { execFile } from "node:child_process";
@@ -31,8 +34,10 @@ import {
   hostTimeoutSecsMax,
 } from "@chuggy/worker-core/hostBackend.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
+import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 
 import {
+  engineInfoArgv,
   listArgv,
   networkInspectArgv,
   ownerVolumeDirectory,
@@ -49,9 +54,19 @@ import {
   jobUid,
 } from "@chuggy/worker-core/job.mjs";
 import {
+  poolIdentityChatHost,
   poolIdentityPersonal,
   poolLabelValue,
 } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  chatCredentialDirectoryFinding,
+  chatEngineFinding,
+  chatImageFinding,
+  chatServiceAsked,
+  chatSessionUsersFinding,
+  chatSettingsFinding,
+  chatSupervisorFinding,
+} from "./chatDoctor.mjs";
 import { diskFloorSaid } from "./diskFree.mjs";
 import { serviceUnitText } from "./poolService.mjs";
 import {
@@ -60,12 +75,14 @@ import {
   runnerClaudeCredential,
   runnerCodexAgent,
   runnerConfig,
+  runnerChatSettingsLine,
   runnerConfigLimits,
   runnerPoolName,
 } from "./runnerConfig.mjs";
 import {
   engineEndpoint,
   engineSocketHanded,
+  poolRuntimeDirectory,
   runnerCapabilities,
   runnerReleasePrefix,
   runtimeDirectory,
@@ -80,6 +97,7 @@ import {
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").ChatHostIdentity} ChatHostIdentity
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
  * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
@@ -102,6 +120,7 @@ import {
  * @property {RunnerPaths} paths
  * @property {string} arch this machine, as `process.arch` names it
  * @property {number} uid this process's
+ * @property {number} gid this process's, which owns a chat host's credential as docker shows it
  * @property {readonly string[]} registriesConf podman's registries.conf files and drop-in directories
  * @property {string} node the Node binary running this
  * @property {string} cli this CLI's entry, as an absolute path
@@ -232,9 +251,10 @@ async function hostAgentFound(input, config, command, runtime) {
  * @param {DoctorInput} input
  * @param {RunnerConfig} config
  * @param {boolean} host whether a job may run on this machine itself
+ * @param {"docker" | "podman" | "host"} reader what reads the file: the engine's job, or this machine itself, as a chat host's supervisor reads it as this user
  * @returns {Promise<DoctorFinding>}
  */
-async function claudeCredentialFinding(input, config, host) {
+async function claudeCredentialFinding(input, config, host, reader) {
   const check = "Claude credential";
   const credential = runnerClaudeCredential(config);
   const file = claudeCredentialFile(credential);
@@ -243,7 +263,7 @@ async function claudeCredentialFinding(input, config, host) {
   let refusal = await credentialFileRefusal(
     claudeCredentialDescribed(setting),
     file,
-    config.engine,
+    reader,
     input.uid,
   );
   if (refusal === undefined)
@@ -621,6 +641,106 @@ async function ownerVolumesFinding(engine, credentials, config, uid) {
   };
 }
 
+/** What podman's `info` says of the cgroups a container's limits are set in. */
+const podmanCgroupsSchema = z.object({
+  host: z.object({
+    cgroupManager: z.string(),
+    cgroupVersion: z.string(),
+    cgroupControllers: z.array(z.string()).nullish(),
+    security: z.object({ rootless: z.boolean() }),
+  }),
+});
+
+/** The drop-in that delegates the memory controller to each user's systemd, which rootless podman's limits are set through. */
+const userDelegateDropIn = "/etc/systemd/system/user@.service.d/delegate.conf";
+
+/**
+ * Why podman sets no memory limit on what it runs, with what changes that,
+ * or undefined where it sets one. Rootless podman sets one only on cgroups
+ * v2, through systemd, in a user session the memory controller is delegated
+ * to; rootful podman needs the controller only, which a kernel may boot
+ * without.
+ *
+ * @param {z.infer<typeof podmanCgroupsSchema>["host"]} host
+ * @param {number} uid this user's, whose systemd a drop-in reaches
+ * @returns {string | undefined}
+ */
+function podmanMemoryCapLack(host, uid) {
+  const { cgroupManager, cgroupVersion, cgroupControllers, security } = host;
+  const memory = (cgroupControllers ?? []).includes("memory");
+  if (security.rootless && cgroupVersion !== "v2")
+    return `rootless podman sets no limit on cgroups ${cgroupVersion}; boot the unified hierarchy, with systemd.unified_cgroup_hierarchy=1 on the kernel command line`;
+  if (!security.rootless)
+    return memory
+      ? undefined
+      : "the kernel runs without the memory controller; enable it, with cgroup_enable=memory on the kernel command line, and reboot";
+  const manager = cgroupManager === "systemd";
+  if (manager && memory) return undefined;
+  const why = [
+    ...(manager ? [] : [`its cgroup manager is ${cgroupManager}`]),
+    ...(memory ? [] : ["the memory controller is not delegated to this user"]),
+  ];
+  const fixes = [
+    ...(manager
+      ? []
+      : ['set cgroup_manager = "systemd" under [engine] in containers.conf']),
+    ...(memory
+      ? []
+      : [
+          `write ${userDelegateDropIn} holding "[Service]" and "Delegate=cpu cpuset io memory pids", then run systemctl daemon-reload and systemctl restart user@${String(uid)}.service, or reboot, since register keeps this user's session running and logging in again does not restart it`,
+        ]),
+  ];
+  return `rootless podman sets no limit where ${why.join(" and ")}; ${fixes.join(", and ")}`;
+}
+
+/**
+ * Whether podman holds a container to the memory it is run with: a job's cap
+ * and a chat supervisor's. Where it cannot, podman runs the container
+ * uncapped, warning only on its stderr, so this warns rather than refuses:
+ * the runner serves, and its jobs and supervisor run past their caps.
+ *
+ * @param {Engine} engine
+ * @param {number} uid
+ * @returns {Promise<DoctorFinding>}
+ */
+export async function podmanMemoryCapFinding(engine, uid) {
+  const check = "memory caps";
+  /** @param {string} why */
+  const unchecked = (why) => ({
+    check,
+    passed: true,
+    warning: /** @type {const} */ (true),
+    detail: `whether podman holds a job and a chat supervisor to the memory each is run with could not be checked: ${why}`,
+  });
+  const info = await engine.exec(engineInfoArgv());
+  if (info.code !== 0)
+    return unchecked(`podman info failed: ${engineFailureLine(info)}`);
+  let parsed;
+  try {
+    parsed = podmanCgroupsSchema.safeParse(JSON.parse(info.stdout));
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined || !parsed.success)
+    return unchecked(
+      "podman's info says nothing this runner reads of its cgroups",
+    );
+  const { host } = parsed.data;
+  const lack = podmanMemoryCapLack(host, uid);
+  if (lack === undefined)
+    return {
+      check,
+      passed: true,
+      detail: `podman holds a job and a chat supervisor to the memory each is run with: cgroups ${host.cgroupVersion}, ${host.security.rootless ? "rootless through systemd, the memory controller delegated" : "the memory controller enabled"}`,
+    };
+  return {
+    check,
+    passed: true,
+    warning: true,
+    detail: `podman does not hold a job or a chat supervisor to the memory it is run with, and runs each uncapped, warning only on its stderr: ${lack}`,
+  };
+}
+
 /**
  * The engine's free disk against the floor the runner's file sets, warned of
  * where it could not be measured or is under the floor.
@@ -636,6 +756,24 @@ async function diskFloorFinding(engine, config, disk) {
   return warning
     ? { check, passed: true, warning: true, detail }
     : { check, passed: true, detail };
+}
+
+/**
+ * Whether the network every container here joins is present, or a run makes
+ * it.
+ *
+ * @param {Engine} engine
+ * @param {RunnerConfig} config
+ * @param {DoctorFinding[]} findings
+ */
+async function jobNetworkChecked(engine, config, findings) {
+  await checked(findings, "job network", async () => {
+    const inspected = await engine.exec(networkInspectArgv(config.network));
+    if (inspected.code === 0) return [true, `${config.network} is present`];
+    if (engineFailure(inspected) === "NotFound")
+      return [true, `${config.network} is missing, and a run makes it`];
+    throw new Error(engineFailureLine(inspected));
+  });
 }
 
 /**
@@ -661,15 +799,11 @@ async function engineChecks(engine, credentials, config, input, findings) {
   findings.push(
     await engineSocketFinding(engine, config, reachable.endpoint, uid),
   );
-  await checked(findings, "job network", async () => {
-    const inspected = await engine.exec(networkInspectArgv(config.network));
-    if (inspected.code === 0) return [true, `${config.network} is present`];
-    if (engineFailure(inspected) === "NotFound")
-      return [true, `${config.network} is missing, and a run makes it`];
-    throw new Error(engineFailureLine(inspected));
-  });
+  await jobNetworkChecked(engine, config, findings);
   findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
   findings.push(await diskFloorFinding(engine, config, input.disk));
+  if (config.engine === "podman")
+    findings.push(await podmanMemoryCapFinding(engine, input.uid));
 }
 
 /**
@@ -711,9 +845,13 @@ function capabilitiesFound(input, credentials, config) {
 }
 
 /**
+ * The pool's token, then one poll of its plane, answering the session image
+ * the plane names, where it names one.
+ *
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
  * @param {DoctorFinding[]} findings
+ * @returns {Promise<{chatImage: string | undefined} | undefined>}
  */
 async function planeChecks(input, credentials, findings) {
   const token = await checked(findings, "pool token", async () => {
@@ -721,14 +859,131 @@ async function planeChecks(input, credentials, findings) {
     if (acquired.acquired !== "Token") throw new Error(acquired.evidence);
     return [acquired.token, `issued by ${credentials.tokenUrl}`];
   });
-  if (token === undefined) return;
-  await checked(findings, "plane", async () => {
+  if (token === undefined) return undefined;
+  return checked(findings, "plane", async () => {
     const polled = await input.parts.plane(credentials).poll(token, [], 0, 0);
     if (polled.polled === "Stale")
       throw new Error("the plane rejected a token the issuer had just issued");
     if (polled.polled !== "Reconciled") throw new Error(polled.evidence);
-    return [true, `${credentials.planeUrl} answered a poll`];
+    return [
+      { chatImage: polled.chatImage },
+      `${credentials.planeUrl} answered a poll`,
+    ];
   });
+}
+
+/**
+ * The engine a chat host's supervisor is run by, and what it checks there:
+ * the host's containers, the network, and its sessions' users.
+ *
+ * @param {Engine} engine
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @param {DoctorInput} input
+ * @param {DoctorFinding[]} findings
+ * @returns {Promise<{endpoint: string | undefined} | undefined>} where the engine answered
+ */
+async function chatEngineChecks(engine, credentials, config, input, findings) {
+  let endpoint;
+  try {
+    endpoint = await engineEndpoint(config.engine, engine);
+  } catch (failure) {
+    findings.push({
+      check: "container engine",
+      passed: false,
+      detail: failureMessage(failure),
+    });
+    return undefined;
+  }
+  const listed = await chatEngineFinding(
+    engine,
+    config.engine,
+    endpoint,
+    credentials,
+  );
+  findings.push(listed);
+  if (!listed.passed) return undefined;
+  await jobNetworkChecked(engine, config, findings);
+  findings.push(
+    await chatSessionUsersFinding(engine, config.engine, input.uid),
+  );
+  findings.push(
+    await chatSupervisorFinding(
+      engine,
+      config.engine,
+      /** @type {ChatHostIdentity} */ (credentials),
+      () =>
+        chatServiceAsked(
+          controlSocketPath(poolRuntimeDirectory(input.paths, credentials)),
+        ),
+    ),
+  );
+  if (config.engine === "podman")
+    findings.push(await podmanMemoryCapFinding(engine, input.uid));
+  return { endpoint };
+}
+
+/**
+ * What a member's chat host needs beyond its file, the runner's file and the
+ * runtime directory: its credential handed as the supervisor reads it, the
+ * service and updates as a pool's, its engine, the plane, and the image its
+ * supervisor runs, which is checked once the plane named one or the host
+ * sets its own.
+ *
+ * @param {DoctorInput} input
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig | undefined} config
+ * @param {boolean} runtime whether the runtime directory is known
+ * @param {DoctorFinding[]} findings
+ */
+async function chatHostChecks(input, credentials, config, runtime, findings) {
+  if (config !== undefined) {
+    findings.push(await claudeCredentialFinding(input, config, false, "host"));
+    findings.push(await chatCredentialDirectoryFinding(config));
+    findings.push(
+      chatSettingsFinding(
+        /** @type {ChatHostIdentity} */ (credentials),
+        config,
+        { uid: input.uid, gid: input.gid },
+      ),
+    );
+  }
+  if (config?.engine === "podman")
+    findings.push(await podmanHelpersFinding(input.registriesConf));
+  findings.push(await serviceUnitFinding(input));
+  if (config !== undefined && runtime)
+    findings.push(await updatesFinding(input.parts.updates(config)));
+  const engine = config === undefined ? undefined : input.parts.engine(config);
+  const reached =
+    engine === undefined || config === undefined
+      ? undefined
+      : await chatEngineChecks(engine, credentials, config, input, findings);
+  const polled = await planeChecks(input, credentials, findings);
+  if (
+    engine === undefined ||
+    config === undefined ||
+    reached === undefined ||
+    !runtime ||
+    (polled === undefined && config.chat?.image === undefined)
+  )
+    return findings;
+  findings.push(
+    await chatImageFinding(
+      {
+        engine,
+        site: {
+          engine: config.engine,
+          runtimeDir: poolRuntimeDirectory(input.paths, credentials),
+          dockerHost: reached.endpoint,
+        },
+        credentials,
+        tokens: input.parts.tokens(credentials),
+      },
+      config.chat,
+      polled?.chatImage,
+    ),
+  );
+  return findings;
 }
 
 /** The helper that is the auth file itself, podman's default. */
@@ -943,8 +1198,9 @@ export function findingLine(finding) {
  *
  * @param {DoctorInput} input
  * @param {DoctorFinding[]} findings
+ * @param {boolean} chat whether the pool file is a chat host's, whose settings are said in place of a pool's limits
  */
-async function runnerConfigChecked(input, findings) {
+async function runnerConfigChecked(input, findings, chat) {
   const check = "runner configuration";
   let config;
   try {
@@ -963,7 +1219,7 @@ async function runnerConfigChecked(input, findings) {
     (name) => !files.has(name),
   );
   const detail = [
-    `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile)}`,
+    `${input.paths.config}: ${chat ? runnerChatSettingsLine(config) : runnerConfigLimits(config, input.poolFile)}`,
     ...unmatched.map(
       (name) =>
         `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,
@@ -988,21 +1244,35 @@ export async function doctorFindings(input) {
     const read = await poolCredentials(input.poolFile);
     return [
       read,
-      `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
+      `${input.poolFile} names ${poolIdentityChatHost(read) ? "chat host" : poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
     ];
   });
-  const config = await runnerConfigChecked(input, findings);
+  const chat = credentials !== undefined && poolIdentityChatHost(credentials);
+  const config = await runnerConfigChecked(input, findings, chat);
   const runtime = await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),
   ]);
+  if (chat)
+    return chatHostChecks(
+      input,
+      credentials,
+      config,
+      runtime !== undefined,
+      findings,
+    );
   const capabilities =
     credentials === undefined || config === undefined
       ? undefined
       : capabilitiesFound(input, credentials, config);
   if (config !== undefined) {
     findings.push(
-      await claudeCredentialFinding(input, config, credentials?.host === true),
+      await claudeCredentialFinding(
+        input,
+        config,
+        credentials?.host === true,
+        config.engine,
+      ),
     );
     const codex = await codexCredentialFinding(
       input,

@@ -119,7 +119,10 @@ export function unitService(unit) {
 }
 
 /**
- * @param {{node: string, cli: string, poolFile: string}} service absolute paths
+ * A pool's unit, or a member's chat host's, which differs only in what it
+ * says it is.
+ *
+ * @param {{node: string, cli: string, poolFile: string, chat?: boolean}} service absolute paths, and whether the pool file is a chat host's
  */
 export function serviceUnit(service) {
   const command = [service.node, service.cli, "run", "--pool", service.poolFile]
@@ -127,7 +130,9 @@ export function serviceUnit(service) {
     .join(" ");
   return [
     "[Unit]",
-    "Description=chuggy-linux: a chuggy worker pool's jobs in containers",
+    service.chat === true
+      ? "Description=chuggy-linux: a member's chat host, its sessions in a container"
+      : "Description=chuggy-linux: a chuggy worker pool's jobs in containers",
     "",
     "[Service]",
     `ExecStart=${command}`,

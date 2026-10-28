@@ -11,7 +11,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
-import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityChatHost,
+  poolIdentityPersonal,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import {
   poolRunnerPassLine,
@@ -19,7 +22,16 @@ import {
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
 
-import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
+import {
+  controlAsked,
+  controlServer,
+  controlSocketPath,
+} from "@chuggy/worker-core/control.mjs";
+import {
+  chatHostControl,
+  chatHostStatusAsked,
+} from "@chuggy/worker-core/chatHost.mjs";
+import { chatRunnerLoop, chatRunnerParts } from "./chatRunner.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { diskFloorSaid, diskFreePorts } from "./diskFree.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
@@ -41,6 +53,7 @@ import {
 } from "@chuggy/worker-core/register.mjs";
 import {
   jobNetwork,
+  poolRuntimeDirectory,
   runnerDirectories,
   runnerEngine,
   runnerLeftoversRemoved,
@@ -52,6 +65,7 @@ import {
 } from "./runner.mjs";
 import {
   podmanRegistriesConf,
+  runnerChatSettingsLine,
   runnerConfig,
   runnerConfigLimits,
   runnerCredentialsHanded,
@@ -78,6 +92,7 @@ import {
  * @property {Readonly<Record<string, string | undefined>>} environment
  * @property {string} home
  * @property {number} uid
+ * @property {number} gid
  * @property {string} hostname
  * @property {string} arch as `process.arch` names it
  * @property {typeof globalThis.fetch} fetch
@@ -101,7 +116,8 @@ import {
 export const poolFileVariable = "CHUGGY_LINUX_POOL";
 
 const usage = `usage: chuggy-linux <command> [--pool <file>]
-       chuggy-linux register --api <origin> --token=<token> [--pool <name> | --personal]
+       chuggy-linux register --api <origin> --token=<token>
+                             [--pool <name> | --personal | --chat]
                              [--host] [--capability <token>]...
        chuggy-linux mcp --site <origin> --workspace <workspace> --project <project>
        chuggy-linux --version
@@ -109,16 +125,21 @@ const usage = `usage: chuggy-linux <command> [--pool <file>]
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
-                          their personal runner's file, and start its service
-                          where it can; it declares this machine's platform,
+                          their personal runner's file, or with --chat a
+                          chat host's token for their chat host's file, and
+                          start its service where it can; a pool or a
+                          personal runner declares this machine's platform,
                           the agents runner.json can run, and each
                           --capability, and with --host runs a job that pins
                           no image on this machine itself
-  run                     run the pool until the plane denies it
-  once                    one pass, then wait for what it placed to start
+  run                     run the pool, or the chat host, until the plane
+                          denies it
+  once                    one pass, then wait for what it placed to start;
+                          not of a chat host
   status                  this pool's limits and containers, and what the
-                          service is placing
-  stop <assignment>       stop one assignment's container
+                          service is placing, or a chat host's settings and
+                          supervisor
+  stop <assignment>       stop one assignment's container; not of a chat host
   doctor                  check everything a run needs
   install-service         write the systemd user unit that runs \`run\`
   mcp                     serve chuggy's tools for one project to a coding
@@ -339,6 +360,7 @@ function doctorFound(host, poolFile) {
     paths,
     arch: host.arch,
     uid: host.uid,
+    gid: host.gid,
     registriesConf: podmanRegistriesConf(host.environment, host.home, host.uid),
     node: host.node,
     cli: host.cli,
@@ -407,7 +429,12 @@ async function installServiceUnit(host, poolFile) {
   await mkdir(paths.units, { recursive: true });
   await writeFile(
     unit,
-    serviceUnit({ node: host.node, cli: host.cli, poolFile }),
+    serviceUnit({
+      node: host.node,
+      cli: host.cli,
+      poolFile,
+      chat: poolIdentityChatHost(credentials),
+    }),
   );
   const legacyFound = await legacyService(paths, credentials);
   const legacy =
@@ -546,8 +573,9 @@ async function registerRan(host, argvs, said, since, why) {
  *
  * @param {CliHost} host
  * @param {string} file
- * @param {boolean} denied where chuggy denies the registration the units run,
- *   as it does a pool's and not a personal runner's
+ * @param {string | undefined} denied whose earlier registration chuggy
+ *   denies, so that the units running it have stopped: a pool's and a chat
+ *   host's, and not a personal runner's
  * @param {readonly string[]} units
  * @returns {Promise<RegisterServed>}
  */
@@ -559,7 +587,9 @@ async function registerRestarted(host, file, denied, units) {
   ];
   /** @param {string} what */
   const since = (what) =>
-    denied ? `chuggy denies the pool's earlier registration and ${what}` : what;
+    denied === undefined
+      ? what
+      : `chuggy denies ${denied} earlier registration and ${what}`;
   try {
     await installServiceUnit(host, file);
   } catch (failure) {
@@ -658,7 +688,11 @@ async function registerServed(host, pool, file, written) {
     return await registerRestarted(
       host,
       file,
-      !poolIdentityPersonal(pool),
+      poolIdentityPersonal(pool)
+        ? undefined
+        : poolIdentityChatHost(pool)
+          ? "the chat host's"
+          : "the pool's",
       units,
     );
   } catch (failure) {
@@ -673,8 +707,9 @@ async function registerServed(host, pool, file, written) {
 /**
  * Redeems a registration token, writes the pool file it answers, and leaves
  * the file's service running where it can. It takes no pool file: its
- * `--pool` is the name the pool takes, and `--personal` redeems a member's
- * personal token, which names no pool. Once the file is written it exits 0
+ * `--pool` is the name the pool takes, `--personal` redeems a member's
+ * personal token, which names no pool, and `--chat` a member's chat host's,
+ * which declares nothing. Once the file is written it exits 0
  * whatever became of the service, since a rerun would spend another token.
  *
  * @param {CliHost} host
@@ -682,7 +717,10 @@ async function registerServed(host, pool, file, written) {
  */
 async function register(host, { capability, ...asked }) {
   const { pools, config } = runnerPaths(host.environment, host.home);
-  const agents = await registerAgentsRead(config, asked.host === true);
+  const agents =
+    asked.chat === true
+      ? { agents: [] }
+      : await registerAgentsRead(config, asked.host === true);
   const requested = registerRequest(
     { ...asked, capabilities: capability },
     {
@@ -784,6 +822,115 @@ async function mcp(host, values, positionals) {
   }
 }
 
+/**
+ * A chat host's service: its door claimed before what a killed run left is
+ * removed, as a pool's run claims its own, then the host until the plane
+ * denies it or the runner updated itself.
+ *
+ * @param {CliCall} call
+ */
+async function chatRun(call) {
+  const setup = await runnerSetup(
+    call.poolFile,
+    call.host.environment,
+    call.host.home,
+  );
+  const { chat, engine, runtime } = await chatRunnerParts(
+    setup,
+    {
+      user: { uid: call.host.uid, gid: call.host.gid },
+      log: call.host.out,
+      engine: call.host.engine,
+      tokens: call.host.tokens,
+    },
+    runnerCopy(call.host),
+  );
+  await runnerDirectories(setup.paths, runtime);
+  const server = await controlServer(
+    controlSocketPath(runtime),
+    chatHostControl(chat),
+  );
+  try {
+    await runnerLeftoversRemoved(runtime);
+    scratchRemovedOnSignal(runtime);
+    if ((await jobNetwork(engine, setup.config.network)) === "Created")
+      call.host.out(`made the job network ${setup.config.network}`);
+    return await chatRunnerLoop(chat, {
+      log: call.host.out,
+      underService: call.host.environment.INVOCATION_ID !== undefined,
+      package: call.host.packageName,
+    });
+  } finally {
+    server.close();
+  }
+}
+
+/**
+ * A chat host's settings, and what its service says of its supervisor.
+ *
+ * @param {CliCall} call
+ */
+async function chatStatus(call) {
+  const setup = await runnerSetup(
+    call.poolFile,
+    call.host.environment,
+    call.host.home,
+  );
+  const runtime = poolRuntimeDirectory(setup.paths, setup.credentials);
+  const host = await chatHostStatusAsked(controlSocketPath(runtime));
+  call.host.out(
+    host === undefined ? "service: not running" : "service: running",
+  );
+  call.host.out(`chat: ${runnerChatSettingsLine(setup.config)}`);
+  if (host === undefined) return 0;
+  call.host.out(
+    `supervisor: ${host.supervisor.toLowerCase()}${host.starting ? ", starting" : ""}`,
+  );
+  call.host.out(
+    `image: running ${host.used ?? "none yet"}; chuggy names ${host.named ?? "none yet"}`,
+  );
+  return 0;
+}
+
+/**
+ * A pool's command, refused of a chat host.
+ *
+ * @param {string} why
+ */
+function chatRefused(why) {
+  /** @param {CliCall} call */
+  return async (call) => {
+    call.host.err(why);
+    return 2;
+  };
+}
+
+/** Each command of a chat host's file. */
+const chatCommands = {
+  run: chatRun,
+  once: chatRefused(
+    "a chat host runs only as its service; start it with chuggy-linux run",
+  ),
+  status: chatStatus,
+  stop: chatRefused("a chat host's sessions are stopped in chuggy"),
+  doctor,
+  "install-service": installService,
+};
+
+/**
+ * Whether the pool file is a member's chat host's, and not where it cannot
+ * be read, which the pool's command then says.
+ *
+ * @param {string} poolFile
+ */
+async function poolFileChatHost(poolFile) {
+  try {
+    return poolIdentityChatHost(await poolCredentials(poolFile));
+  } catch {
+    return false;
+  }
+}
+
 const commands = {
   run,
   once,
@@ -799,6 +946,7 @@ const cliOptions = {
   api: { type: "string" },
   token: { type: "string" },
   personal: { type: "boolean" },
+  chat: { type: "boolean" },
   host: { type: "boolean" },
   capability: { type: "string", multiple: true },
   site: { type: "string" },
@@ -846,6 +994,7 @@ export async function cliMain(argv, host) {
         values.api !== undefined ||
         values.token !== undefined ||
         values.personal !== undefined ||
+        values.chat !== undefined ||
         values.host !== undefined ||
         values.capability !== undefined)) ||
     mcpOptions.some((option) => values[option] !== undefined) ||
@@ -863,11 +1012,11 @@ export async function cliMain(argv, host) {
   }
   try {
     if (registering) return await register(host, values);
-    return await command({
-      host,
-      poolFile: resolve(/** @type {string} */ (poolFile)),
-      positionals,
-    });
+    const resolved = resolve(/** @type {string} */ (poolFile));
+    const chosen = (await poolFileChatHost(resolved))
+      ? chatCommands[/** @type {keyof typeof chatCommands} */ (name)]
+      : command;
+    return await chosen({ host, poolFile: resolved, positionals });
   } catch (failure) {
     host.err(failureMessage(failure));
     return 1;

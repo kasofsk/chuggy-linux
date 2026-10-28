@@ -39,6 +39,26 @@ test("the unit runs the runner under this Node, restarting it after any failure 
   );
 });
 
+test("a chat host's unit is a pool's, run and restarted alike, saying what it is", () => {
+  const service = {
+    node: "/home/op/.nvm/versions/node/v24.8.0/bin/node",
+    cli: "/home/op/.nvm/versions/node/v24.8.0/lib/node_modules/chuggy-linux/cli.mjs",
+    poolFile: "/home/op/.config/chuggy/pools/vteng.28_3amember.chat.host.json",
+  };
+  const pool = serviceUnit(service).split("\n");
+  const chat = serviceUnit({ ...service, chat: true }).split("\n");
+  assert.equal(
+    chat[1],
+    "Description=chuggy-linux: a member's chat host, its sessions in a container",
+  );
+  assert.deepEqual(chat.slice(2), pool.slice(2));
+  assert.deepEqual(unitService(chat.join("\n")), service);
+  assert.equal(
+    serviceUnitName(service.poolFile),
+    "chuggy-linux-vteng.28_3amember.chat.host.service",
+  );
+});
+
 test("an argument is quoted, and systemd expands nothing inside it", () => {
   assert.equal(
     systemdQuoted('/home/o p/100%/$HOME/"q"\\x'),

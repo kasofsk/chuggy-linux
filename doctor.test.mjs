@@ -21,6 +21,7 @@ import {
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
+import { registeredChatHostFixture } from "./register.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
 
 /** The copy doctor is run as, the Node it runs under, and the machine. */
@@ -28,6 +29,7 @@ const copy = {
   node: "/opt/node/bin/node",
   cli: "/opt/chuggy-linux/cli.mjs",
   arch: "x64",
+  gid: process.getgid?.() ?? -1,
 };
 
 /**
@@ -176,6 +178,27 @@ test("doctor names a personal runner's file as one, by its tenant and member", a
   });
 });
 
+test("doctor fails the pool file of a chat host's declaring what a pool's or a personal runner's does, and checks nothing past the runner's own", async (t) => {
+  for (const declared of [{ capabilities: [] }, { host: true }]) {
+    const { findings, poolFile } = await doctored(t, {
+      pool: { ...registeredChatHostFixture, ...declared },
+    });
+    assert.equal(findings[0]?.check, "pool file");
+    assert.equal(findings[0]?.passed, false);
+    assert.match(
+      findings[0]?.detail ?? "",
+      new RegExp(
+        `^pool credentials ${poolFile}: .*${Object.keys(declared)[0]}`,
+        "u",
+      ),
+    );
+    assert.ok(
+      !findings.some((finding) => finding.check.startsWith("chat ")),
+      JSON.stringify(findings),
+    );
+  }
+});
+
 test("a pool registered with --host fails doctor where the runner's file names what a host job's places set", async (t) => {
   const pool = { ...fixturePool, host: true };
   const passed = await doctored(t, { pool });
@@ -221,6 +244,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["job network", true],
       ["volumes", true],
       ["disk floor", true],
+      ["memory caps", true],
       ["capabilities", true],
       ["pool token", true],
       ["plane", true],
@@ -258,7 +282,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
-    ["version", "info", "ps", "network", "info"],
+    ["version", "info", "ps", "network", "info", "info"],
   );
 });
 

@@ -279,14 +279,14 @@ export function runnerEngine(config) {
 /** The scheme a unix socket is named by as an endpoint. */
 const unixScheme = "unix://";
 
-/** How `docker info` names a daemon that maps a job's uid onto another. */
+/** How `docker info` names a daemon that maps a container's uid onto another. */
 const remappedDocker = { rootless: "rootless", userns: "with userns-remap" };
 
 /** The first podman whose keep-id maps its user onto a uid and gid it is given. */
 const podmanVersionMin = /** @type {const} */ ([4, 3]);
 
 /**
- * Refuses rootless docker and userns-remap, because each maps a job's uid onto
+ * Refuses rootless docker and userns-remap, because each maps a container's uid onto
  * one that cannot read the Claude credential's file, and any context but a unix
  * socket: a job mounts this machine's paths, which a remote daemon would find
  * on its own, and a pull of the pool's registry is told the endpoint alone,
@@ -302,7 +302,7 @@ async function dockerEndpoint(engine) {
   const remapped = /\bname=(rootless|userns)\b/u.exec(info.stdout)?.[1];
   if (remapped !== undefined)
     throw new Error(
-      `docker is running ${remappedDocker[remapped]}, where a job cannot read the Claude credential's file; use rootful docker without userns-remap, or rootless podman ("engine": "podman")`,
+      `docker is running ${remappedDocker[remapped]}, where a container, a job or a chat supervisor, cannot read the Claude credential's file; use rootful docker without userns-remap, or rootless podman ("engine": "podman")`,
     );
   const context = await engine.exec(dockerContextArgv());
   if (context.code !== 0)
