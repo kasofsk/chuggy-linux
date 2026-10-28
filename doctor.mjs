@@ -1231,11 +1231,11 @@ async function runnerConfigChecked(input, findings, credentials) {
     ),
   ].join("; ");
   const idle = personal
-    ? runnerPersonalIdleRefusal(config, input.poolFile)
+    ? runnerPersonalIdleRefusal(config, input.paths.config, input.poolFile)
     : undefined;
   findings.push(
     idle !== undefined
-      ? { check, passed: false, detail: `${detail}; ${idle}` }
+      ? { check, passed: false, detail: idle }
       : unmatched.length === 0
         ? { check, passed: true, detail }
         : { check, passed: true, warning: true, detail },

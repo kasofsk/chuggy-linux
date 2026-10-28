@@ -46,7 +46,7 @@ chuggy-linux register --api <chuggy's origin> --token=<token> --personal
 
 It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over and restarts its service on it; the registration it held before stays in chuggy, offline, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
-A personal runner runs jobs alone. chuggy hands sessions only to a project's pool and a member's chat host, so a personal runner's service asks for none, whatever `sessionsMax` says, and `status` and `doctor` name only its `concurrencyMax`. A runner's file that sets `sessionsMax` still serves it, but `run` and `doctor` refuse a personal runner whose `concurrencyMax` is 0, since it would take no work.
+A personal runner runs jobs alone. chuggy hands sessions only to a project's pool and a member's chat host, so a personal runner's service asks for none, whatever `sessionsMax` says, and `status` and `doctor` name only its `concurrencyMax`. A runner's file that sets `sessionsMax` still serves it, but `run`, `once`, `status` and `stop` refuse a personal runner whose `concurrencyMax` is 0, since it would take no work, and `doctor` fails it. `run` then exits 3, which its service is not restarted after: give it jobs with its own entry in `pools` and start its service again, or run your chats on a [chat host](#a-chat-host) and disable it.
 
 A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host).
 

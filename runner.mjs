@@ -70,7 +70,7 @@ import {
   runnerPersonalIdleRefusal,
   runnerPoolLimits,
 } from "./runnerConfig.mjs";
-import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
+import { unrestartedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
@@ -471,6 +471,9 @@ export function heldEndingWithRunner(backend) {
   };
 }
 
+/** A runner's file that leaves the pool's service no work, which no restart would answer differently. */
+export class RunnerIdleRefusal extends Error {}
+
 /**
  * The limits the pool's service holds, refused where a personal runner's
  * leave it no work.
@@ -478,12 +481,12 @@ export function heldEndingWithRunner(backend) {
  * @param {RunnerSetup} setup
  */
 function runnerServiceLimits(setup) {
-  const { credentials, config, poolFile } = setup;
+  const { credentials, config, poolFile, paths } = setup;
   const personal = poolIdentityPersonal(credentials);
   const idle = personal
-    ? runnerPersonalIdleRefusal(config, poolFile)
+    ? runnerPersonalIdleRefusal(config, paths.config, poolFile)
     : undefined;
-  if (idle !== undefined) throw new Error(idle);
+  if (idle !== undefined) throw new RunnerIdleRefusal(idle);
   return runnerPoolLimits(config, poolFile, personal);
 }
 
@@ -643,7 +646,7 @@ export async function jobNetwork(engine, network) {
 export async function runnerLoop(client, seams) {
   const { underService, ...loop } = seams;
   const pass = await poolRunnerLoop(client, loop);
-  if (pass.passed === "Denied") return deniedExitStatus;
+  if (pass.passed === "Denied") return unrestartedExitStatus;
   const release = `${seams.updates.updater.runner.package} ${pass.version}`;
   seams.log(
     underService

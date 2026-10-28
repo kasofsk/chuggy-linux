@@ -36,6 +36,7 @@ import {
   heldEndingWithRunner,
   runnerCapabilities,
   runnerLoop,
+  RunnerIdleRefusal,
   runnerParts,
   runnerReleasePrefix,
   runnerSetup,
@@ -47,7 +48,7 @@ import {
   runnerUpdates,
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
-import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
+import { unrestartedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 import {
   engineSocketFixture,
   fixturePool,
@@ -118,7 +119,7 @@ test("a run the plane denies ends with the status the unit does not restart", as
     updates: installingUpdates(true),
     underService: true,
   });
-  assert.equal(status, deniedExitStatus);
+  assert.equal(status, unrestartedExitStatus);
   assert.deepEqual(log, ["the plane denied this pool: the pool was revoked"]);
 });
 
@@ -145,7 +146,7 @@ test("a run that installed a release of itself ends with the status the unit res
       },
     );
     assert.equal(status, updatedExitStatus);
-    assert.notEqual(updatedExitStatus, deniedExitStatus);
+    assert.notEqual(updatedExitStatus, unrestartedExitStatus);
     assert.equal(log.at(-1), said);
   }
 });
@@ -706,9 +707,13 @@ test("a personal runner's client is given no room for a session whatever the fil
       log: () => undefined,
       engine,
     }),
-    {
-      message:
-        "concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set concurrencyMax above 0, or stop and disable its service",
+    (/** @type {unknown} */ failure) => {
+      assert.ok(failure instanceof RunnerIdleRefusal, String(failure));
+      assert.equal(
+        failure.message,
+        `runner configuration ${join(idle.environment.XDG_CONFIG_HOME, "chuggy-linux", "runner.json")}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.pool.concurrencyMax above 0 and start its service again, or run your chats on a chat host (chuggy-linux register --chat) and disable this service`,
+      );
+      return true;
     },
   );
 });
