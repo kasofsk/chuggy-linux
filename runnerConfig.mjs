@@ -357,8 +357,8 @@ export function runnerCredentialDescribed(claudeCredential, agent) {
 
 /**
  * A chat host's settings as `status` and `doctor` say them, each its
- * default where the file names none, and the memory its supervisor is
- * capped at.
+ * default where the file names none, and the memory its supervisor's engine
+ * is asked to cap it at, which `doctor` checks podman holds it to.
  *
  * @param {RunnerConfig} config
  */
@@ -371,7 +371,7 @@ export function runnerChatSettingsLine(config) {
     image === undefined
       ? "the image chuggy names"
       : `${image.image}, pulled ${image.pull === "missing" ? "where it is missing" : image.pull}`;
-  return `sessionsMax ${String(sessionsMax)}, sessionMemoryMib ${mib(sessionMemoryBytes)}, the supervisor capped at ${mib(chatHostMemoryBytes(settings))} MiB, idleSecs ${String(idleSecs)}, outputBytesMax ${String(outputBytesMax)}, running ${run}`;
+  return `sessionsMax ${String(sessionsMax)}, sessionMemoryMib ${mib(sessionMemoryBytes)}, the supervisor's cap asked of the engine ${mib(chatHostMemoryBytes(settings))} MiB, idleSecs ${String(idleSecs)}, outputBytesMax ${String(outputBytesMax)}, running ${run}`;
 }
 
 /**

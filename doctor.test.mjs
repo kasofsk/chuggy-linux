@@ -222,6 +222,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["job network", true],
       ["volumes", true],
       ["disk floor", true],
+      ["memory caps", true],
       ["capabilities", true],
       ["pool token", true],
       ["plane", true],
@@ -259,7 +260,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
-    ["version", "info", "ps", "network", "info"],
+    ["version", "info", "ps", "network", "info", "info"],
   );
 });
 

@@ -980,7 +980,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   const mib = (bytes) => String(bytes / 2 ** 20);
   assert.equal(
     runnerChatSettingsLine(bare),
-    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, the supervisor capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, running the image chuggy names`,
+    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, the supervisor's cap asked of the engine ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, running the image chuggy names`,
   );
   const empty = await runnerConfig(
     await written(directory, { ...minimal, chat: {} }),
@@ -1002,7 +1002,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   });
   assert.equal(
     runnerChatSettingsLine(set),
-    "sessionsMax 3, sessionMemoryMib 1024, the supervisor capped at 3072 MiB, idleSecs 300, outputBytesMax 1024, running registry.example/me/chat:1, pulled where it is missing",
+    "sessionsMax 3, sessionMemoryMib 1024, the supervisor's cap asked of the engine 3072 MiB, idleSecs 300, outputBytesMax 1024, running registry.example/me/chat:1, pulled where it is missing",
   );
   for (const pull of ["always", "never"])
     assert.match(

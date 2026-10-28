@@ -175,7 +175,14 @@ function fakeEngineState() {
         ["Supports d_type", "true"],
       ],
       MemTotal: 16 * 2 ** 30,
-      host: { hostname: fakeEngineMachine, memTotal: 16 * 2 ** 30 },
+      host: {
+        hostname: fakeEngineMachine,
+        memTotal: 16 * 2 ** 30,
+        cgroupManager: "systemd",
+        cgroupVersion: "v2",
+        cgroupControllers: ["cpu", "io", "memory", "pids"],
+        security: { rootless: true },
+      },
       store: {
         graphRoot: "/home/runner/.local/share/containers/storage",
         volumePath: "/home/runner/.local/share/containers/storage/volumes",

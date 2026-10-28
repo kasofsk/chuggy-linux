@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -15,6 +16,7 @@ import {
   chatCredentialDirectoryFinding,
   chatImageFinding,
   chatPodmanIdsRefusal,
+  chatServiceAsked,
   chatSessionUsersFinding,
   chatSettingsFinding,
   chatSupervisorFinding,
@@ -155,7 +157,7 @@ test("the settings say the supervisor's memory cap, and a docker user a session 
     {
       check: "chat settings",
       passed: true,
-      detail: `the supervisor is capped at ${mib(cap)} MiB, ${mib(chatSessionMemoryBytesDefault)} MiB for each of its ${String(chatHostSessionsMaxDefault)} sessions at once, with no swap past it`,
+      detail: `docker is asked to cap the supervisor at ${mib(cap)} MiB, ${mib(chatSessionMemoryBytesDefault)} MiB for each of its ${String(chatHostSessionsMaxDefault)} sessions at once, with no swap past it`,
     },
   );
   const inside = chatSettingsFinding(chatHostPool, config, {
@@ -169,17 +171,15 @@ test("the settings say the supervisor's memory cap, and a docker user a session 
 test("a supervisor's container no service here runs fails, naming its removal; the service's own, an exited one, or none passes", async () => {
   const { engine, state } = fakeEngine();
   const name = chatSupervisorName(chatHostPool);
-  const none = await chatSupervisorFinding(
-    engine,
-    "docker",
-    chatHostPool,
-    undefined,
+  const none = /** @type {const} */ ({ none: true });
+  assert.deepEqual(
+    await chatSupervisorFinding(engine, "docker", chatHostPool, none),
+    {
+      check: "chat supervisor",
+      passed: true,
+      detail: `no container ${name} is here`,
+    },
   );
-  assert.deepEqual(none, {
-    check: "chat supervisor",
-    passed: true,
-    detail: `no container ${name} is here`,
-  });
   state.containers.set(name, {
     id: "c1",
     name,
@@ -192,19 +192,32 @@ test("a supervisor's container no service here runs fails, naming its removal; t
     starting: false,
   };
   assert.deepEqual(
-    await chatSupervisorFinding(engine, "docker", chatHostPool, status),
+    await chatSupervisorFinding(engine, "docker", chatHostPool, { status }),
     {
       check: "chat supervisor",
       passed: true,
       detail: `${name} is the service's supervisor, ready`,
     },
   );
-  for (const answered of [undefined, { ...status, supervisor: "Ended" }]) {
+  assert.deepEqual(
+    await chatSupervisorFinding(engine, "docker", chatHostPool, {
+      status: { supervisor: "Absent", starting: true },
+    }),
+    {
+      check: "chat supervisor",
+      passed: true,
+      detail: `${name} is the service's supervisor, absent, starting`,
+    },
+  );
+  for (const service of [
+    none,
+    { status: { ...status, supervisor: "Ended" } },
+  ]) {
     const left = await chatSupervisorFinding(
       engine,
       "podman",
       chatHostPool,
-      /** @type {any} */ (answered),
+      /** @type {any} */ (service),
     );
     assert.equal(left.passed, false);
     assert.equal(
@@ -220,10 +233,53 @@ test("a supervisor's container no service here runs fails, naming its removal; t
     image: sessionImage,
   });
   assert.equal(
-    (await chatSupervisorFinding(engine, "docker", chatHostPool, undefined))
-      .detail,
+    (await chatSupervisorFinding(engine, "docker", chatHostPool, none)).detail,
     `${name} has exited, and the next start removes it`,
   );
+});
+
+test("a service that answers what this copy cannot read is there: its running supervisor is warned of as its own, and never named for removal", async (t) => {
+  const directory = await scratch(t);
+  const socket = join(directory, "control.sock");
+  const server = createServer((connection) => {
+    connection.once("data", () => {
+      connection.end('{"refused":"not a request this service answers"}\n');
+    });
+  });
+  await new Promise((resolve) => {
+    server.listen(socket, () => resolve(undefined));
+  });
+  t.after(() => server.close());
+  const service = await chatServiceAsked(socket);
+  assert.ok("unreadable" in service, JSON.stringify(service));
+  assert.deepEqual(await chatServiceAsked(join(directory, "gone.sock")), {
+    none: true,
+  });
+  const { engine, state } = fakeEngine();
+  const name = chatSupervisorName(chatHostPool);
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "running",
+    image: sessionImage,
+  });
+  const found = await chatSupervisorFinding(
+    engine,
+    "docker",
+    chatHostPool,
+    service,
+  );
+  assert.equal(found.passed, true);
+  assert.equal(found.warning, true);
+  assert.match(
+    found.detail,
+    new RegExp(
+      `^${name} is running, and the service answers what this copy could not read, so it is taken as that service's: `,
+      "u",
+    ),
+  );
+  assert.ok(!found.detail.includes("rm -f"), found.detail);
 });
 
 /**
@@ -339,11 +395,27 @@ test("an image that cannot be pulled, or none named, fails", async (t) => {
 });
 
 /**
+ * A fake engine whose info says of its cgroups what `cgroups` does, over the
+ * fixture's own.
+ *
+ * @param {Record<string, unknown>} [cgroups]
+ */
+function cgroupedEngine(cgroups) {
+  const faked = fakeEngine();
+  if (cgroups !== undefined)
+    faked.state.info = {
+      ...faked.state.info,
+      host: { .../** @type {any} */ (faked.state.info).host, ...cgroups },
+    };
+  return faked;
+}
+
+/**
  * doctor's findings for a chat host's file, under a home of its own whose
  * Claude token is alone in its directory.
  *
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown>, uid?: number, chatImage?: string, tokenBeside?: boolean}} options
+ * @param {{runner?: Record<string, unknown>, uid?: number, chatImage?: string, tokenBeside?: boolean, cgroups?: Record<string, unknown>}} options
  */
 async function doctoredChat(t, options = {}) {
   const home = await scratch(t);
@@ -373,7 +445,7 @@ async function doctoredChat(t, options = {}) {
   );
   const poolFile = join(home, "chat.json");
   await ownerOnly(poolFile, JSON.stringify(chatHostPool));
-  const { engine, state } = fakeEngine();
+  const { engine, state } = cgroupedEngine(options.cgroups);
   const runner = {
     package: "chuggy-linux",
     version: "9.8.7",
@@ -435,6 +507,7 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
       ["job network", true],
       ["chat session users", true],
       ["chat supervisor", true],
+      ["memory caps", true],
       ["pool token", true],
       ["plane", true],
       ["chat image", true],
@@ -446,7 +519,7 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
   );
   assert.equal(
     findings[1].detail,
-    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, the supervisor capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names`,
+    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, the supervisor's cap asked of the engine 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names`,
   );
   assert.match(
     findings[3].detail,
@@ -456,7 +529,7 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
     findings[9].detail,
     "podman lists 0 of this chat host's containers",
   );
-  assert.equal(findings[15].detail, `the plane's ${sessionImage} was pulled`);
+  assert.equal(findings[16].detail, `the plane's ${sessionImage} was pulled`);
 });
 
 test("a chat host on docker is held to no session's uid rather than a job's, its credential's directory to hold it alone, and a plane naming no image fails it", async (t) => {
@@ -489,4 +562,39 @@ test("a chat host's own image is checked whatever the plane names", async (t) =>
     detail:
       "the host's own localhost/mine:1 is not here, and chat.image.pull is never",
   });
+});
+
+test("podman that would run a supervisor or a job past its memory cap fails doctor, naming the drop-in that delegates the memory controller", async (t) => {
+  const passed = await doctoredChat(t, { chatImage: sessionImage });
+  assert.deepEqual(
+    passed.findings.find((finding) => finding.check === "memory caps"),
+    {
+      check: "memory caps",
+      passed: true,
+      detail:
+        "podman holds a job and a chat supervisor to the memory each is run with: cgroups v2, rootless through systemd, the memory controller delegated",
+    },
+  );
+  const { findings } = await doctoredChat(t, {
+    chatImage: sessionImage,
+    cgroups: {
+      cgroupManager: "cgroupfs",
+      cgroupVersion: "v2",
+      cgroupControllers: ["cpu", "pids"],
+    },
+  });
+  const failed = findings.find((finding) => finding.check === "memory caps");
+  assert.equal(failed?.passed, false);
+  assert.equal(
+    failed?.detail,
+    'podman runs a job or a chat supervisor past the memory it is run with, saying nothing, since it has the cgroup manager cgroupfs, where rootless podman sets no limit; set cgroup_manager = "systemd" under [engine] in containers.conf; and no memory controller delegated to it; write /etc/systemd/system/user@.service.d/delegate.conf holding "[Service]" and "Delegate=cpu cpuset io memory pids", run systemctl daemon-reload, and log in again',
+  );
+  const docker = await doctoredChat(t, {
+    chatImage: sessionImage,
+    runner: { engine: "docker" },
+    uid: 1000,
+  });
+  assert.ok(
+    !docker.findings.some((finding) => finding.check === "memory caps"),
+  );
 });

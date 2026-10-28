@@ -1,17 +1,22 @@
 /**
  * What `doctor` checks of a member's chat host beyond what it checks of any
- * pool: its settings and the memory its supervisor is capped at; the Claude
- * credential's directory, which the supervisor is given whole; whether a
- * session's user can be run beside this one; a supervisor's container no
- * service here runs, which refuses every start; and the image the
- * supervisor runs, which doctor pulls where it is not here, as a run would
- * before starting it.
+ * pool: its settings and the memory its supervisor's engine is asked to cap
+ * it at; the Claude credential's directory, which the supervisor is given
+ * whole; whether a session's user can be run beside this one; a
+ * supervisor's container no service here runs, which refuses every start;
+ * and the image the supervisor runs, which doctor pulls where it is not
+ * here, as a run would before starting it.
+ *
+ * A SERVICE THAT ANSWERS IS THERE, whether or not this copy can read what it
+ * says, as an older copy of the runner mid-update may answer: its
+ * supervisor's container is its own, and nothing here says to remove it.
  */
 
 import { claudeCredentialFile } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   chatCredentialAloneRefusal,
   chatHostMemoryBytes,
+  chatHostStatusAsked,
   chatSessionIdsNeeded,
   chatSupervisorName,
 } from "@chuggy/worker-core/chatHost.mjs";
@@ -47,6 +52,8 @@ import { runnerClaudeCredential } from "./runnerConfig.mjs";
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/registryAuth.mjs").PullSite} PullSite
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
+ *
+ * @typedef {{none: true} | {status: ChatHostStatus} | {unreadable: string}} ChatDoctorService no service answers at the host's door, or one answers what this copy reads, or one answers what it cannot
  */
 
 /** The most lines an id map is read to, far above the kernel's own bound. */
@@ -287,7 +294,7 @@ export function chatSettingsFinding(identity, config, user) {
     return {
       check,
       passed: true,
-      detail: `the supervisor is capped at ${mib(chatHostMemoryBytes(settings))} MiB, ${mib(settings.sessionMemoryBytes)} MiB for each of its ${String(settings.sessionsMax)} sessions at once, with no swap past it`,
+      detail: `${config.engine} is asked to cap the supervisor at ${mib(chatHostMemoryBytes(settings))} MiB, ${mib(settings.sessionMemoryBytes)} MiB for each of its ${String(settings.sessionsMax)} sessions at once, with no swap past it`,
     };
   } catch (failure) {
     return {
@@ -299,18 +306,40 @@ export function chatSettingsFinding(identity, config, user) {
 }
 
 /**
+ * What the host's service at `socket` says, told apart from none being
+ * there, which is the only answer read as no service: one that answers what
+ * this copy cannot read, or whose door this copy cannot enter, is still
+ * there.
+ *
+ * @param {string} socket
+ * @returns {Promise<ChatDoctorService>}
+ */
+export async function chatServiceAsked(socket) {
+  try {
+    const status = await chatHostStatusAsked(socket);
+    return status === undefined ? { none: true } : { status };
+  } catch (failure) {
+    return {
+      unreadable: failure instanceof Error ? failure.message : String(failure),
+    };
+  }
+}
+
+/**
  * Whether a supervisor's container is left that no service here runs: one of
  * the host's name that is running while no service answers, or while the
- * one that answers runs no supervisor, refuses every start of the host's,
- * which never kills it. One that has exited is removed by the next start.
+ * one that answers runs no supervisor and is starting none, refuses every
+ * start of the host's, which never kills it. One whose service answers what
+ * this copy cannot read is that service's, and is warned of, never named for
+ * removal. One that has exited is removed by the next start.
  *
  * @param {Engine} engine
  * @param {RunnerConfig["engine"]} name
  * @param {ChatHostIdentity} identity
- * @param {ChatHostStatus | undefined} status what the host's service said of itself, where one answered
+ * @param {ChatDoctorService} service what the host's service said of itself
  * @returns {Promise<DoctorFinding>}
  */
-export async function chatSupervisorFinding(engine, name, identity, status) {
+export async function chatSupervisorFinding(engine, name, identity, service) {
   const check = "chat supervisor";
   const container = chatSupervisorName(identity);
   const inspected = await engine.exec(inspectArgv([container]));
@@ -334,19 +363,27 @@ export async function chatSupervisorFinding(engine, name, identity, status) {
       passed: true,
       detail: `${container} has exited, and the next start removes it`,
     };
-  const served =
+  if ("unreadable" in service)
+    return {
+      check,
+      passed: true,
+      warning: true,
+      detail: `${container} is running, and the service answers what this copy could not read, so it is taken as that service's: ${service.unreadable}`,
+    };
+  const status = "status" in service ? service.status : undefined;
+  if (
     status !== undefined &&
-    status.supervisor !== "Absent" &&
-    status.supervisor !== "Ended";
-  return served
-    ? {
-        check,
-        passed: true,
-        detail: `${container} is the service's supervisor, ${status.supervisor.toLowerCase()}`,
-      }
-    : {
-        check,
-        passed: false,
-        detail: `${container} is running and no service here runs it, so every start of this host's supervisor is refused; remove it with ${name} rm -f ${container}, which ends every session it runs`,
-      };
+    (status.starting ||
+      (status.supervisor !== "Absent" && status.supervisor !== "Ended"))
+  )
+    return {
+      check,
+      passed: true,
+      detail: `${container} is the service's supervisor, ${status.supervisor.toLowerCase()}${status.starting ? ", starting" : ""}`,
+    };
+  return {
+    check,
+    passed: false,
+    detail: `${container} is running and no service here runs it, so every start of this host's supervisor is refused; remove it with ${name} rm -f ${container}, which ends every session it runs`,
+  };
 }
