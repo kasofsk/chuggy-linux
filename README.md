@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.33.0/chuggy-linux-0.33.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.34.0/chuggy-linux-0.34.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -171,7 +171,7 @@ No floor is held where the space cannot be measured, as where docker names a mac
 
 ## The image a job runs in
 
-A project's configuration names the image its jobs run in, by digest or by tag. An image already in this machine's engine is used as it is, so one built here with `docker build -t myproject:dev .` serves under that tag and is never pulled; a missing one is pulled. chuggy's runtime is got the same way, copied into a volume of the job's own and mounted read-only at `/opt/chuggy`, and the job starts through it in place of the image's `ENTRYPOINT` and `CMD`. So the image needs:
+A project's configuration names the image its jobs run in, by digest or by tag. An image already in this machine's engine is used as it is, so one built here with `docker build -t myproject:dev .` serves under that tag and is never pulled; a missing one is pulled. chuggy's runtime is got the same way once the job's image is here, for that image's platform, copied into a volume of the job's own and mounted read-only at `/opt/chuggy`, and the job starts through it in place of the image's `ENTRYPOINT` and `CMD`. So the image needs:
 
 - `/bin/sh`, and `git` on `PATH`;
 - glibc 2.28 or later with libstdc++, as a current Debian or Ubuntu has: an Alpine or other musl image cannot load the runtime;

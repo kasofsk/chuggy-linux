@@ -40,7 +40,9 @@ import {
   runnerReleasePrefix,
   runnerSetup,
   runnerClaimLock,
+  runnerEngineSettings,
   runnerMemoryLock,
+  runnerRuntimeLock,
   runnerUpdateLock,
   runnerUpdates,
 } from "./runner.mjs";
@@ -227,7 +229,7 @@ test("a run updates itself as the runner's file says, from this package's own re
   );
 });
 
-test("every pool's service of a user takes one install lock, and one memory lock and one claim lock an engine, in the runner's runtime directory", async (t) => {
+test("every pool's service of a user takes one install lock, and one memory lock, one claim lock and one runtime lock an engine, in the runner's runtime directory", async (t) => {
   const { home, environment } = await runnerFixture(t);
   const paths = runnerPaths(environment, home);
   assert.equal(
@@ -254,6 +256,32 @@ test("every pool's service of a user takes one install lock, and one memory lock
         `${engine}.claim`,
       ),
     );
+  for (const engine of /** @type {const} */ (["docker", "podman"]))
+    assert.equal(
+      runnerRuntimeLock(paths, engine),
+      join(
+        environment.XDG_RUNTIME_DIR,
+        "chuggy-linux",
+        "runtime",
+        `${engine}.lock`,
+      ),
+    );
+});
+
+test("a service's container backend is given its engine's runtime lock, beside the memory and claim locks", async (t) => {
+  for (const engine of /** @type {const} */ (["docker", "podman"])) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner: { engine },
+    });
+    const setup = await runnerSetup(poolFile, environment, home);
+    const settings = runnerEngineSettings(setup.config, setup.paths);
+    assert.equal(settings.runtimeLock, runnerRuntimeLock(setup.paths, engine));
+    assert.equal(settings.memoryLock, runnerMemoryLock(setup.paths, engine));
+    assert.equal(
+      settings.memoryClaimLock,
+      runnerClaimLock(setup.paths, engine),
+    );
+  }
 });
 
 test("a job network another run made between the inspection and the creation is present", async () => {
