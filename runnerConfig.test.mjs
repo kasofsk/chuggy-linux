@@ -115,6 +115,7 @@ test("a minimal file is read with every default", async (t) => {
     volumes: [],
     pools: {},
     autoUpdate: true,
+    reportMetrics: false,
     imageUnusedSecsMax: 604_800,
     diskFreeGibMin: 20,
     memoryFreeGibMin: 0,
@@ -180,6 +181,28 @@ test("the runner updates itself unless its file turns that off", async (t) => {
     await assert.rejects(runnerConfig(file), {
       message: new RegExp(
         `^runner configuration ${file}: autoUpdate Invalid input: expected boolean`,
+        "u",
+      ),
+    });
+  }
+});
+
+test("the runner reports on itself only where its file turns that on", async (t) => {
+  const directory = await scratch(t);
+  for (const reportMetrics of [true, false])
+    assert.equal(
+      (
+        await runnerConfig(
+          await written(directory, { ...minimal, reportMetrics }),
+        )
+      ).reportMetrics,
+      reportMetrics,
+    );
+  for (const reportMetrics of ["true", 1, null]) {
+    const file = await written(directory, { ...minimal, reportMetrics });
+    await assert.rejects(runnerConfig(file), {
+      message: new RegExp(
+        `^runner configuration ${file}: reportMetrics Invalid input: expected boolean`,
         "u",
       ),
     });
@@ -450,6 +473,7 @@ test("sessionsMax is a whole number of none or more, read apart from concurrency
         volumes: [],
         pools: {},
         autoUpdate: true,
+        reportMetrics: false,
         imageUnusedSecsMax: 604_800,
         diskFreeGibMin: 20,
         memoryFreeGibMin: 0,
