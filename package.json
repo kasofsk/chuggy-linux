@@ -39,6 +39,7 @@
     "commands.mjs",
     "diskFree.mjs",
     "doctor.mjs",
+    "machineFacts.mjs",
     "mcp.mjs",
     "memoryFree.mjs",
     "nodeFloor.mjs",

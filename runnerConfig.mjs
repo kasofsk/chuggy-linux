@@ -184,6 +184,8 @@ export const runnerConfigSchema = z
     pools: z.record(z.string(), poolLimitsSchema).default({}),
     /** Whether the service installs the release of itself chuggy names. */
     autoUpdate: z.boolean().default(true),
+    /** Whether each pool's service sends chuggy a report of how it and this machine are doing. */
+    reportMetrics: z.boolean().default(false),
     /** A member's chat host's own settings. */
     chat: chatHostConfigSchema.optional(),
     /**

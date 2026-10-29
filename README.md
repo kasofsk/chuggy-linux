@@ -94,6 +94,7 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
 | `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below; 0.18.0 or later. Default none. |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
+| `reportMetrics`    | no       | `true` has each pool's service report its work and this machine's name, CPUs, load, memory and free disk against the floor to chuggy, whose Grafana shows them; 0.36.0 or later. Default `false`. |
 | `imageUnusedSecsMax` | no     | How long a job's image this runner pulled may go unused before it is removed; 0 keeps them until the disk is under `diskFreeGibMin`. Default a week, 604800. |
 | `diskFreeGibMin`   | no       | The GiB the engine's storage keeps free, below; 0 keeps no floor; 0.23.0 or later. Default 20.             |
 | `memoryFreeGibMin` | no       | The GiB of the engine's memory its containers leave free for the engine and its machine, below; 0.29.0 or later. Default 0, which makes all of it the budget. |

@@ -5,8 +5,9 @@
  * itself, from this package's own release downloads. Where the pool was
  * registered with `--host`, a job that pins no image runs on this machine
  * itself, beside the containers. Each poll advertises what the runner finds
- * of this machine and its file when the run starts. Every command starts
- * here.
+ * of this machine and its file when the run starts, and where the runner's
+ * file sets `reportMetrics` the run reports on itself and on this machine as
+ * `machineFacts.mjs` reads it. Every command starts here.
  *
  * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
  * the runner's file names `claudeTokenFile`. The core withholds what would
@@ -57,6 +58,7 @@ import {
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { diskFloorBytes, diskFreePorts, engineDiskFree } from "./diskFree.mjs";
+import { machineFacts } from "./machineFacts.mjs";
 import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import {
   credentialFileRefusal,
@@ -443,7 +445,7 @@ export async function engineSocketHanded(config, engine, endpoint) {
 }
 
 /**
- * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity, arch?: string, disk?: import("./diskFree.mjs").DiskFreePorts}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket and advertises nothing, what starts a job on this machine itself when not Node's own `spawn`, the package and version each poll names, this machine as `process.arch` names it when not this one, and what the engine's free disk is measured by when not this machine's own
+ * @typedef {{uid: number, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, places?: boolean, spawn?: typeof import("node:child_process").spawn, runner?: RunnerIdentity, arch?: string, disk?: import("./diskFree.mjs").DiskFreePorts, facts?: import("./machineFacts.mjs").MachineFactPorts}} RunnerHost this process's uid, where its log lines go, the engine and token source when not those the files name, the fetch a job's or a session's plane is reached by when not the global one, `places: false` for a run that places nothing, which then asks nothing of the engine's socket and advertises nothing, what starts a job on this machine itself when not Node's own `spawn`, the package and version each poll names, this machine as `process.arch` names it when not this one, what the engine's free disk is measured by when not this machine's own, and what a report reads this machine's CPUs, load and memory by when not its own
  */
 
 /**
@@ -492,6 +494,7 @@ export async function runnerParts(setup, host) {
   };
   const handed = runnerCredentialsHanded(config);
   const disk = host.disk ?? diskFreePorts;
+  const diskFree = () => engineDiskFree(config.engine, engine, disk);
   const container = containerBackend(
     {
       engine: config.engine,
@@ -528,17 +531,46 @@ export async function runnerParts(setup, host) {
           config.engine,
           host.uid,
         ),
-      diskFree: () => engineDiskFree(config.engine, engine, disk),
+      diskFree,
     },
   );
   const backend = runnerHostRouted(setup, container, machine, host);
-  const client = poolRunnerClient(
+  const client = runnerClient(setup, backend, host, {
+    tokens,
+    capabilities,
+    diskFree,
+  });
+  return { runtime: runtimeDir, engine, disk, backend, client };
+}
+
+/**
+ * The client a run passes with over its backend, reporting on itself where
+ * the runner's file sets `reportMetrics`.
+ *
+ * @param {RunnerSetup} setup
+ * @param {WorkerPoolBackend} backend
+ * @param {RunnerHost} host
+ * @param {{tokens: WorkerPoolClient["tokens"], capabilities: string[] | undefined, diskFree: () => Promise<import("@chuggy/worker-core/diskFloor.mjs").DiskFree>}} found the token source, what each poll advertises, and the engine's free disk as the floor measures it
+ * @returns {WorkerPoolClient}
+ */
+function runnerClient(setup, backend, host, found) {
+  const { credentials, config } = setup;
+  return poolRunnerClient(
     credentials,
     config.engine === "podman" ? heldEndingWithRunner(backend) : backend,
     runnerPoolLimits(config, setup.poolFile),
-    { tokens, fetch: host.fetch, runner: host.runner, capabilities },
+    {
+      tokens: found.tokens,
+      fetch: host.fetch,
+      runner: host.runner,
+      capabilities: found.capabilities,
+      reports: {
+        on: config.reportMetrics,
+        log: host.log,
+        machine: machineFacts(config, found.diskFree, host.facts),
+      },
+    },
   );
-  return { runtime: runtimeDir, engine, disk, backend, client };
 }
 
 /**

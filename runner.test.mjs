@@ -16,7 +16,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import {
+  workerContractHeader,
+  workerContractRelease,
+} from "@chuggy/worker-contract/workerContract";
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
+import { workerRunnerReportRoute } from "@chuggy/worker-contract/workerPool";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   jobEngineSocketVariables,
@@ -1003,6 +1008,122 @@ test("a run holds the floor its file sets in GiB free where the engine stores, t
       );
   }
 });
+
+/**
+ * A pool plane on the global fetch that takes reports, answering each poll
+ * with nothing to do under this contract's release, with the reports it took
+ * and what it calls as it takes each.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+function reportingPlane(t) {
+  const plane = {
+    /** @type {Record<string, unknown>[]} */
+    reports: [],
+    /** @type {() => void} */
+    reported: () => undefined,
+  };
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ url, /** @type {RequestInit} */ init) => {
+      if (!String(url).endsWith(workerRunnerReportRoute))
+        return globalThis.Response.json(
+          { assignments: [], sessions: [], stop: [] },
+          { headers: { [workerContractHeader]: workerContractRelease } },
+        );
+      plane.reports.push(JSON.parse(String(init.body)));
+      plane.reported();
+      return new globalThis.Response(null, { status: 204 });
+    },
+  );
+  return plane;
+}
+
+/**
+ * A pool's run from the runner's file `runner`, with plenty of disk free and
+ * this machine read by `facts`, whose reports end with the case.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {Record<string, unknown>} runner
+ * @param {import("./machineFacts.mjs").MachineFactPorts} facts
+ */
+async function reportingRun(t, runner, facts) {
+  const { home, environment, poolFile } = await runnerFixture(t, { runner });
+  const parts = await runnerParts(
+    await runnerSetup(poolFile, environment, home),
+    {
+      uid: ownUid,
+      log: () => undefined,
+      engine: fakeEngine().engine,
+      tokens: {
+        acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+        invalidate: () => undefined,
+      },
+      disk: fakeDisk(30),
+      facts,
+    },
+  );
+  const client =
+    /** @type {import("@chuggy/worker-core/poolRunner.mjs").PoolRunnerClient} */ (
+      parts.client
+    );
+  t.after(() => client.reporting?.ended());
+  return { client, backend: parts.backend };
+}
+
+/**
+ * Catches a runner that reports where its owner has not opted in, and one
+ * whose file's key never reaches the core or whose report names none of this
+ * machine.
+ */
+test(
+  "a run reports on itself to a plane that takes reports only where its file sets reportMetrics, naming this machine's facts",
+  { timeout: 30_000 },
+  async (t) => {
+    const plane = reportingPlane(t);
+    const facts = {
+      meminfo: async () => "MemTotal: 16384 kB\nMemAvailable: 8192 kB\n",
+      loadavg: () => [0.5, 0.25, 0.125],
+      cpus: () => 4,
+    };
+    for (const runner of [{}, { reportMetrics: false }]) {
+      const { client, backend } = await reportingRun(t, runner, facts);
+      assert.equal((await workerPoolClientPass(client)).passed, "Reconciled");
+      await backend.settled();
+      assert.equal(client.reporting, undefined, JSON.stringify(runner));
+      assert.deepEqual(plane.reports, [], JSON.stringify(runner));
+    }
+    const { client } = await reportingRun(t, { reportMetrics: true }, facts);
+    const sent = new Promise((resolve) => {
+      plane.reported = () => resolve(undefined);
+    });
+    assert.equal((await workerPoolClientPass(client)).passed, "Reconciled");
+    await sent;
+    assert.equal(plane.reports.length, 1);
+    const [report] = plane.reports;
+    assert.deepEqual(
+      {
+        cpus: report.cpus,
+        loadAverageOneMinute: report.loadAverageOneMinute,
+        memoryTotalBytes: report.memoryTotalBytes,
+        memoryAvailableBytes: report.memoryAvailableBytes,
+        diskFreeBytes: report.diskFreeBytes,
+        diskFloorBytes: report.diskFloorBytes,
+        polls: report.polls,
+      },
+      {
+        cpus: 4,
+        loadAverageOneMinute: 0.5,
+        memoryTotalBytes: 16384 * 1024,
+        memoryAvailableBytes: 8192 * 1024,
+        diskFreeBytes: 30 * 2 ** 30,
+        diskFloorBytes: 20 * 2 ** 30,
+        polls: 1,
+      },
+    );
+  },
+);
 
 test("a run's memory budget is its engine's memory less the GiB its file keeps free, none unless it says, and it takes no job without room", async (t) => {
   for (const [memoryFreeGibMin, usedGib, taken] of /** @type {const} */ ([
