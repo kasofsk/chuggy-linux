@@ -1,8 +1,10 @@
 /**
  * The `chuggy-linux` commands. Each answers an exit status: 0 done, 1 failed,
- * 2 asked wrongly, `deniedExitStatus` when the plane denied the pool, which is
- * the one failure the service unit does not restart after, and
- * `updatedExitStatus` when `run` installed a release of itself to run again on.
+ * 2 asked wrongly, `unrestartedExitStatus` of a run no restart would answer
+ * differently, as where the plane denied the pool or the runner's file leaves
+ * it no work, which is the one failure the service unit does not restart
+ * after, and `updatedExitStatus` when `run` installed a release of itself to
+ * run again on.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -30,6 +32,7 @@ import {
 import {
   chatHostControl,
   chatHostStatusAsked,
+  chatHostStatusLines,
 } from "@chuggy/worker-core/chatHost.mjs";
 import { chatRunnerLoop, chatRunnerParts } from "./chatRunner.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
@@ -58,6 +61,7 @@ import {
   runnerEngine,
   runnerLeftoversRemoved,
   runnerLoop,
+  RunnerIdleRefusal,
   runnerParts,
   runnerSetup,
   runnerUpdates,
@@ -73,7 +77,7 @@ import {
 } from "./runnerConfig.mjs";
 import {
   commandLine,
-  deniedExitStatus,
+  unrestartedExitStatus,
   legacyServiceUnitName,
   serviceCommands,
   serviceLingerArgv,
@@ -185,6 +189,24 @@ async function started(call, run = { places: true }) {
 }
 
 /**
+ * `started`, or `unrestartedExitStatus` where the runner's file leaves the
+ * pool's service no work, said on stderr: a service is not restarted only
+ * to be refused again.
+ *
+ * @param {CliCall} call
+ * @returns {Promise<Awaited<ReturnType<typeof started>> | number>}
+ */
+async function startedServing(call) {
+  try {
+    return await started(call);
+  } catch (failure) {
+    if (!(failure instanceof RunnerIdleRefusal)) throw failure;
+    call.host.err(failure.message);
+    return unrestartedExitStatus;
+  }
+}
+
+/**
  * The service. It claims the pool's control socket before removing what a
  * killed run left, so a second service of the pool is refused before it can
  * remove the first's scratch. systemd names the run it started with
@@ -193,7 +215,9 @@ async function started(call, run = { places: true }) {
  * @param {CliCall} call
  */
 async function run(call) {
-  const { setup, runner, sockets } = await started(call);
+  const serving = await startedServing(call);
+  if (typeof serving === "number") return serving;
+  const { setup, runner, sockets } = serving;
   const updates = runnerUpdates(setup, runnerCopy(call.host));
   if (
     sockets.legacy !== undefined &&
@@ -224,7 +248,9 @@ async function run(call) {
 
 /** @param {CliCall} call */
 async function once(call) {
-  const { setup, runner, sockets } = await started(call);
+  const serving = await startedServing(call);
+  if (typeof serving === "number") return serving;
+  const { setup, runner, sockets } = serving;
   if ((await poolServiceAsked(sockets, { op: "status" })) !== undefined) {
     call.host.err(
       "a chuggy-linux service is running this pool; stop it before a pass of your own",
@@ -242,7 +268,7 @@ async function once(call) {
     return 0;
   }
   call.host.err(`${pass.passed}: ${pass.evidence}`);
-  return pass.passed === "Denied" ? deniedExitStatus : 1;
+  return pass.passed === "Denied" ? unrestartedExitStatus : 1;
 }
 
 /**
@@ -266,7 +292,9 @@ async function status(call) {
   call.host.out(
     answered === undefined ? "service: not running" : "service: running",
   );
-  call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
+  call.host.out(
+    `limits: ${runnerConfigLimits(setup.config, setup.poolFile, poolIdentityPersonal(setup.credentials))}`,
+  );
   const disk = await diskFloorSaid(setup.config, runner.engine, runner.disk);
   call.host.out(`disk floor: ${disk.detail}`);
   call.host.out(
@@ -877,18 +905,12 @@ async function chatStatus(call) {
     call.host.home,
   );
   const runtime = poolRuntimeDirectory(setup.paths, setup.credentials);
-  const host = await chatHostStatusAsked(controlSocketPath(runtime));
-  call.host.out(
-    host === undefined ? "service: not running" : "service: running",
+  const [service, ...said] = chatHostStatusLines(
+    await chatHostStatusAsked(controlSocketPath(runtime)),
   );
+  call.host.out(service);
   call.host.out(`chat: ${runnerChatSettingsLine(setup.config)}`);
-  if (host === undefined) return 0;
-  call.host.out(
-    `supervisor: ${host.supervisor.toLowerCase()}${host.starting ? ", starting" : ""}`,
-  );
-  call.host.out(
-    `image: running ${host.used ?? "none yet"}; chuggy names ${host.named ?? "none yet"}`,
-  );
+  for (const line of said) call.host.out(line);
   return 0;
 }
 

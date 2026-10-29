@@ -50,7 +50,10 @@ import {
   engineFailure,
   engineFailureLine,
 } from "@chuggy/worker-core/engineErrors.mjs";
-import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityDigest,
+  poolIdentityPersonal,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   registerAdvertised,
   registerPlatform,
@@ -66,9 +69,10 @@ import {
   runnerCredentialsHanded,
   runnerConfig,
   runnerPaths,
+  runnerPersonalIdleRefusal,
   runnerPoolLimits,
 } from "./runnerConfig.mjs";
-import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
+import { unrestartedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
@@ -469,6 +473,25 @@ export function heldEndingWithRunner(backend) {
   };
 }
 
+/** A runner's file that leaves the pool's service no work, which no restart would answer differently. */
+export class RunnerIdleRefusal extends Error {}
+
+/**
+ * The limits the pool's service holds, refused where a personal runner's
+ * leave it no work.
+ *
+ * @param {RunnerSetup} setup
+ */
+function runnerServiceLimits(setup) {
+  const { credentials, config, poolFile, paths } = setup;
+  const personal = poolIdentityPersonal(credentials);
+  const idle = personal
+    ? runnerPersonalIdleRefusal(config, paths.config, poolFile)
+    : undefined;
+  if (idle !== undefined) throw new RunnerIdleRefusal(idle);
+  return runnerPoolLimits(config, poolFile, personal);
+}
+
 /**
  * @param {RunnerSetup} setup
  * @param {RunnerHost} host
@@ -476,6 +499,7 @@ export function heldEndingWithRunner(backend) {
  */
 export async function runnerParts(setup, host) {
   const { credentials, config, paths } = setup;
+  const limits = runnerServiceLimits(setup);
   const capabilities =
     host.places === false
       ? undefined
@@ -536,6 +560,7 @@ export async function runnerParts(setup, host) {
   );
   const backend = runnerHostRouted(setup, container, machine, host);
   const client = runnerClient(setup, backend, host, {
+    limits,
     tokens,
     capabilities,
     diskFree,
@@ -550,7 +575,7 @@ export async function runnerParts(setup, host) {
  * @param {RunnerSetup} setup
  * @param {WorkerPoolBackend} backend
  * @param {RunnerHost} host
- * @param {{tokens: WorkerPoolClient["tokens"], capabilities: string[] | undefined, diskFree: () => Promise<import("@chuggy/worker-core/diskFloor.mjs").DiskFree>}} found the token source, what each poll advertises, and the engine's free disk as the floor measures it
+ * @param {{limits: ReturnType<typeof runnerServiceLimits>, tokens: WorkerPoolClient["tokens"], capabilities: string[] | undefined, diskFree: () => Promise<import("@chuggy/worker-core/diskFloor.mjs").DiskFree>}} found the limits the service holds, the token source, what each poll advertises, and the engine's free disk as the floor measures it
  * @returns {WorkerPoolClient}
  */
 function runnerClient(setup, backend, host, found) {
@@ -558,7 +583,7 @@ function runnerClient(setup, backend, host, found) {
   return poolRunnerClient(
     credentials,
     config.engine === "podman" ? heldEndingWithRunner(backend) : backend,
-    runnerPoolLimits(config, setup.poolFile),
+    found.limits,
     {
       tokens: found.tokens,
       fetch: host.fetch,
@@ -654,7 +679,7 @@ export async function jobNetwork(engine, network) {
 export async function runnerLoop(client, seams) {
   const { underService, ...loop } = seams;
   const pass = await poolRunnerLoop(client, loop);
-  if (pass.passed === "Denied") return deniedExitStatus;
+  if (pass.passed === "Denied") return unrestartedExitStatus;
   const release = `${seams.updates.updater.runner.package} ${pass.version}`;
   seams.log(
     underService

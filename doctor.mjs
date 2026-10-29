@@ -77,6 +77,7 @@ import {
   runnerConfig,
   runnerChatSettingsLine,
   runnerConfigLimits,
+  runnerPersonalIdleRefusal,
   runnerPoolName,
 } from "./runnerConfig.mjs";
 import {
@@ -1194,14 +1195,18 @@ export function findingLine(finding) {
 /**
  * The runner's file, read, and the limits it sets this pool's service, warned
  * of where an entry in `pools` names no pool file in the pools directory, so
- * that it limits no service.
+ * that it limits no service. A personal runner's limits fail it where they
+ * leave it no work, as its run refuses them.
  *
  * @param {DoctorInput} input
  * @param {DoctorFinding[]} findings
- * @param {boolean} chat whether the pool file is a chat host's, whose settings are said in place of a pool's limits
+ * @param {PoolCredentials | undefined} credentials the pool file's, where it was read: a chat host's settings are said in place of a pool's limits, and a personal runner's name no sessions
  */
-async function runnerConfigChecked(input, findings, chat) {
+async function runnerConfigChecked(input, findings, credentials) {
   const check = "runner configuration";
+  const chat = credentials !== undefined && poolIdentityChatHost(credentials);
+  const personal =
+    credentials !== undefined && poolIdentityPersonal(credentials);
   let config;
   try {
     config = await runnerConfig(input.paths.config);
@@ -1219,16 +1224,21 @@ async function runnerConfigChecked(input, findings, chat) {
     (name) => !files.has(name),
   );
   const detail = [
-    `${input.paths.config}: ${chat ? runnerChatSettingsLine(config) : runnerConfigLimits(config, input.poolFile)}`,
+    `${input.paths.config}: ${chat ? runnerChatSettingsLine(config) : runnerConfigLimits(config, input.poolFile, personal)}`,
     ...unmatched.map(
       (name) =>
         `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,
     ),
   ].join("; ");
+  const idle = personal
+    ? runnerPersonalIdleRefusal(config, input.paths.config, input.poolFile)
+    : undefined;
   findings.push(
-    unmatched.length === 0
-      ? { check, passed: true, detail }
-      : { check, passed: true, warning: true, detail },
+    idle !== undefined
+      ? { check, passed: false, detail: idle }
+      : unmatched.length === 0
+        ? { check, passed: true, detail }
+        : { check, passed: true, warning: true, detail },
   );
   return config;
 }
@@ -1248,7 +1258,7 @@ export async function doctorFindings(input) {
     ];
   });
   const chat = credentials !== undefined && poolIdentityChatHost(credentials);
-  const config = await runnerConfigChecked(input, findings, chat);
+  const config = await runnerConfigChecked(input, findings, credentials);
   const runtime = await checked(findings, "runtime directory", async () => [
     true,
     runtimeDirectory(input.paths),

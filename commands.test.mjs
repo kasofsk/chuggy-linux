@@ -36,7 +36,7 @@ import {
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
-import { serviceUnit } from "./systemdUnit.mjs";
+import { serviceUnit, unrestartedExitStatus } from "./systemdUnit.mjs";
 
 /**
  * @typedef {object} Machine
@@ -628,6 +628,44 @@ test("once is refused while a legacy service serving this pool runs, and not whi
   });
   assert.equal(refused.status, 1);
   assert.match(refused.err, /^a chuggy-linux service is running this pool/u);
+});
+
+test("status of a personal runner names its jobs' limit alone, whatever sessionsMax the file sets", async (t) => {
+  const { home, environment, poolFile } = await served(t, {
+    runner: { concurrencyMax: 3, sessionsMax: 4 },
+    pool: registeredPersonalFixture,
+  });
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    environment,
+    engine: fakeEngine().engine,
+  });
+  assert.equal(status.status, 0, status.err);
+  assert.equal(status.out.split("\n")[1], "limits: concurrencyMax 3");
+});
+
+test("run and once of a personal runner its file leaves no job exit for its unit not to restart them, saying why and having asked nothing of the engine", async (t) => {
+  const { home, environment, poolFile } = await served(t, {
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+    pool: registeredPersonalFixture,
+  });
+  const file = join(environment.XDG_CONFIG_HOME, "chuggy-linux", "runner.json");
+  for (const command of ["run", "once"]) {
+    const { engine, state } = fakeEngine();
+    const { status, out, err } = await called([command, "--pool", poolFile], {
+      home,
+      environment,
+      engine,
+    });
+    assert.equal(status, unrestartedExitStatus, command);
+    assert.equal(out, "", command);
+    assert.equal(
+      err,
+      `runner configuration ${file}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.pool.concurrencyMax above 0 and start its service again, or run your chats on a chat host (chuggy-linux register --chat) and disable this service`,
+      command,
+    );
+    assert.deepEqual(state.calls, [], command);
+  }
 });
 
 test("status and stop reach this pool's service, and status names each workload's kind and the runner's limits", async (t) => {
@@ -2088,7 +2126,7 @@ test("status of a chat host says its settings, and its supervisor where its serv
     stopped.out,
     [
       "service: not running",
-      "chat: sessionsMax 4, sessionMemoryMib 2048, the supervisor's cap asked of the engine 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
+      "chat: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   const socket = controlSocketPath(
@@ -2104,6 +2142,7 @@ test("status of a chat host says its settings, and its supervisor where its serv
           used: "registry.example/chat:1",
           supervisor: "Draining",
           starting: true,
+          startingIn: "registry.example/chat:2",
         }),
       }),
     ),
@@ -2117,9 +2156,9 @@ test("status of a chat host says its settings, and its supervisor where its serv
     running.out,
     [
       "service: running",
-      "chat: sessionsMax 4, sessionMemoryMib 2048, the supervisor's cap asked of the engine 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
-      "supervisor: draining, starting",
-      "image: running registry.example/chat:1; chuggy names registry.example/chat:2",
+      "chat: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+      "supervisor: draining in registry.example/chat:1; a start in registry.example/chat:2 is under way",
+      "image: chuggy names registry.example/chat:2",
     ].join("\n"),
   );
 });

@@ -31,6 +31,7 @@ import {
   runnerConfigLimits,
   podmanRegistriesConf,
   runnerPaths,
+  runnerPersonalIdleRefusal,
   runnerPoolLimits,
 } from "./runnerConfig.mjs";
 
@@ -389,9 +390,62 @@ test("a pool's entry in pools sets its own service's limits in place of the file
   ];
   for (const [name, limits, line] of cases) {
     const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
-    assert.deepEqual(runnerPoolLimits(config, poolFile), limits, name);
-    assert.equal(runnerConfigLimits(config, poolFile), line, name);
+    assert.deepEqual(runnerPoolLimits(config, poolFile, false), limits, name);
+    assert.equal(runnerConfigLimits(config, poolFile, false), line, name);
   }
+});
+
+test("a personal runner holds no session whatever the file or its entry in pools sets, its limits name none, and one left no job is refused, naming the key that does it", async (t) => {
+  const name = "vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2fmember";
+  const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
+  const directory = await scratch(t);
+  /** @param {Record<string, unknown>} document */
+  const read = async (document) =>
+    runnerConfig(
+      await written(await mkdtemp(join(directory, "c-")), {
+        ...minimal,
+        ...document,
+      }),
+    );
+  const sessions = await read({
+    concurrencyMax: 2,
+    sessionsMax: 3,
+    pools: { [name]: { sessionsMax: 4 } },
+  });
+  assert.deepEqual(runnerPoolLimits(sessions, poolFile, true), {
+    concurrencyMax: 2,
+    sessionsMax: 0,
+  });
+  assert.deepEqual(runnerPoolLimits(sessions, poolFile, false), {
+    concurrencyMax: 2,
+    sessionsMax: 4,
+  });
+  assert.equal(
+    runnerConfigLimits(sessions, poolFile, true),
+    "concurrencyMax 2",
+  );
+  const file = "/home/you/.config/chuggy-linux/runner.json";
+  assert.equal(runnerPersonalIdleRefusal(sessions, file, poolFile), undefined);
+  const own = await read({
+    pools: { [name]: { concurrencyMax: 0, sessionsMax: 1 } },
+  });
+  assert.equal(
+    runnerConfigLimits(own, poolFile, true),
+    `concurrencyMax 0, as pools.${name} sets it`,
+  );
+  const remedy = `set pools.${name}.concurrencyMax above 0 and start its service again, or run your chats on a chat host (chuggy-linux register --chat) and disable this service`;
+  assert.equal(
+    runnerPersonalIdleRefusal(own, file, poolFile),
+    `runner configuration ${file}: pools.${name}.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; ${remedy}`,
+  );
+  assert.equal(
+    runnerPersonalIdleRefusal(
+      await read({ concurrencyMax: 0 }),
+      file,
+      poolFile,
+    ),
+    `runner configuration ${file}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; ${remedy}`,
+  );
 });
 
 test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
@@ -1004,7 +1058,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   const mib = (bytes) => String(bytes / 2 ** 20);
   assert.equal(
     runnerChatSettingsLine(bare),
-    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, the supervisor's cap asked of the engine ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, running the image chuggy names`,
+    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, image the one chuggy names`,
   );
   const empty = await runnerConfig(
     await written(directory, { ...minimal, chat: {} }),
@@ -1026,9 +1080,12 @@ test("a chat host's settings line says each of its chat keys, the core's default
   });
   assert.equal(
     runnerChatSettingsLine(set),
-    "sessionsMax 3, sessionMemoryMib 1024, the supervisor's cap asked of the engine 3072 MiB, idleSecs 300, outputBytesMax 1024, running registry.example/me/chat:1, pulled where it is missing",
+    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 300, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
   );
-  for (const pull of ["always", "never"])
+  for (const [pull, said] of [
+    ["always", "before each start"],
+    ["never", "never"],
+  ])
     assert.match(
       runnerChatSettingsLine(
         await runnerConfig(
@@ -1038,7 +1095,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
           }),
         ),
       ),
-      new RegExp(`running x, pulled ${pull}$`, "u"),
+      new RegExp(`image x, pulled ${said}$`, "u"),
     );
 });
 

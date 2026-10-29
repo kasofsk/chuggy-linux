@@ -21,7 +21,10 @@ import {
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
-import { registeredChatHostFixture } from "./register.fixture.mjs";
+import {
+  registeredChatHostFixture,
+  registeredPersonalFixture,
+} from "./register.fixture.mjs";
 import { serviceUnit } from "./systemdUnit.mjs";
 
 /** The copy doctor is run as, the Node it runs under, and the machine. */
@@ -176,6 +179,30 @@ test("doctor names a personal runner's file as one, by its tenant and member", a
     passed: true,
     detail: `${poolFile} names personal runner vteng/28:https:%2F%2Fauth.chuggy.example%2F0f3c9a52-member`,
   });
+});
+
+test("doctor names a personal runner's jobs alone, ignoring a sessionsMax, and fails one its limits leave no job", async (t) => {
+  const pool = { ...registeredPersonalFixture, capabilities: ["container"] };
+  const { findings } = await doctored(t, {
+    pool,
+    runner: {
+      concurrencyMax: 2,
+      sessionsMax: 3,
+      pools: { pool: { sessionsMax: 1 } },
+    },
+  });
+  assert.equal(findings[1]?.check, "runner configuration");
+  assert.equal(findings[1]?.passed, true);
+  assert.match(findings[1]?.detail ?? "", /\/runner\.json: concurrencyMax 2$/u);
+  const idle = await doctored(t, {
+    pool,
+    runner: { pools: { pool: { concurrencyMax: 0, sessionsMax: 1 } } },
+  });
+  assert.equal(idle.findings[1]?.passed, false);
+  assert.match(
+    idle.findings[1]?.detail ?? "",
+    /^runner configuration \/.*\/runner\.json: pools\.pool\.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools\.pool\.concurrencyMax above 0 and start its service again, or run your chats on a chat host \(chuggy-linux register --chat\) and disable this service$/u,
+  );
 });
 
 test("doctor fails the pool file of a chat host's declaring what a pool's or a personal runner's does, and checks nothing past the runner's own", async (t) => {

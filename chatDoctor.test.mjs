@@ -237,7 +237,7 @@ test("a supervisor's container no service here runs fails, naming its removal; t
   }
 });
 
-test("the supervisor's container is inspected before the service is asked, and the service is not asked of one that is not running", async () => {
+test("the supervisor's container is inspected before the service is asked, and the service is not asked of one a start removes", async () => {
   const { engine, state } = fakeEngine();
   const name = chatSupervisorName(chatHostPool);
   /** @type {string[]} */
@@ -270,13 +270,17 @@ test("the supervisor's container is inspected before the service is asked, and t
     calls.length = 0;
     return chatSupervisorFinding(seen, "docker", chatHostPool, asked);
   };
-  assert.equal(
-    (await contained("exited")).detail,
-    `${name} has exited, and the next start removes it`,
-  );
-  assert.deepEqual(calls, ["container inspect"]);
-  assert.equal((await contained("running")).passed, true);
-  assert.deepEqual(calls, ["container inspect", "service"]);
+  for (const removable of ["exited", "stopped"]) {
+    assert.equal(
+      (await contained(removable)).detail,
+      `${name} is ${removable}, and the next start removes it`,
+    );
+    assert.deepEqual(calls, ["container inspect"]);
+  }
+  for (const kept of ["running", "paused"]) {
+    assert.equal((await contained(kept)).passed, true);
+    assert.deepEqual(calls, ["container inspect", "service"]);
+  }
 });
 
 test("a service that answers what this copy cannot read is there: its running supervisor is warned of as its own, and never named for removal", async (t) => {
@@ -377,7 +381,7 @@ test("the plane's image here passes, and one not here is pulled under the pool's
   });
 });
 
-test("the host's own image is pulled as the engine's login pulls it, and pull never only looks", async (t) => {
+test("the host's own image is pulled as the engine's login pulls it, pull never only looks, and pull always pulls where it is here and fails where that pull does", async (t) => {
   const { reach, state, acquired } = await imageReach(t);
   const own = "registry.chuggy.example/me/chat:2";
   const never = await chatImageFinding(
@@ -388,7 +392,7 @@ test("the host's own image is pulled as the engine's login pulls it, and pull ne
   assert.deepEqual(never, {
     check: "chat image",
     passed: false,
-    detail: `the host's own ${own} is not here, and chat.image.pull is never`,
+    detail: `the host's own image: ${own} is not here, and the host's setting pulls it never`,
   });
   assert.ok(!state.calls.some((call) => call.argv[0] === "pull"));
   const pulled = await chatImageFinding(
@@ -402,15 +406,27 @@ test("the host's own image is pulled as the engine's login pulls it, and pull ne
     state.calls.find((call) => call.argv[0] === "pull")?.authFile,
     undefined,
   );
+  const pulls = () =>
+    state.calls.filter((call) => call.argv[0] === "pull").length;
+  const before = pulls();
+  const always = {
+    image: { image: own, pull: /** @type {const} */ ("always") },
+  };
   assert.equal(
-    (
-      await chatImageFinding(
-        reach,
-        { image: { image: own, pull: "always" } },
-        undefined,
-      )
-    ).detail,
-    `the host's own ${own} is here, and is pulled again before each start`,
+    (await chatImageFinding(reach, always, undefined)).detail,
+    `the host's own ${own} was pulled`,
+  );
+  assert.equal(pulls(), before + 1);
+  state.pull = () => ({
+    code: 1,
+    stdout: "",
+    stderr: "Error: manifest unknown\n",
+  });
+  const refused = await chatImageFinding(reach, always, undefined);
+  assert.equal(refused.passed, false);
+  assert.match(
+    refused.detail,
+    new RegExp(`^the host's own image: ${own} could not be pulled: `, "u"),
   );
 });
 
@@ -425,7 +441,7 @@ test("an image that cannot be pulled, or none named, fails", async (t) => {
   assert.equal(failed.passed, false);
   assert.match(
     failed.detail,
-    /^the plane's docker\.io\/x\/y:1 could not be pulled: /u,
+    /^the plane's image: docker\.io\/x\/y:1 could not be pulled: /u,
   );
   assert.deepEqual(await chatImageFinding(reach, undefined, undefined), {
     check: "chat image",
@@ -560,7 +576,7 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
   );
   assert.equal(
     findings[1].detail,
-    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, the supervisor's cap asked of the engine 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names`,
+    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names`,
   );
   assert.match(
     findings[3].detail,
@@ -601,7 +617,7 @@ test("a chat host's own image is checked whatever the plane names", async (t) =>
     check: "chat image",
     passed: false,
     detail:
-      "the host's own localhost/mine:1 is not here, and chat.image.pull is never",
+      "the host's own image: localhost/mine:1 is not here, and the host's setting pulls it never",
   });
 });
 

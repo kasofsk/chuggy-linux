@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.37.0/chuggy-linux-0.37.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.38.0/chuggy-linux-0.38.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -46,6 +46,8 @@ chuggy-linux register --api <chuggy's origin> --token=<token> --personal
 
 It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over and restarts its service on it; the registration it held before stays in chuggy, offline, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
+A personal runner runs jobs alone. chuggy hands sessions only to a project's pool and a member's chat host, so a personal runner's service asks for none, whatever `sessionsMax` says, and `status` and `doctor` name only its `concurrencyMax`. A runner's file that sets `sessionsMax` still serves it, but `run`, `once`, `status` and `stop` refuse a personal runner whose `concurrencyMax` is 0, since it would take no work, and `doctor` fails it. `run` then exits 3, which its service is not restarted after: give it jobs with its own entry in `pools` and start its service again, or run your chats on a [chat host](#a-chat-host) and disable it.
+
 A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host).
 
 ## Configure
@@ -79,8 +81,8 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | Key                | Required | Meaning                                                                                                    |
 | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `engine`           | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions. Default 1. |
-| `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. Default 2.                        |
+| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions, never a personal runner's. Default 1. |
+| `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. A personal runner runs none whatever it says. Default 2. |
 | `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
 | `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, below, in place of `claudeTokenFile`.                     |
 | `codexCredential`  | no       | `{ "authFile": … }`, the `auth.json` Codex runs on, below; 0.25.0 or later. Default none.                 |
@@ -110,7 +112,7 @@ Each assignment's CPU and memory are checked against the whole machine, not what
 "pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
 ```
 
-The pool `vteng.chuggy.lead.json` runs one session and no job, and every other pool's service, the personal runner's among them, runs two jobs and two sessions. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
+The pool `vteng.chuggy.lead.json` runs one session and no job, every other pool's service runs two jobs and two sessions, and the personal runner's two jobs and no session. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
 
 A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing either.
 
@@ -244,7 +246,7 @@ The Claude credential's directory is mounted into the container read-only, whole
 
 **Podman** runs the container in your own user namespace, whatever `containers.conf` says, so root inside is you, the credential is yours, and each session's user is one of your subordinate ids. Your ranges in `/etc/subuid` and `/etc/subgid` must give podman's namespace every session's uid and every group the supervisor gives, from 0 without a gap; `doctor` reads what podman maps and says how many are needed, and after changing the ranges, run `podman system migrate`. **Docker** maps no user, so root inside is root here, behind the capabilities above, and each session runs as this machine's uid of its number: run the host as a user whose uid is no session's, which `run` and `doctor` refuse, naming the range. A session's user owns nothing of yours.
 
-`doctor` checks the chat host's file and the runner's, the Claude credential, that it is alone in its directory, the settings and the memory cap they make, podman's credential helpers, the unit, updates, the engine and the host's containers, the network, that the engine can run each session's user as above, that no supervisor's container is running that the service does not run, a token and one poll of the plane, and that the image the host would run is here or can be pulled: it pulls it where it is not, as the host would before starting, under the host's token where it is in chuggy's registry. `status` prints the `chat` settings, whether the service is running, and from the service, the supervisor's phase and the image it runs against the one chuggy names. Each session's log is kept in `~/.local/state/chuggy-linux/logs/chuggy-chat-<digest>.log`, opening with its assignment; one that would grow past a job's log's byte bound is cut to the last whole lines of half that bound, keeping its opening line and saying once that it was cut.
+`doctor` checks the chat host's file and the runner's, the Claude credential, that it is alone in its directory, the settings and the memory cap they make, podman's credential helpers, the unit, updates, the engine and the host's containers, the network, that the engine can run each session's user as above, that no supervisor's container is left that the service does not run and a start would not remove, a token and one poll of the plane, and the image the host would run, which it pulls as a run would: the host's own as `chat.image.pull` says, and the one chuggy names where it is not here, under the host's token where it is in chuggy's registry. `status` prints the `chat` settings, whether the service is running, and from the service, the supervisor's phase, the image it runs or is starting in, and the one chuggy names. Each session's log is kept in `~/.local/state/chuggy-linux/logs/chuggy-chat-<digest>.log`, opening with its assignment; one that would grow past a job's log's byte bound is cut to the last whole lines of half that bound, keeping its opening line and saying once that it was cut.
 
 The service updates itself as a pool's does: once chuggy names a release, the host takes no new session, installs the release once its sessions have ended, ends its container and exits 75, and systemd starts it again on the new copy, which starts the container afresh.
 
@@ -264,7 +266,7 @@ Its first line names the copy speaking and the Node it runs under. It checks bot
 chuggy-linux install-service --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. A chat host's unit is the same, saying it is one. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except the plane denying the pool (exit 3), which no restart would change. Run `install-service` again from the new copy after upgrading Node or moving the install; until then `doctor` warns that the service runs another.
+This writes the pool file's own unit, `~/.config/systemd/user/chuggy-linux-vteng.chuggy.shame.service`, named for the file less `.json`, which runs this install's `chuggy-linux run` under the Node that installed it, and prints the `systemctl --user` commands that start it. It runs none of them. A chat host's unit is the same, saying it is one. Each pool file has a unit of its own, so several pools run side by side; a unit of the name that serves another pool file is refused. The service restarts after any failure except one no restart would change (exit 3): the plane denying the pool, or the runner's file leaving a personal runner no work. Run `install-service` again from the new copy after upgrading Node or moving the install; until then `doctor` warns that the service runs another.
 
 chuggy-linux 0.1 wrote one unit for the machine, `~/.config/systemd/user/chuggy-linux.service`, and it keeps working after an upgrade. Where it serves the pool being installed, `install-service` prints the commands that stop and remove it before starting the pool's own. A pool's service refuses to start while another service of the pool runs, or while the old unit's service runs a pool file this runner cannot read, which may be the same pool. It cannot see a 0.1 runner started by hand rather than by that unit. Where the old unit serves another pool, it runs on beside the new unit. The containers it started are found by their labels, so `status` and `stop` still see them.
 

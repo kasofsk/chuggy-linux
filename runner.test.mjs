@@ -41,6 +41,7 @@ import {
   heldEndingWithRunner,
   runnerCapabilities,
   runnerLoop,
+  RunnerIdleRefusal,
   runnerParts,
   runnerReleasePrefix,
   runnerSetup,
@@ -52,14 +53,17 @@ import {
   runnerUpdates,
 } from "./runner.mjs";
 import { runnerPaths } from "./runnerConfig.mjs";
-import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
+import { unrestartedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 import {
   engineSocketFixture,
   fixturePool,
   poolFileWritten,
   runnerFixture,
 } from "./runner.fixture.mjs";
-import { registeredChatHostFixture } from "./register.fixture.mjs";
+import {
+  registeredChatHostFixture,
+  registeredPersonalFixture,
+} from "./register.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
@@ -120,7 +124,7 @@ test("a run the plane denies ends with the status the unit does not restart", as
     updates: installingUpdates(true),
     underService: true,
   });
-  assert.equal(status, deniedExitStatus);
+  assert.equal(status, unrestartedExitStatus);
   assert.deepEqual(log, ["the plane denied this pool: the pool was revoked"]);
 });
 
@@ -147,7 +151,7 @@ test("a run that installed a release of itself ends with the status the unit res
       },
     );
     assert.equal(status, updatedExitStatus);
-    assert.notEqual(updatedExitStatus, deniedExitStatus);
+    assert.notEqual(updatedExitStatus, unrestartedExitStatus);
     assert.equal(log.at(-1), said);
   }
 });
@@ -676,6 +680,47 @@ test("a runner whose file sets concurrencyMax to 0 is given no room for a job, a
   );
   assert.equal(runner.client.settings.concurrencyMax, 0);
   assert.equal(runner.client.settings.sessionsMax, 2);
+});
+
+test("a personal runner's client is given no room for a session whatever the file sets, and one left no job is refused before anything runs", async (t) => {
+  const { engine } = fakeEngine();
+  for (const runner of [
+    { concurrencyMax: 3, sessionsMax: 4 },
+    { concurrencyMax: 3, pools: { pool: { sessionsMax: 4 } } },
+  ]) {
+    const { home, environment, poolFile } = await runnerFixture(t, {
+      runner,
+      pool: registeredPersonalFixture,
+    });
+    const parts = await runnerParts(
+      await runnerSetup(poolFile, environment, home),
+      { uid: 1000, log: () => undefined, engine },
+    );
+    assert.deepEqual(
+      [parts.client.settings.concurrencyMax, parts.client.settings.sessionsMax],
+      [3, 0],
+      JSON.stringify(runner),
+    );
+  }
+  const idle = await runnerFixture(t, {
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+    pool: registeredPersonalFixture,
+  });
+  await assert.rejects(
+    runnerParts(await runnerSetup(idle.poolFile, idle.environment, idle.home), {
+      uid: 1000,
+      log: () => undefined,
+      engine,
+    }),
+    (/** @type {unknown} */ failure) => {
+      assert.ok(failure instanceof RunnerIdleRefusal, String(failure));
+      assert.equal(
+        failure.message,
+        `runner configuration ${join(idle.environment.XDG_CONFIG_HOME, "chuggy-linux", "runner.json")}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.pool.concurrencyMax above 0 and start its service again, or run your chats on a chat host (chuggy-linux register --chat) and disable this service`,
+      );
+      return true;
+    },
+  );
 });
 
 test("a runner's client is given its own pool's limits from pools, and the file's where pools names another", async (t) => {

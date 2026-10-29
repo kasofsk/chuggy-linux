@@ -17,27 +17,18 @@ import {
   chatCredentialAloneRefusal,
   chatHostMemoryBytes,
   chatHostStatusAsked,
+  chatImagePulled,
   chatSessionIdsNeeded,
   chatSupervisorName,
+  chatSupervisorStateAsked,
 } from "@chuggy/worker-core/chatHost.mjs";
 import {
   chatSessionUidCount,
   chatSessionUidFirst,
 } from "@chuggy/worker-core/chatSession.mjs";
-import {
-  imageInspectArgv,
-  inspectArgv,
-  listArgv,
-} from "@chuggy/worker-core/engineArgv.mjs";
-import {
-  engineFailure,
-  engineFailureLine,
-} from "@chuggy/worker-core/engineErrors.mjs";
+import { listArgv } from "@chuggy/worker-core/engineArgv.mjs";
+import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
 import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
-import {
-  imageRegistryHost,
-  registryPull,
-} from "@chuggy/worker-core/registryAuth.mjs";
 
 import { chatDockerUidRefusal, chatHostSettings } from "./chatRunner.mjs";
 import { runnerClaudeCredential } from "./runnerConfig.mjs";
@@ -210,9 +201,9 @@ export async function chatEngineFinding(engine, name, endpoint, credentials) {
 }
 
 /**
- * Whether the supervisor's image is here or can be pulled, as a run pulls
- * it: the host's own as its setting says, or the one the plane names, under
- * the pool's token where it is in the pool's registry.
+ * Whether the supervisor's image can be had as a start has it, by the core's
+ * own pull: the host's own as its setting says, before each start among them,
+ * or the one the plane names where it is not here.
  *
  * @param {object} reach
  * @param {Engine} reach.engine
@@ -235,45 +226,32 @@ export async function chatImageFinding(reach, chat, named) {
         "the plane named no session image and the runner's file sets no chat.image, so no supervisor can start",
     };
   const whose = own === undefined ? "the plane's" : "the host's own";
-  const here = (await reach.engine.exec(imageInspectArgv(image))).code === 0;
-  if (here)
-    return {
-      check,
-      passed: true,
-      detail: `${whose} ${image} is here${own?.pull === "always" ? ", and is pulled again before each start" : ""}`,
-    };
-  if (own?.pull === "never")
+  let pulled;
+  try {
+    pulled = await chatImagePulled(
+      {
+        engine: reach.engine,
+        site: reach.site,
+        registryHost: reach.credentials.registryHost,
+        tokens: reach.tokens,
+        ...(own === undefined ? {} : { own }),
+      },
+      image,
+    );
+  } catch (failure) {
     return {
       check,
       passed: false,
-      detail: `${whose} ${image} is not here, and chat.image.pull is never`,
+      detail: `${whose} image: ${failure instanceof Error ? failure.message : String(failure)}`,
     };
-  const registry = imageRegistryHost(image);
-  let credential;
-  if (own === undefined && registry === reach.credentials.registryHost) {
-    const acquired = await reach.tokens.acquire();
-    if (acquired.acquired !== "Token")
-      return {
-        check,
-        passed: false,
-        detail: `the pool has no token to pull ${image} with: ${acquired.evidence}`,
-      };
-    credential = { host: registry, token: acquired.token };
   }
-  const answer = await registryPull(
-    reach.site,
-    image,
-    undefined,
-    credential,
-    (argv, environment) => reach.engine.exec(argv, { environment }),
-  );
-  return answer.code === 0
-    ? { check, passed: true, detail: `${whose} ${image} was pulled` }
-    : {
+  return pulled.pulled === "Here"
+    ? {
         check,
-        passed: false,
-        detail: `${whose} ${image} could not be pulled: ${engineFailureLine(answer)}`,
-      };
+        passed: true,
+        detail: `${whose} ${image} is here`,
+      }
+    : { check, passed: true, detail: `${whose} ${image} was pulled` };
 }
 
 /**
@@ -327,14 +305,16 @@ export async function chatServiceAsked(socket) {
 
 /**
  * Whether a supervisor's container is left that no service here runs: one of
- * the host's name that is running while no service answers, or while the
- * one that answers runs no supervisor and is starting none, refuses every
- * start of the host's, which never kills it. One whose service answers what
- * this copy cannot read is that service's, and is warned of, never named for
- * removal. One that has exited is removed by the next start.
+ * the host's name that a start does not remove, a running one among them,
+ * while no service answers, or while the one that answers runs no supervisor
+ * and is starting none, refuses every start of the host's, which never kills
+ * it. One whose service answers what this copy cannot read is that
+ * service's, and is warned of, never named for removal. One in a state the
+ * core's start removes is removed by the next start.
  *
- * The service is asked only once the container is seen running, so a start
- * landing between the two finds the service already starting it.
+ * The service is asked only once the container is seen in a state a start
+ * does not remove, so a start landing between the two finds the service
+ * already starting it.
  *
  * @param {Engine} engine
  * @param {RunnerConfig["engine"]} name
@@ -350,26 +330,16 @@ export async function chatSupervisorFinding(
 ) {
   const check = "chat supervisor";
   const container = chatSupervisorName(identity);
-  const inspected = await engine.exec(inspectArgv([container]));
-  if (inspected.code !== 0)
-    return engineFailure(inspected) === "NoSuchContainer"
-      ? { check, passed: true, detail: `no container ${container} is here` }
-      : { check, passed: false, detail: engineFailureLine(inspected) };
-  let running;
-  try {
-    running = JSON.parse(inspected.stdout)[0]?.State?.Status === "running";
-  } catch {
-    return {
-      check,
-      passed: false,
-      detail: `${name} container inspect ${container} answered no JSON`,
-    };
-  }
-  if (!running)
+  const asked = await chatSupervisorStateAsked(engine, identity);
+  if (asked.asked === "None")
+    return { check, passed: true, detail: `no container ${container} is here` };
+  if (asked.asked !== "State")
+    return { check, passed: false, detail: asked.reason };
+  if (asked.removable)
     return {
       check,
       passed: true,
-      detail: `${container} has exited, and the next start removes it`,
+      detail: `${container} is ${asked.state}, and the next start removes it`,
     };
   const service = await serviceAsked();
   if ("unreadable" in service)
@@ -377,7 +347,7 @@ export async function chatSupervisorFinding(
       check,
       passed: true,
       warning: true,
-      detail: `${container} is running, and the service answers what this copy could not read, so it is taken as that service's: ${service.unreadable}`,
+      detail: `${container} is ${asked.state}, and the service answers what this copy could not read, so it is taken as that service's: ${service.unreadable}`,
     };
   const status = "status" in service ? service.status : undefined;
   if (
@@ -393,6 +363,6 @@ export async function chatSupervisorFinding(
   return {
     check,
     passed: false,
-    detail: `${container} is running and no service here runs it, so every start of this host's supervisor is refused; remove it with ${name} rm -f ${container}, which ends every session it runs`,
+    detail: `${container} is ${asked.state} and no service here runs it, so every start of this host's supervisor is refused; remove it with ${name} rm -f ${container}, which ends every session it runs`,
   };
 }

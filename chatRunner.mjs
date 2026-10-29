@@ -44,7 +44,7 @@ import {
   credentialFileRefusal,
   runnerClaudeCredential,
 } from "./runnerConfig.mjs";
-import { deniedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
+import { unrestartedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatHostSettings} ChatHostSettings
@@ -211,7 +211,7 @@ export async function chatRunnerParts(setup, host, copy) {
  */
 export async function chatRunnerLoop(chat, seams) {
   const pass = await chat.run();
-  if (pass.passed === "Denied") return deniedExitStatus;
+  if (pass.passed === "Denied") return unrestartedExitStatus;
   const release = `${seams.package} ${pass.version}`;
   seams.log(
     seams.underService
