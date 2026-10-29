@@ -2126,7 +2126,7 @@ test("status of a chat host says its settings, and its supervisor where its serv
     stopped.out,
     [
       "service: not running",
-      "chat: sessionsMax 4, sessionMemoryMib 2048, the supervisor's cap asked of the engine 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
+      "chat: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   const socket = controlSocketPath(
@@ -2142,6 +2142,7 @@ test("status of a chat host says its settings, and its supervisor where its serv
           used: "registry.example/chat:1",
           supervisor: "Draining",
           starting: true,
+          startingIn: "registry.example/chat:2",
         }),
       }),
     ),
@@ -2155,9 +2156,9 @@ test("status of a chat host says its settings, and its supervisor where its serv
     running.out,
     [
       "service: running",
-      "chat: sessionsMax 4, sessionMemoryMib 2048, the supervisor's cap asked of the engine 8192 MiB, idleSecs 600, outputBytesMax 65536, running the image chuggy names",
-      "supervisor: draining, starting",
-      "image: running registry.example/chat:1; chuggy names registry.example/chat:2",
+      "chat: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+      "supervisor: draining in registry.example/chat:1; a start in registry.example/chat:2 is under way",
+      "image: chuggy names registry.example/chat:2",
     ].join("\n"),
   );
 });

@@ -32,6 +32,7 @@ import {
 import {
   chatHostControl,
   chatHostStatusAsked,
+  chatHostStatusLines,
 } from "@chuggy/worker-core/chatHost.mjs";
 import { chatRunnerLoop, chatRunnerParts } from "./chatRunner.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
@@ -904,18 +905,12 @@ async function chatStatus(call) {
     call.host.home,
   );
   const runtime = poolRuntimeDirectory(setup.paths, setup.credentials);
-  const host = await chatHostStatusAsked(controlSocketPath(runtime));
-  call.host.out(
-    host === undefined ? "service: not running" : "service: running",
+  const [service, ...said] = chatHostStatusLines(
+    await chatHostStatusAsked(controlSocketPath(runtime)),
   );
+  call.host.out(service);
   call.host.out(`chat: ${runnerChatSettingsLine(setup.config)}`);
-  if (host === undefined) return 0;
-  call.host.out(
-    `supervisor: ${host.supervisor.toLowerCase()}${host.starting ? ", starting" : ""}`,
-  );
-  call.host.out(
-    `image: running ${host.used ?? "none yet"}; chuggy names ${host.named ?? "none yet"}`,
-  );
+  for (const line of said) call.host.out(line);
   return 0;
 }
 

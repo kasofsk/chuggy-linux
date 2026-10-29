@@ -30,7 +30,7 @@ import {
 import {
   chatHostConfigSchema,
   chatHostConfigured,
-  chatHostMemoryBytes,
+  chatHostSettingsLine,
 } from "@chuggy/worker-core/chatHost.mjs";
 import {
   ownerImagesSchema,
@@ -358,22 +358,15 @@ export function runnerCredentialDescribed(claudeCredential, agent) {
 }
 
 /**
- * A chat host's settings as `status` and `doctor` say them, each its
- * default where the file names none, and the memory its supervisor's engine
- * is asked to cap it at, which `doctor` checks podman holds it to.
+ * A chat host's settings as `status` and `doctor` say them, in the core's
+ * words, each its default where the file names none.
  *
  * @param {RunnerConfig} config
  */
 export function runnerChatSettingsLine(config) {
-  const settings = chatHostConfigured(config.chat, config.outputBytesMax);
-  const { sessionsMax, sessionMemoryBytes, idleSecs, outputBytesMax, image } =
-    settings;
-  const mib = (bytes) => String(Math.floor(bytes / 2 ** 20));
-  const run =
-    image === undefined
-      ? "the image chuggy names"
-      : `${image.image}, pulled ${image.pull === "missing" ? "where it is missing" : image.pull}`;
-  return `sessionsMax ${String(sessionsMax)}, sessionMemoryMib ${mib(sessionMemoryBytes)}, the supervisor's cap asked of the engine ${mib(chatHostMemoryBytes(settings))} MiB, idleSecs ${String(idleSecs)}, outputBytesMax ${String(outputBytesMax)}, running ${run}`;
+  return chatHostSettingsLine(
+    chatHostConfigured(config.chat, config.outputBytesMax),
+  );
 }
 
 /**
