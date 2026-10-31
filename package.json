@@ -13,9 +13,9 @@
   },
   "dependencies": {
     "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.30.0/chuggy-worker-contract-1.30.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#69d434febc1cc5415cbc2dc0aeccce95db6ef0e7",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#100d7afa03aea813b69fc864d844ee56ea2d48da",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "zod": "4.5.4"
+    "zod": "4.6.7"
   },
   "bundleDependencies": [
     "@chuggy/worker-contract",
@@ -48,5 +48,8 @@
     "runnerConfig.mjs",
     "systemd.mjs",
     "systemdUnit.mjs"
-  ]
+  ],
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
 }
