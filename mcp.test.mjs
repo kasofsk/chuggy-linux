@@ -148,7 +148,7 @@ test("with no sign-in, a call answers a page whose answer signs the next call in
     arguments: { ticket: 7 },
   });
   assert.equal(refused.isError, true);
-  const link = /open (\S+) and sign in/u.exec(textOf(refused))?.[1];
+  const link = /(\S+\/auth\?\S+)/u.exec(textOf(refused))?.[1];
   assert.ok(link !== undefined, textOf(refused));
   const query = new URL(link).searchParams;
   const answered = await globalThis.fetch(
