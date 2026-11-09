@@ -12,8 +12,8 @@
     "chuggy-linux": "cli.mjs"
   },
   "dependencies": {
-    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.35.0/chuggy-worker-contract-1.35.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#4e23b6adec1e2176f9cd3b2d3a2d4beeb6a69e15",
+    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.45.0/chuggy-worker-contract-1.45.0.tgz",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#ad535fe926bcef46def31ef4620c9cd91f2ce1de",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.6.7"
   },
