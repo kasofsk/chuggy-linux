@@ -1582,9 +1582,9 @@ test("a pass places a session the plane offers as a session, and its end reaches
   });
   const memory = (roomMib) => ({ memory: { roomMib, ceilingMib: 16 * 1024 } });
   assert.deepEqual(pollsAsked, [
-    ["pool-token", [], 1, 2, memory(16 * 1024)],
-    ["pool-token", ["asg-1", "ses-1"], 0, 1, memory(0)],
-    ["pool-token", [], 1, 2, memory(16 * 1024)],
+    ["pool-token", [], 1, 2, { ...memory(16 * 1024), withheld: [] }],
+    ["pool-token", ["asg-1", "ses-1"], 0, 1, { ...memory(0), withheld: [] }],
+    ["pool-token", [], 1, 2, { ...memory(16 * 1024), withheld: [] }],
   ]);
   assert.deepEqual(askedUnder(asked, "ses-1"), [
     [
