@@ -22,6 +22,7 @@ import {
 } from "@chuggy/worker-contract/workerContract";
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
 import { workerRunnerReportRoute } from "@chuggy/worker-contract/workerPool";
+import { agentCredentialNameVariable } from "@chuggy/worker-core/agentCredentialSet.mjs";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   jobEngineSocketVariables,
@@ -2288,4 +2289,72 @@ test("a pool registered with --host hands a job requiring Agent:Codex the Codex 
       .evidence ?? "",
     new RegExp(`^the Codex auth file ${codex} is owned by uid`, "u"),
   );
+});
+
+/**
+ * Catches a run handing each job a selector of its own, or the container
+ * backend's selector not the one a poll's credential outcome benches: either
+ * puts every job on the first credential.
+ */
+test("two jobs under RoundRobin are handed different credential files, each told its name, and a credential a poll benches is passed over", async (t) => {
+  const first = await claudeCredentialFixture(t);
+  const second = await claudeCredentialFixture(t);
+  const { backend, state } = await codexPlacing(
+    t,
+    {
+      claudeTokenFile: undefined,
+      claudeCredential: {
+        prefer: "OAuthOnly",
+        oauth: {
+          order: "RoundRobin",
+          credentials: [
+            { name: "max-1", tokenFile: first },
+            { name: "max-2", tokenFile: second },
+          ],
+        },
+      },
+      images: codexImages,
+    },
+    ownUid,
+  );
+  /** @param {string} assignment */
+  const placed = async (assignment) => {
+    const answer = await backend.place(
+      agentRequired(assignment, "Agent:Claude"),
+      "Job",
+    );
+    assert.equal(answer.placed, "Placed", answer.evidence);
+  };
+  await placed("asg-1");
+  await placed("asg-2");
+  backend.credentialOutcomesTaken?.([
+    { assignment: "asg-1", outcome: "CreditsExhausted" },
+  ]);
+  await placed("asg-3");
+  await placed("asg-4");
+  await backend.settled();
+  /** @param {string} assignment */
+  const handed = (assignment) => {
+    const call = state.calls.find(
+      ({ argv }) =>
+        argv[0] === "run" &&
+        argv.includes(`io.chuggy.assignment=${assignment}`),
+    );
+    assert.ok(call !== undefined, assignment);
+    const file = [first, second].find((held) =>
+      call.argv.includes(
+        `type=bind,source=${held},target=${jobProviderCredentialFile},readonly`,
+      ),
+    );
+    const named = (call.envFile ?? "")
+      .split("\n")
+      .find((line) => line.startsWith(`${agentCredentialNameVariable}=`));
+    return [file, named?.slice(agentCredentialNameVariable.length + 1)];
+  };
+  assert.deepEqual(["asg-1", "asg-2", "asg-3", "asg-4"].map(handed), [
+    [first, "max-1"],
+    [second, "max-2"],
+    [second, "max-2"],
+    [second, "max-2"],
+  ]);
 });

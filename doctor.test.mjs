@@ -1262,11 +1262,11 @@ test("the Claude credential check names the kind and its settings, and never wha
   for (const [runner, detail] of [
     [
       { claudeTokenFile: at("claude-token") },
-      `Subscription, from the Claude token file ${at("claude-token")}, this runner's own`,
+      `claude: Claude OAuth (Subscription), the Claude token file ${at("claude-token")}, this runner's own and readable; not benched`,
     ],
     [
       { claudeCredential: { kind: "ApiKey", apiKeyFile: at("api-key") } },
-      `ApiKey, from the Anthropic API key file ${at("api-key")}, this runner's own`,
+      `claude: Claude ApiKey, the Anthropic API key file ${at("api-key")}, this runner's own and readable; not benched`,
     ],
     [
       {
@@ -1276,7 +1276,7 @@ test("the Claude credential check names the kind and its settings, and never wha
           apiKeyFile: at("bedrock-key"),
         },
       },
-      `Bedrock, region us-west-2, from the Bedrock API key file ${at("bedrock-key")}, this runner's own`,
+      `claude: Claude Bedrock (region us-west-2), the Bedrock API key file ${at("bedrock-key")}, this runner's own and readable; not benched`,
     ],
     [
       {
@@ -1287,7 +1287,7 @@ test("the Claude credential check names the kind and its settings, and never wha
           profile: "chuggy",
         },
       },
-      `Bedrock, region us-west-2, profile chuggy, from the AWS credentials file ${at("aws")}, this runner's own`,
+      `claude: Claude Bedrock (region us-west-2, profile chuggy), the AWS credentials file ${at("aws")}, this runner's own and readable; not benched`,
     ],
     [
       {
@@ -1298,7 +1298,7 @@ test("the Claude credential check names the kind and its settings, and never wha
           credentialsFile: at("google.json"),
         },
       },
-      `Vertex, region us-east5, project chuggy-jobs, from the Google service account key file ${at("google.json")}, this runner's own`,
+      `claude: Claude Vertex (region us-east5, project chuggy-jobs), the Google service account key file ${at("google.json")}, this runner's own and readable; not benched`,
     ],
     [
       {
@@ -1308,7 +1308,7 @@ test("the Claude credential check names the kind and its settings, and never wha
           apiKeyFile: at("api-key"),
         },
       },
-      `Foundry, resource chuggy-jobs, from the Foundry API key file ${at("api-key")}, this runner's own`,
+      `claude: Claude Foundry (resource chuggy-jobs), the Foundry API key file ${at("api-key")}, this runner's own and readable; not benched`,
     ],
   ]) {
     const { findings } = await doctored(t, {
@@ -1323,6 +1323,24 @@ test("the Claude credential check names the kind and its settings, and never wha
       assert.equal(said.includes(secret), false, secret);
   }
 });
+
+/**
+ * The first Claude credential finding, its detail past the credential's
+ * name, agent and type, which a refusal's detail opens with.
+ *
+ * @param {import("./doctor.mjs").DoctorFinding[]} findings
+ */
+function claudeRefused(findings) {
+  const finding = findings.find((found) => found.check === "Claude credential");
+  const head = /^claude: Claude \w+(?: \([^)]*\))?: /u.exec(
+    finding?.detail ?? "",
+  );
+  assert.ok(head !== null, finding?.detail);
+  return {
+    passed: finding?.passed,
+    detail: finding?.detail.slice(head[0].length),
+  };
+}
 
 test("a Claude credential's file that is no credential of its kind fails the check, saying what it lacks and never what it holds", async (t) => {
   const secret = "sk-ant-fixture-never-printed";
@@ -1389,10 +1407,7 @@ test("a Claude credential's file that is no credential of its kind fails the che
     const { findings } = await doctored(t, {
       runner: { claudeTokenFile: undefined, claudeCredential },
     });
-    assert.deepEqual(
-      findings.find((found) => found.check === "Claude credential"),
-      { check: "Claude credential", passed: false, detail },
-    );
+    assert.deepEqual(claudeRefused(findings), { passed: false, detail });
     assert.equal(findings.map(findingLine).join("\n").includes(secret), false);
   }
 });
@@ -1419,11 +1434,12 @@ test("on a pool registered with --host, the Claude credential check names the cl
     const finding = findings.find(
       (found) => found.check === "Claude credential",
     );
-    const [credential, ...rest] = (finding?.detail ?? "").split("; ");
+    const [credential, bench, ...rest] = (finding?.detail ?? "").split("; ");
     assert.match(
       credential,
-      /^Subscription, from the Claude token file \/.*\/claude-token, this runner's own$/u,
+      /^claude: Claude OAuth \(Subscription\), the Claude token file \/.*\/claude-token, this runner's own and readable$/u,
     );
+    assert.equal(bench, "not benched");
     return {
       passed: finding?.passed,
       warning: finding?.warning ?? false,
@@ -1472,6 +1488,108 @@ test("on a pool registered with --host, the Claude credential check names the cl
   });
 });
 
+/**
+ * A Claude set of two subscription tokens in turn and an API key, under
+ * `prefer`, each file in `directory` as named.
+ *
+ * @param {string} directory
+ * @param {string} prefer
+ */
+const claudeSetAt = (directory, prefer) => ({
+  claudeTokenFile: undefined,
+  claudeCredential: {
+    prefer,
+    oauth: {
+      order: "RoundRobin",
+      credentials: [
+        { name: "max-1", tokenFile: join(directory, "max-1") },
+        { name: "max-2", tokenFile: join(directory, "max-2") },
+      ],
+    },
+    apiKey: {
+      order: "InOrder",
+      credentials: [{ name: "console", apiKeyFile: join(directory, "key") }],
+    },
+  },
+});
+
+/**
+ * Catches a set failed for one credential its policy can do without, or one
+ * that cannot be read passed unwarned, or a credential's line missing its
+ * name, type, file or bench, or printing what its file holds.
+ */
+test("doctor checks each credential of a set, warning of one that cannot be read where its policy allows another that can", async (t) => {
+  const directory = await filesWritten(t, {
+    "max-1": claudeSecrets["claude-token"],
+    key: claudeSecrets["api-key"],
+  });
+  const { findings } = await doctored(t, {
+    runner: claudeSetAt(directory, "PreferOAuth"),
+  });
+  const claude = findings.filter(
+    (found) => found.check === "Claude credential",
+  );
+  assert.deepEqual(claude, [
+    {
+      check: "Claude credential",
+      passed: true,
+      detail: `max-1: Claude OAuth (Subscription), the Claude token file ${join(directory, "max-1")}, this runner's own and readable; not benched`,
+    },
+    {
+      check: "Claude credential",
+      passed: true,
+      warning: true,
+      detail: `max-2: Claude OAuth (Subscription): the Claude token file ${join(directory, "max-2")} cannot be found; save \`claude setup-token\`'s output there, alone; Claude's PreferOAuth policy allows another that is readable`,
+    },
+    {
+      check: "Claude credential",
+      passed: true,
+      detail: `console: Claude ApiKey, the Anthropic API key file ${join(directory, "key")}, this runner's own and readable; not benched`,
+    },
+  ]);
+  const said = findings.map(findingLine).join("\n");
+  for (const secret of Object.values(claudeSecrets))
+    assert.equal(said.includes(secret), false, secret);
+});
+
+/**
+ * Catches a set passed whose policy can choose no credential that can be
+ * read, because one it never chooses can.
+ */
+test("doctor fails a set whose policy allows no credential that can be read, though one it does not allow can", async (t) => {
+  const directory = await filesWritten(t, {
+    "max-2": claudeSecrets["claude-token"],
+    key: claudeSecrets["api-key"],
+  });
+  await chmod(join(directory, "max-2"), 0o640);
+  const { findings } = await doctored(t, {
+    runner: claudeSetAt(directory, "OAuthOnly"),
+  });
+  const claude = findings.filter(
+    (found) => found.check === "Claude credential",
+  );
+  assert.deepEqual(
+    claude.map(({ passed, warning, detail }) => [
+      passed,
+      warning ?? false,
+      detail.slice(0, detail.indexOf(":")),
+    ]),
+    [
+      [false, false, "max-1"],
+      [false, false, "max-2"],
+      [true, false, "console"],
+    ],
+  );
+  for (const finding of claude.slice(0, 2))
+    assert.ok(
+      finding.detail.endsWith(
+        "; Claude's OAuthOnly policy allows none that is readable",
+      ),
+      finding.detail,
+    );
+  assert.match(claude[1].detail, /is mode 640; only its owner may read/u);
+});
+
 /** The remedy a refusal of the Codex credential's file names. */
 const codexRemedy = "run codex login, which writes it to ~/.codex/auth.json";
 
@@ -1507,7 +1625,7 @@ test("the Codex credential check names its file and never what it holds, and is 
     {
       check: "Codex credential",
       passed: true,
-      detail: `the Codex auth file ${authFile}, this runner's own`,
+      detail: `codex: Codex OAuth, the Codex auth file ${authFile}, this runner's own and readable; not benched`,
     },
   );
   assert.equal(
@@ -1543,7 +1661,7 @@ test("a Codex credential's file that is no JSON object, or that a job cannot be 
       {
         check: "Codex credential",
         passed: false,
-        detail: `the Codex auth file ${authFile} is not a JSON object; ${codexRemedy}`,
+        detail: `codex: Codex OAuth: the Codex auth file ${authFile} is not a JSON object; ${codexRemedy}`,
       },
       text,
     );
@@ -1561,7 +1679,10 @@ test("a Codex credential's file that is no JSON object, or that a job cannot be 
     ],
     [
       missing,
-      new RegExp(`^the Codex auth file ${missing} cannot be found; `, "u"),
+      new RegExp(
+        `^codex: Codex OAuth: the Codex auth file ${missing} cannot be found; `,
+        "u",
+      ),
     ],
   ]) {
     const { findings } = await doctored(t, {
@@ -1616,7 +1737,7 @@ test("a Codex credential no pool here advertises Agent:Codex for is warned of, a
     (await doctored(t, options)).findings.find(
       (finding) => finding.check === "Codex credential",
     );
-  const own = `the Codex auth file ${authFile}, this runner's own`;
+  const own = `codex: Codex OAuth, the Codex auth file ${authFile}, this runner's own and readable; not benched`;
   for (const options of [
     { runner: { codexCredential: { authFile }, images: codexImages } },
     {
@@ -1669,7 +1790,7 @@ test("on a pool registered with --host, the Codex credential check names the cod
         agentVersions: { [codex]: "codex-cli 0.50.0" },
       })
     ).findings.find((finding) => finding.check === "Codex credential");
-  const own = `the Codex auth file ${authFile}, this runner's own`;
+  const own = `codex: Codex OAuth, the Codex auth file ${authFile}, this runner's own and readable; not benched`;
   assert.deepEqual(await found(bin), {
     check: "Codex credential",
     passed: true,
@@ -1681,4 +1802,54 @@ test("on a pool registered with --host, the Codex credential check names the cod
     warning: true,
     detail: `${own}; no codex is on doctor's own PATH, ${empty}, so a job on this machine itself runs no Codex`,
   });
+});
+
+/**
+ * Catches a Codex API key file read as an auth.json, or one holding more
+ * than one key passed, or printed.
+ */
+test("a Codex set's API key is held to one key alone, never printed, and its auth.json to a JSON object", async (t) => {
+  const directory = await filesWritten(t, {
+    "auth.json": JSON.stringify({ tokens: { refresh_token: codexSecret } }),
+    key: `${codexSecret}\n${codexSecret}\n`,
+  });
+  const { findings } = await doctored(t, {
+    pool: codexPool,
+    runner: {
+      images: codexImages,
+      codexCredential: {
+        prefer: "OAuthOnly",
+        oauth: {
+          order: "InOrder",
+          credentials: [
+            { name: "chatgpt", authFile: join(directory, "auth.json") },
+          ],
+        },
+        apiKey: {
+          order: "InOrder",
+          credentials: [{ name: "openai", apiKeyFile: join(directory, "key") }],
+        },
+      },
+    },
+  });
+  assert.deepEqual(
+    findings.filter((found) => found.check === "Codex credential"),
+    [
+      {
+        check: "Codex credential",
+        passed: true,
+        detail: `chatgpt: Codex OAuth, the Codex auth file ${join(directory, "auth.json")}, this runner's own and readable; not benched`,
+      },
+      {
+        check: "Codex credential",
+        passed: true,
+        warning: true,
+        detail: `openai: Codex ApiKey: the Codex API key file ${join(directory, "key")} holds more than one line; save an OpenAI API key there, alone; Codex's OAuthOnly policy allows another that is readable`,
+      },
+    ],
+  );
+  assert.equal(
+    findings.map(findingLine).join("\n").includes(codexSecret),
+    false,
+  );
 });

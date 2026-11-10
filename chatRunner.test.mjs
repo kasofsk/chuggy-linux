@@ -70,13 +70,30 @@ test("the credential is owned by this user as docker shows it, and by root as po
   assert.deepEqual(chatCredentialOwner("podman", user), { uid: 0, gid: 0 });
 });
 
-test("a host's places are its volumes and the Claude credential, and docker beside a session's user is refused", () => {
+/**
+ * What a host's places hold, its selector as the credentials it describes.
+ *
+ * @param {import("@chuggy/worker-core/chatHost.mjs").ChatSupervisorPlaces} places
+ */
+const placesHeld = ({ credentials, ...places }) => ({
+  ...places,
+  credentials: credentials?.described(),
+});
+
+test("a host's places are its volumes and a selector over the Claude credentials, and docker beside a session's user is refused", () => {
   const user = { uid: 1000, gid: 1000 };
-  assert.deepEqual(chatHostPlaces(identity, config, user), {
+  assert.deepEqual(placesHeld(chatHostPlaces(identity, config, user)), {
     volumes: chatHostVolumes(identity),
-    credentialFile: tokenFile,
     credentialOwner: user,
-    claudeCredential: { kind: "Subscription" },
+    credentials: [
+      {
+        name: "claude",
+        agent: "Claude",
+        type: "OAuth",
+        file: tokenFile,
+        bench: { state: "Available" },
+      },
+    ],
   });
   assert.deepEqual(chatHostPlaces(identity, podman, user).credentialOwner, {
     uid: 0,
@@ -99,7 +116,10 @@ test("a host's settings are the core's defaults where the file names none, its o
   assert.equal(settings.sessionsMax, chatHostSessionsMaxDefault);
   assert.equal(settings.sessionMemoryBytes, chatSessionMemoryBytesDefault);
   assert.equal(settings.outputBytesMax, config.outputBytesMax);
-  assert.deepEqual(settings.places, chatHostPlaces(identity, config, user));
+  assert.deepEqual(
+    placesHeld(settings.places),
+    placesHeld(chatHostPlaces(identity, config, user)),
+  );
   const own = chatHostSettings(
     identity,
     {
@@ -176,6 +196,58 @@ test("a credential not this user's alone, or not alone in its directory, is refu
     (await chatCredentialRefusal(at, uid)) ?? "",
     /holds pool\.json beside the credential .*, and a chat host's supervisor is handed the directory whole/u,
   );
+});
+
+/**
+ * Catches a chat host started where a Claude credential of its set other
+ * than the first is not this user's alone or shares its directory, which the
+ * supervisor is handed whole whichever credential a session runs on.
+ */
+test("every Claude credential of a set is held to what the supervisor is handed, not just the first", async (t) => {
+  const directory = await scratch(t);
+  /** @param {string} name */
+  const tokenAt = async (name) => {
+    await mkdir(join(directory, name));
+    const file = join(directory, name, "token");
+    await writeFile(file, "x", { mode: 0o600 });
+    await chmod(file, 0o600);
+    return file;
+  };
+  const first = await tokenAt("max-1");
+  const second = await tokenAt("max-2");
+  const uid = process.getuid?.() ?? -1;
+  const at = /** @type {import("./runnerConfig.mjs").RunnerConfig} */ ({
+    ...config,
+    claudeTokenFile: undefined,
+    claudeCredential: {
+      prefer: "OAuthOnly",
+      oauth: {
+        order: "RoundRobin",
+        credentials: [
+          { name: "max-1", tokenFile: first },
+          { name: "max-2", tokenFile: second },
+        ],
+      },
+    },
+  });
+  assert.equal(await chatCredentialRefusal(at, uid), undefined);
+  await chmod(second, 0o640);
+  assert.match(
+    (await chatCredentialRefusal(at, uid)) ?? "",
+    new RegExp(`^the Claude token file ${second} is mode 640`, "u"),
+  );
+  await chmod(second, 0o600);
+  await writeFile(join(directory, "max-2", "other"), "");
+  assert.match(
+    (await chatCredentialRefusal(at, uid)) ?? "",
+    /holds other beside the credential .*max-2\/token/u,
+  );
+  const binds = chatSupervisorContainer(
+    "img:1",
+    chatHostPlaces(identity, at, { uid: 1000, gid: 1000 }),
+    2 ** 30,
+  ).binds.map(({ source }) => source);
+  assert.deepEqual(binds, [join(directory, "max-1"), join(directory, "max-2")]);
 });
 
 test("a denied host exits for the unit not to restart it, and an updated one for it to", async () => {

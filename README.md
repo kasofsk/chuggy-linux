@@ -84,12 +84,12 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions, never a personal runner's. Default 1. |
 | `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. A personal runner runs none whatever it says. Default 2. |
 | `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
-| `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, below, in place of `claudeTokenFile`.                     |
-| `codexCredential`  | no       | `{ "authFile": … }`, the `auth.json` Codex runs on, below; 0.25.0 or later. Default none.                 |
+| `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, or a set of them, below, in place of `claudeTokenFile`.   |
+| `codexCredential`  | no       | `{ "authFile": … }`, the `auth.json` Codex runs on, or a set, below; 0.25.0 or later. Default none.       |
 | `capabilities`     | no       | What this machine meets beside its platform and agents, which each pool's service advertises in place of what `--capability` declared; never a platform, each once; 0.27.0 or later. Where it is absent, each advertises the rest of what its pool was registered with. |
 | `timeoutSecsMax`   | yes      | The longest a job may run; a job is killed at the sooner of this and its assignment's deadline.            |
 | `outputBytesMax`   | yes      | The most output a job may report.                                                                          |
-| `environment`      | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE`, `CHUGGY_HOST_JOB`, `CLAUDE_CODE_OAUTH_TOKEN`, `CHUG_WORKER_CLAUDE_CREDENTIAL`, and the job's `CHUG_TENANT`, `CHUG_PROJECT`, `CHUG_REPOSITORY`, `CHUG_TICKET`, `CHUG_ATTEMPT` and `CHUG_STAGE` are the runner's, on a pool registered with `--host` so are `HOME` and `TMPDIR`, and with `engineSocket` so are those it sets. |
+| `environment`      | no       | Variables handed to every job. `CHUG_WORKER_TASK`, `CHUG_WORKER_WORKSPACE`, `CHUGGY_HOST_JOB`, `CLAUDE_CODE_OAUTH_TOKEN`, `CHUG_WORKER_CLAUDE_CREDENTIAL`, `CHUG_WORKER_CODEX_CREDENTIAL`, `CHUG_WORKER_CREDENTIAL_NAME`, `CHUG_WORKER_CREDENTIALS_SCRUBBED`, and the job's `CHUG_TENANT`, `CHUG_PROJECT`, `CHUG_REPOSITORY`, `CHUG_TICKET`, `CHUG_ATTEMPT` and `CHUG_STAGE` are the runner's, on a pool registered with `--host` so are `HOME` and `TMPDIR`, and with `engineSocket` so are those it sets. |
 | `network`          | no       | The bridge network jobs join, made if missing. Default `chuggy-jobs`; never `host`.                        |
 | `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
@@ -118,7 +118,7 @@ A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlie
 
 A session is a project's chat or lead, run on this machine's Claude credential, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same credential, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
-**The Claude credential** is one file, mode 600 and yours, and the settings its kind needs. `claudeTokenFile` names a subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other:
+**The Claude credential** is one file, mode 600 and yours, and the settings its kind needs, or a set of them, below. `claudeTokenFile` names a subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other:
 
 ```json
 "claudeCredential": { "kind": "Subscription", "tokenFile": "/home/you/.config/chuggy-linux/claude-token" }
@@ -137,13 +137,35 @@ A session is a project's chat or lead, run on this machine's Claude credential, 
 
 Every job and session handed this file is told the kind; it is mounted read-only into a container, or read where it is by a job on this machine itself. The service never reads it, `doctor` alone does, and every secret in it is scrubbed from what a job or session reports. Claude Code is told its credential is the runner's, so a checkout's own settings choose no other provider and send the credential nowhere else. It is handed only the credential `claudeCredential` or `claudeTokenFile` names: a variable in `environment` that would choose another or where it is sent, such as `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` or, beside Bedrock, `AWS_PROFILE`, reaches the commands a job runs for the project, its checks among them, but never Claude Code or a command it runs. Every kind but Subscription is billed by its provider.
 
-**The Codex credential** is `codexCredential`, the `auth.json` `codex login` writes, mode 600 and yours, whether you log in with ChatGPT or an API key:
+**The Codex credential** is `codexCredential`, the `auth.json` `codex login` writes, mode 600 and yours, whether you log in with ChatGPT or an API key, or a set, below:
 
 ```json
 "codexCredential": { "authFile": "/home/you/.codex/auth.json" }
 ```
 
 A job whose task requires `Agent:Codex` is handed this file in place of the Claude credential's, as that one is handed; every other job and every session is handed the Claude one. So a task Codex runs states its capabilities rather than pinning an image, since a job that pins one is handed the Claude file. On a runner that names no `codexCredential`, a job requiring `Agent:Codex` is handed the Claude one; a job requiring two agents is refused. A job copies `auth.json` into a Codex home of its own that is thrown away, so keep the file here fresh yourself. `codexCredential` needs chuggy-linux 0.25.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
+
+**A credential set** names an agent's OAuth credentials and API keys, each with a `name`, and a `prefer` policy between them: `PreferOAuth` runs on an OAuth credential while one is available and on an API key otherwise, `OAuthOnly` and `ApiKeyOnly` on that type alone. Within a type, `order` is `InOrder`, the first available, or `RoundRobin`, the next after the last one chosen. Claude's OAuth credential is a subscription's token, `tokenFile`; Codex's is a ChatGPT login's `auth.json`, `authFile`; an API key is `apiKeyFile`, one key alone. Two Claude subscriptions in turn with an API key behind them, and a ChatGPT login whose API key is never run on:
+
+```json
+"claudeCredential": {
+  "prefer": "PreferOAuth",
+  "oauth": { "order": "RoundRobin", "credentials": [
+    { "name": "max-1", "tokenFile": "/home/you/.config/chuggy-linux/claude/max-1/token" },
+    { "name": "max-2", "tokenFile": "/home/you/.config/chuggy-linux/claude/max-2/token" }
+  ] },
+  "apiKey": { "order": "InOrder", "credentials": [
+    { "name": "console", "apiKeyFile": "/home/you/.config/chuggy-linux/claude/console/key" }
+  ] }
+},
+"codexCredential": {
+  "prefer": "OAuthOnly",
+  "oauth": { "order": "InOrder", "credentials": [{ "name": "chatgpt", "authFile": "/home/you/.codex/auth.json" }] },
+  "apiKey": { "order": "InOrder", "credentials": [{ "name": "openai", "apiKeyFile": "/home/you/.config/chuggy-linux/codex/openai-key" }] }
+}
+```
+
+Every file in a set is held to what a single credential's is, mode 600 and yours; a name is letters, digits, `-` and `_`, and names each credential once across both agents. A set whose policy allows none it names is refused, and so is `claudeTokenFile` beside `claudeCredential`. Bedrock, Vertex and Foundry are a single credential, never a set. Each pool's service, and each chat host, chooses for its own jobs and sessions, and its turns and what sits out are its own. A run reports the name of the credential it ran on, never its value. A credential that hit a usage limit sits out until the reset the limit names, and one out of credits until the service restarts; where every one its policy allows is sitting out, the one back soonest is run on. A chat host's supervisor is handed the directory of every Claude credential of the set, so each must be alone in its own. `doctor` prints each credential's name, agent, type, file, whether it can be read and whether it sits out, and fails a set whose policy allows none that can be read; it runs apart from the service, so it says each is not benched whatever the service has set aside. Each `claudeTokenFile`, `claudeCredential` of one kind and `codexCredential` naming `authFile` is a set of one, named `claude` or `codex`. A set needs a chuggy-linux later than 0.47.0: 0.47.0 and earlier refuse the file, and the service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing one.
 
 A job runs as uid 1000, the image's user, and reads the credential's file as that uid, so the file must be yours. Rootless podman maps that uid onto you. Docker runs it as this machine's uid 1000, so docker serves only a runner that is uid 1000, and refuses any other user: use rootless podman there. Rootless docker and docker with userns-remap are refused too, for the same reason: use rootful docker without userns-remap, or rootless podman. Docker must be local, reached through a unix socket by your current docker context.
 

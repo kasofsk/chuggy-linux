@@ -6,10 +6,11 @@
  * it against the pool files instead. The pool's credentials are the worker
  * core's to read.
  *
- * THE FILE NAMES ONE CLAUDE CREDENTIAL, by `claudeCredential` of any kind the
- * core takes or by `claudeTokenFile`, a subscription's, and may name another
- * agent's beside it, which a job requiring that agent is handed in its place:
- * Codex's by `codexCredential`.
+ * THE FILE NAMES A CLAUDE CREDENTIAL SET, by `claudeCredential` or by
+ * `claudeTokenFile`, a subscription's token as a set of one, and may name
+ * Codex's beside it by `codexCredential`, which a job requiring that agent
+ * is handed in its place. Each set is the core's: one credential as the file
+ * always named it, or a policy over OAuth credentials and API keys.
  *
  * A MEMBER'S CHAT HOST READS THE SAME FILE: its engine, its Claude credential,
  * its network and whether it updates itself are the file's, and `chat` holds
@@ -22,11 +23,13 @@ import { basename, isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 import {
-  claudeCredentialDescribed,
-  claudeCredentialFile,
-  claudeCredentialSchema,
-  claudeCredentialSetting,
-} from "@chuggy/worker-core/claudeCredential.mjs";
+  agentCredentialNamesRefined,
+  agentCredentialSelector,
+  agentCredentialSets,
+  claudeCredentialSetSchema,
+  codexCredentialSetSchema,
+} from "@chuggy/worker-core/agentCredentialSet.mjs";
+import { claudeCredentialDescribed } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   chatHostConfigSchema,
   chatHostConfigured,
@@ -47,8 +50,9 @@ import { registerDeclaredSchema } from "@chuggy/worker-core/register.mjs";
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
- * @typedef {import("@chuggy/worker-core/claudeCredential.mjs").ClaudeCredential} ClaudeCredential
- * @typedef {import("@chuggy/worker-core/claudeCredential.mjs").ClaudeCredentialSetting} ClaudeCredentialSetting
+ * @typedef {import("@chuggy/worker-core/agentCredentialSet.mjs").AgentCredential} AgentCredential
+ * @typedef {import("@chuggy/worker-core/agentCredentialSet.mjs").AgentCredentialSets} AgentCredentialSets
+ * @typedef {import("@chuggy/worker-core/agentCredentialSet.mjs").AgentCredentialSelector} AgentCredentialSelector
  *
  * @typedef {object} RunnerPaths
  * @property {string} config
@@ -111,29 +115,82 @@ const credentialFileSchema = z
     error: "cannot be named in a bind mount",
   });
 
-/** The keys a credential of any kind names its file under. */
+/** The keys a credential of a set names its file under. */
 const credentialFileKeys = /** @type {const} */ ([
   "tokenFile",
   "apiKeyFile",
   "credentialsFile",
+  "authFile",
 ]);
 
-/** The core's credential, its file held to what a bind mount names. */
-const credentialSchema = claudeCredentialSchema.superRefine(
-  (credential, context) => {
-    for (const key of credentialFileKeys) {
-      const file = /** @type {Record<string, unknown>} */ (credential)[key];
-      if (file === undefined) continue;
-      for (const issue of credentialFileSchema.safeParse(file).error?.issues ??
-        [])
-        context.addIssue({
-          code: "custom",
-          path: [key],
-          message: issue.message,
-        });
-    }
-  },
-);
+/**
+ * Each file a set names and the path it is named at: one credential's at its
+ * own keys, and a policy's under each of its pools' credentials.
+ *
+ * @param {Record<string, unknown>} document
+ * @returns {Array<{path: Array<string | number>, file: unknown}>}
+ */
+function credentialSetFiles(document) {
+  /** @param {Record<string, unknown>} credential */
+  const named = (credential) =>
+    credentialFileKeys.flatMap((key) =>
+      credential[key] === undefined
+        ? []
+        : [{ path: [key], file: credential[key] }],
+    );
+  if (!("prefer" in document)) return named(document);
+  return Object.entries(document).flatMap(([poolKey, pool]) => {
+    const credentials = /** @type {{credentials?: unknown}} */ (pool ?? {})
+      .credentials;
+    if (!Array.isArray(credentials)) return [];
+    return credentials.flatMap((credential, index) =>
+      named(credential).map(({ path, file }) => ({
+        path: [poolKey, "credentials", index, ...path],
+        file,
+      })),
+    );
+  });
+}
+
+/**
+ * The core's set, each file it names held to what a bind mount names. A
+ * document naming `prefer` is read by the set's policy alone and any other by
+ * its one credential alone, so a refusal names what that form got wrong
+ * rather than that the document is neither.
+ *
+ * @template {z.ZodUnion<[z.ZodType, z.ZodObject]>} T
+ * @param {T} setSchema the core's union of one credential and a policy
+ * @returns {z.ZodType<z.output<T>>}
+ */
+function credentialSetSchema(setSchema) {
+  const policy = setSchema.options.find(
+    (option) => option instanceof z.ZodObject && "prefer" in option.shape,
+  );
+  const single = setSchema.options.find((option) => option !== policy);
+  if (policy === undefined || single === undefined)
+    throw new Error(
+      "the core's credential set is no union of one and a policy",
+    );
+  return z.unknown().transform((document, context) => {
+    const read = (
+      typeof document === "object" && document !== null && "prefer" in document
+        ? policy
+        : single
+    ).safeParse(document);
+    const issues = read.success
+      ? credentialSetFiles(
+          /** @type {Record<string, unknown>} */ (read.data),
+        ).flatMap(({ path, file }) =>
+          (credentialFileSchema.safeParse(file).error?.issues ?? []).map(
+            (issue) => ({ path, message: issue.message }),
+          ),
+        )
+      : read.error.issues;
+    for (const { path, message } of issues)
+      context.addIssue({ code: "custom", path: [...path], message });
+    return issues.length === 0 ? read.data : z.NEVER;
+  });
+}
 
 export const runnerConfigSchema = z
   .strictObject({
@@ -144,12 +201,10 @@ export const runnerConfigSchema = z
     sessionsMax: nonnegativeSchema.default(2),
     /** Where `claude setup-token`'s output was saved, a subscription's credential. */
     claudeTokenFile: credentialFileSchema.optional(),
-    /** The credential Claude Code runs on, of any kind, in place of `claudeTokenFile`. */
-    claudeCredential: credentialSchema.optional(),
-    /** The `auth.json` `codex login` writes, which a job requiring `Agent:Codex` is handed. */
-    codexCredential: z
-      .strictObject({ authFile: credentialFileSchema })
-      .optional(),
+    /** The credentials Claude Code runs on, one of any kind or a set, in place of `claudeTokenFile`. */
+    claudeCredential: credentialSetSchema(claudeCredentialSetSchema).optional(),
+    /** The credentials a job requiring `Agent:Codex` runs on: the `auth.json` `codex login` writes, or a set. */
+    codexCredential: credentialSetSchema(codexCredentialSetSchema).optional(),
     timeoutSecsMax: positiveSchema,
     outputBytesMax: positiveSchema,
     environment: environmentSchema.default({}),
@@ -222,6 +277,7 @@ export const runnerConfigSchema = z
   })
   .superRefine((config, context) => {
     configCredentialChecked(config, context);
+    agentCredentialNamesRefined(runnerCredentialDocuments(config), context);
     configLimitsChecked(config, context);
     if (!config.engineSocket) return;
     for (const name of Object.keys(
@@ -299,62 +355,82 @@ function configLimitsChecked(config, context) {
 }
 
 /**
- * The Claude credential a checked file names: its `claudeCredential`, or a
- * subscription's token where it names `claudeTokenFile`.
+ * The set each agent's key names, Claude's `claudeTokenFile` as the
+ * subscription's token it is.
+ *
+ * @param {Pick<RunnerConfig, "claudeTokenFile" | "claudeCredential" | "codexCredential">} config
+ */
+function runnerCredentialDocuments(config) {
+  return {
+    claudeCredential:
+      config.claudeCredential ??
+      (config.claudeTokenFile === undefined
+        ? undefined
+        : {
+            kind: /** @type {const} */ ("Subscription"),
+            tokenFile: config.claudeTokenFile,
+          }),
+    codexCredential: config.codexCredential,
+  };
+}
+
+/**
+ * The credential sets a checked file names, by agent: Claude's from
+ * `claudeCredential`, or `claudeTokenFile` as a subscription's token, and
+ * Codex's where it names `codexCredential`.
  *
  * @param {RunnerConfig} config
- * @returns {ClaudeCredential}
+ * @returns {AgentCredentialSets}
  */
-export function runnerClaudeCredential(config) {
-  if (config.claudeCredential !== undefined) return config.claudeCredential;
-  if (config.claudeTokenFile === undefined)
+export function runnerCredentialSets(config) {
+  const documents = runnerCredentialDocuments(config);
+  if (documents.claudeCredential === undefined)
     throw new Error("the runner's file names no Claude credential");
-  return { kind: "Subscription", tokenFile: config.claudeTokenFile };
+  return agentCredentialSets(documents);
 }
 
 /** The agent `codexCredential` is the credential of, as an `Agent:` capability names it. */
 export const runnerCodexAgent = "Codex";
 
-/** How a refusal names the Codex credential's file, and what its owner does to make one. */
+/** How a refusal names a Codex credential's file of each type, and what its owner does to make one. */
 export const codexCredentialDescribed = {
-  label: "Codex auth file",
-  remedy: "run codex login, which writes it to ~/.codex/auth.json",
+  OAuth: {
+    label: "Codex auth file",
+    remedy: "run codex login, which writes it to ~/.codex/auth.json",
+  },
+  ApiKey: {
+    label: "Codex API key file",
+    remedy: "save an OpenAI API key there, alone",
+  },
 };
 
 /**
- * What the backends are handed of a checked file's credentials: the Claude
- * credential's file and the setting that names its kind, which every run
- * names so that the core withholds what would choose another, and the file of
- * each other agent it names a credential for, by that agent's name.
+ * What the backends are handed of a checked file's credentials: a selector
+ * over its sets, which chooses the credential each workload runs on and is
+ * the one a service holds for its life.
  *
  * @param {RunnerConfig} config
- * @returns {{tokenFile: string, claudeCredential: ClaudeCredentialSetting, agentCredentialFiles: Record<string, string>}}
+ * @returns {{credentials: AgentCredentialSelector}}
  */
 export function runnerCredentialsHanded(config) {
-  const credential = runnerClaudeCredential(config);
-  return {
-    tokenFile: claudeCredentialFile(credential),
-    claudeCredential: claudeCredentialSetting(credential),
-    agentCredentialFiles: {
-      ...(config.codexCredential === undefined
-        ? {}
-        : { [runnerCodexAgent]: config.codexCredential.authFile }),
-    },
-  };
+  return { credentials: agentCredentialSelector(runnerCredentialSets(config)) };
 }
 
 /**
- * How a refusal names the credential file of an agent, and what its owner
- * does to make one: Claude's by the kind its setting names.
+ * How a refusal names a credential's file, and what its owner does to make
+ * one: Claude's by the kind its setting names, Codex's by its type.
  *
- * @param {ClaudeCredentialSetting} claudeCredential
- * @param {string} agent
+ * @param {AgentCredential} credential
  * @returns {{label: string, remedy: string}}
  */
-export function runnerCredentialDescribed(claudeCredential, agent) {
-  return agent === runnerCodexAgent
-    ? codexCredentialDescribed
-    : claudeCredentialDescribed(claudeCredential);
+export function runnerCredentialDescribed(credential) {
+  if (credential.agent === runnerCodexAgent)
+    return codexCredentialDescribed[
+      credential.type === "ApiKey" ? "ApiKey" : "OAuth"
+    ];
+  if (credential.setting === undefined)
+    throw new Error(`the Claude credential ${credential.name} names no kind`);
+  return claudeCredentialDescribed(credential.setting);
 }
 
 /**

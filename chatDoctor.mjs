@@ -1,7 +1,7 @@
 /**
  * What `doctor` checks of a member's chat host beyond what it checks of any
  * pool: its settings and the memory its supervisor's engine is asked to cap
- * it at; the Claude credential's directory, which the supervisor is given
+ * it at; each Claude credential's directory, which the supervisor is given
  * whole; whether a session's user can be run beside this one; a
  * supervisor's container no service here runs, which refuses every start;
  * and the image the supervisor runs, which doctor pulls where it is not
@@ -12,7 +12,7 @@
  * supervisor's container is its own, and nothing here says to remove it.
  */
 
-import { claudeCredentialFile } from "@chuggy/worker-core/claudeCredential.mjs";
+import { agentCredentialSetCredentials } from "@chuggy/worker-core/agentCredentialSet.mjs";
 import {
   chatCredentialAloneRefusal,
   chatHostMemoryBytes,
@@ -31,7 +31,7 @@ import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
 import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
 
 import { chatDockerUidRefusal, chatHostSettings } from "./chatRunner.mjs";
-import { runnerClaudeCredential } from "./runnerConfig.mjs";
+import { runnerCredentialSets } from "./runnerConfig.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus} ChatHostStatus
@@ -158,23 +158,27 @@ export async function chatSessionUsersFinding(engine, name, uid) {
 }
 
 /**
- * Whether the Claude credential is in a directory of its own, which the
- * supervisor is given whole.
+ * Whether each Claude credential is in a directory of its own, which the
+ * supervisor is given whole whichever credential a session runs on.
  *
  * @param {RunnerConfig} config
  * @returns {Promise<DoctorFinding>}
  */
 export async function chatCredentialDirectoryFinding(config) {
   const check = "chat credential directory";
-  const file = claudeCredentialFile(runnerClaudeCredential(config));
-  const refusal = await chatCredentialAloneRefusal(file);
-  return refusal === undefined
-    ? {
-        check,
-        passed: true,
-        detail: `${file} is alone in its directory, which the chat supervisor is given read-only`,
-      }
-    : { check, passed: false, detail: refusal };
+  const set = runnerCredentialSets(config).Claude;
+  const files = (
+    set === undefined ? [] : agentCredentialSetCredentials(set)
+  ).map((credential) => credential.file);
+  for (const file of files) {
+    const refusal = await chatCredentialAloneRefusal(file);
+    if (refusal !== undefined) return { check, passed: false, detail: refusal };
+  }
+  return {
+    check,
+    passed: true,
+    detail: `${files.join(", ")} ${files.length === 1 ? "is" : "are each"} alone in its directory, which the chat supervisor is given read-only`,
+  };
 }
 
 /**
