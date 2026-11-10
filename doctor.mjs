@@ -246,8 +246,9 @@ async function hostAgentFound(input, config, command, runtime) {
  * Each credential of `agent`'s set the runner's file names, one finding
  * each, held to the rule a run holds its file to and then read, as only
  * doctor reads it, and held to what a file of its type says. Each names the
- * credential's name, agent, type and settings, its file and its bench as
- * the core describes them, and never what the file holds. A credential that
+ * credential's name, agent, type and settings and its file as the core
+ * describes them, and never what the file holds; its bench is the service's,
+ * which this process cannot read. A credential that
  * cannot be read fails where its set's policy allows none that can, and is
  * warned of where it allows another; `every` fails each one, as a chat host
  * that is handed every one refuses to start without it.
@@ -295,7 +296,7 @@ async function agentCredentialFindings(input, config, agent, reader, every) {
       return {
         check,
         passed: true,
-        detail: `${head}, the ${runnerCredentialDescribed(credential).label} ${described.file}, this runner's own and readable; ${agentCredentialBenchSaid(described.bench)}`,
+        detail: `${head}, the ${runnerCredentialDescribed(credential).label} ${described.file}, this runner's own and readable; its bench is the service's, which doctor cannot read`,
       };
     const detail = `${head}: ${refusal}${every ? "" : policy}`;
     return every || !readable
@@ -357,25 +358,6 @@ function agentCredentialSettingsSaid(credential) {
           : [String(value)],
   );
   return said.length === 0 ? "" : ` (${said.join(", ")})`;
-}
-
-/**
- * Where a credential's bench stands, as the core's describe export answers
- * it in this process.
- *
- * @param {import("@chuggy/worker-core/agentCredentialSet.mjs").AgentCredentialBenchState} bench
- */
-function agentCredentialBenchSaid(bench) {
-  switch (bench.state) {
-    case "Available":
-      return "not benched";
-    case "Benched":
-      return `benched until ${new Date(bench.until).toISOString()}`;
-    case "BenchedUntilRestart":
-      return "benched until the service restarts";
-    default:
-      throw new TypeError("a bench state is none of a bench's");
-  }
 }
 
 /**

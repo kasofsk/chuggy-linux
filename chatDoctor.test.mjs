@@ -581,7 +581,7 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
   assert.match(
     findings[3].detail,
     new RegExp(
-      `^claude: Claude OAuth \\(Subscription\\), the Claude token file ${tokenFile}, this runner's own and readable; not benched$`,
+      `^claude: Claude OAuth \\(Subscription\\), the Claude token file ${tokenFile}, this runner's own and readable; its bench is the service's, which doctor cannot read$`,
       "u",
     ),
   );
