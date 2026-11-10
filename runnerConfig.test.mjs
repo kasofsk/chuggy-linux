@@ -27,6 +27,7 @@ import {
   runnerChatSettingsLine,
   runnerConfig,
   runnerCredentialDescribed,
+  runnerCredentialSets,
   runnerCredentialsHanded,
   runnerConfigLimits,
   podmanRegistriesConf,
@@ -837,16 +838,20 @@ test("a file may name a Codex credential's auth.json beside the Claude one, hand
     await written(directory, { ...minimal, codexCredential: { authFile } }),
   );
   assert.deepEqual(read.codexCredential, { authFile });
-  assert.deepEqual(runnerCredentialsHanded(read), {
-    tokenFile: minimal.claudeTokenFile,
-    claudeCredential: { kind: "Subscription" },
-    agentCredentialFiles: { Codex: authFile },
+  const { credentials } = runnerCredentialsHanded(read);
+  assert.deepEqual(credentials.agents, ["Claude", "Codex"]);
+  assert.deepEqual(credentials.chosen("Codex"), {
+    agent: "Codex",
+    name: "codex",
+    type: "OAuth",
+    file: authFile,
   });
+  assert.equal(credentials.chosen("Claude")?.file, minimal.claudeTokenFile);
   assert.deepEqual(
     runnerCredentialsHanded(
       await runnerConfig(await written(directory, minimal)),
-    ).agentCredentialFiles,
-    {},
+    ).credentials.agents,
+    ["Claude"],
   );
   for (const [codexCredential, why] of [
     [
@@ -861,7 +866,7 @@ test("a file may name a Codex credential's auth.json beside the Claude one, hand
       { authFile, kind: "ChatGPT" },
       /codexCredential Unrecognized key: "kind"/u,
     ],
-    [{}, /codexCredential\.authFile Invalid input/u],
+    [{}, /codexCredential\.authFile is required: a file/u],
   ])
     await assert.rejects(
       runnerConfig(await written(directory, { ...minimal, codexCredential })),
@@ -877,7 +882,12 @@ test("a Codex credential's file a job cannot be handed is refused as a Claude on
   const directory = await scratch(t);
   const file = join(directory, "auth.json");
   const subscription = { kind: /** @type {const} */ ("Subscription") };
-  const codex = runnerCredentialDescribed(subscription, "Codex");
+  const codex = runnerCredentialDescribed({
+    agent: "Codex",
+    name: "codex",
+    type: "OAuth",
+    file,
+  });
   assert.equal(
     await credentialFileRefusal(codex, file, "podman", ownUid),
     `the Codex auth file ${file} cannot be found; run codex login, which writes it to ~/.codex/auth.json`,
@@ -892,9 +902,223 @@ test("a Codex credential's file a job cannot be handed is refused as a Claude on
     /^docker runs a job as uid 1000, and this runner is uid 1234, so no job could read the Codex auth file /u,
   );
   assert.deepEqual(
-    runnerCredentialDescribed(subscription, "Claude"),
+    runnerCredentialDescribed({
+      agent: "Claude",
+      name: "claude",
+      type: "OAuth",
+      file,
+      setting: subscription,
+    }),
     claudeCredentialDescribed(subscription),
   );
+  assert.equal(
+    await credentialFileRefusal(
+      runnerCredentialDescribed({
+        agent: "Codex",
+        name: "codex-key",
+        type: "ApiKey",
+        file: join(directory, "missing"),
+      }),
+      join(directory, "missing"),
+      "podman",
+      ownUid,
+    ),
+    `the Codex API key file ${join(directory, "missing")} cannot be found; save an OpenAI API key there, alone`,
+  );
+});
+
+/** Two Claude subscription tokens in turn, an API key behind them, and a Codex login beside an API key it never runs on. */
+const sets = {
+  claudeCredential: {
+    prefer: "PreferOAuth",
+    oauth: {
+      order: "RoundRobin",
+      credentials: [
+        { name: "max-1", tokenFile: "/home/op/claude/max-1/token" },
+        { name: "max-2", tokenFile: "/home/op/claude/max-2/token" },
+      ],
+    },
+    apiKey: {
+      order: "InOrder",
+      credentials: [{ name: "console", apiKeyFile: "/home/op/claude/key" }],
+    },
+  },
+  codexCredential: {
+    prefer: "OAuthOnly",
+    oauth: {
+      order: "InOrder",
+      credentials: [{ name: "chatgpt", authFile: "/home/op/.codex/auth.json" }],
+    },
+    apiKey: {
+      order: "InOrder",
+      credentials: [{ name: "openai", apiKeyFile: "/home/op/codex/key" }],
+    },
+  },
+};
+
+/**
+ * Catches a set the core takes refused, or read other than as named, or a
+ * selector that does not take its turns.
+ */
+test("a file names each agent's credential set as the core reads it, and the selector it is handed chooses by its policy", async (t) => {
+  const directory = await scratch(t);
+  const read = await runnerConfig(
+    await written(directory, { ...unnamed, ...sets }),
+  );
+  assert.deepEqual(read.claudeCredential, sets.claudeCredential);
+  assert.deepEqual(read.codexCredential, sets.codexCredential);
+  const { credentials } = runnerCredentialsHanded(read);
+  assert.deepEqual(credentials.agents, ["Claude", "Codex"]);
+  assert.deepEqual(
+    [1, 2, 3].map(() => credentials.chosen("Claude")?.name),
+    ["max-1", "max-2", "max-1"],
+  );
+  assert.deepEqual(
+    [1, 2].map(() => credentials.chosen("Codex")?.name),
+    ["chatgpt", "chatgpt"],
+  );
+  assert.deepEqual(
+    credentials
+      .described()
+      .map(({ name, agent, type, file }) => [name, agent, type, file]),
+    [
+      ["max-1", "Claude", "OAuth", "/home/op/claude/max-1/token"],
+      ["max-2", "Claude", "OAuth", "/home/op/claude/max-2/token"],
+      ["console", "Claude", "ApiKey", "/home/op/claude/key"],
+      ["chatgpt", "Codex", "OAuth", "/home/op/.codex/auth.json"],
+      ["openai", "Codex", "ApiKey", "/home/op/codex/key"],
+    ],
+  );
+});
+
+/**
+ * Catches a form the file took before the sets read differently now: each
+ * stays a set of one, named for its agent, its kind its own.
+ */
+test("every form a file named its credentials by before the sets is read as it was, each a set of one named for its agent", async (t) => {
+  const directory = await scratch(t);
+  for (const [named, claude] of [
+    [{ claudeTokenFile: minimal.claudeTokenFile }, credentials[0]],
+    ...credentials.map((claudeCredential) => [
+      { claudeCredential },
+      claudeCredential,
+    ]),
+  ]) {
+    const read = await runnerConfig(
+      await written(directory, {
+        ...unnamed,
+        ...named,
+        codexCredential: { authFile: "/home/op/.codex/auth.json" },
+      }),
+    );
+    assert.deepEqual(
+      Object.fromEntries(
+        Object.entries(named).map(([key]) => [key, read[key]]),
+      ),
+      named,
+    );
+    const described = runnerCredentialsHanded(read).credentials.described();
+    const file = Object.entries(claude).find(([key]) =>
+      key.endsWith("File"),
+    )?.[1];
+    assert.deepEqual(
+      described.map(({ name, agent, file: held }) => [name, agent, held]),
+      [
+        ["claude", "Claude", file],
+        ["codex", "Codex", "/home/op/.codex/auth.json"],
+      ],
+      JSON.stringify(named),
+    );
+    const sets = runnerCredentialSets(read);
+    assert.equal(
+      "fixed" in /** @type {object} */ (sets.Claude),
+      !["Subscription", "ApiKey"].includes(claude.kind),
+      claude.kind,
+    );
+  }
+});
+
+/** Each set refused, and what its refusal says. */
+/** @param {Record<string, unknown>} change */
+const claudeChanged = (change) => ({
+  claudeCredential: { ...sets.claudeCredential, ...change },
+});
+const refusedSets = [
+  [
+    claudeChanged({
+      oauth: {
+        order: "RoundRobin",
+        credentials: [{ name: "max-1", tokenFile: "max-1/token" }],
+      },
+    }),
+    /^claudeCredential\.oauth\.credentials\.0\.tokenFile must be an absolute path$/u,
+  ],
+  [
+    claudeChanged({
+      apiKey: {
+        order: "InOrder",
+        credentials: [{ name: "console", apiKeyFile: "/k,readonly=false" }],
+      },
+    }),
+    /^claudeCredential\.apiKey\.credentials\.0\.apiKeyFile cannot be named in a bind mount$/u,
+  ],
+  [
+    {
+      ...sets,
+      codexCredential: {
+        ...sets.codexCredential,
+        apiKey: {
+          order: "InOrder",
+          credentials: [{ name: "max-2", apiKeyFile: "/home/op/codex/key" }],
+        },
+      },
+    },
+    /^codexCredential names the credential max-2, and another credential of this runner's has that name; name each once$/u,
+  ],
+  [
+    {
+      claudeTokenFile: minimal.claudeTokenFile,
+      codexCredential: {
+        prefer: "ApiKeyOnly",
+        apiKey: {
+          order: "InOrder",
+          credentials: [{ name: "claude", apiKeyFile: "/home/op/codex/key" }],
+        },
+      },
+    },
+    /^codexCredential names the credential claude, and another credential of this runner's has that name; name each once$/u,
+  ],
+  [
+    claudeChanged({ prefer: "ApiKeyOnly", apiKey: undefined }),
+    /^claudeCredential\.prefer is ApiKeyOnly, and the set names no credential it allows$/u,
+  ],
+  [
+    claudeChanged({ order: "RoundRobin" }),
+    /^claudeCredential Unrecognized key: "order"$/u,
+  ],
+  [
+    { ...sets, claudeTokenFile: minimal.claudeTokenFile },
+    /^claudeCredential names a Claude credential, and so does claudeTokenFile; keep one$/u,
+  ],
+];
+
+/**
+ * Catches a set's file held to less than a single credential's, a name
+ * shared across agents accepted, a policy allowing none of what it names, or
+ * `claudeTokenFile` beside a set.
+ */
+test("a set whose file a bind mount cannot name, whose names repeat, or whose policy allows none it names is refused, naming where, and so is a set beside claudeTokenFile", async (t) => {
+  const directory = await scratch(t);
+  for (const [document, why] of refusedSets) {
+    const file = await written(directory, { ...unnamed, ...document });
+    await assert.rejects(runnerConfig(file), (failure) => {
+      const said = /** @type {Error} */ (failure).message.slice(
+        `runner configuration ${file}: `.length,
+      );
+      assert.match(said, why);
+      return true;
+    });
+  }
 });
 
 test("a file names a Claude credential of any kind in claudeCredential, read as it is named", async (t) => {
