@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
+import { keptVolumesArgv } from "@chuggy/worker-core/engineArgv.mjs";
 import { keptWorkspaceKept } from "@chuggy/worker-core/keptWorkspace.mjs";
 import { poolProjectDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 
@@ -87,8 +88,25 @@ async function doctoredMachine(paths, state, options) {
 }
 
 /**
+ * The engine, rejecting the one argv given in place of answering it.
+ *
+ * @param {import("@chuggy/worker-core/engine.mjs").Engine} engine
+ * @param {string[] | undefined} rejected
+ * @returns {import("@chuggy/worker-core/engine.mjs").Engine}
+ */
+function rejecting(engine, rejected) {
+  return {
+    ...engine,
+    exec: async (argv, call) =>
+      argv.join(" ") === rejected?.join(" ")
+        ? Promise.reject(new Error("the engine went away"))
+        : engine.exec(argv, call),
+  };
+}
+
+/**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, agentVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>, kept?: (paths: import("./runnerConfig.mjs").RunnerPaths) => Promise<unknown>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory and the registrations among them, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` or `codex` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's, and what records the workspaces the runner kept
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, agentVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>, kept?: (paths: import("./runnerConfig.mjs").RunnerPaths) => Promise<unknown>, rejects?: string[]}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory and the registrations among them, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` or `codex` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's, what records the workspaces the runner kept, and an argv the engine rejects in place of answering
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -143,7 +161,7 @@ async function doctored(t, options = {}) {
     agentVersion: async (file) => options.agentVersions?.[file],
     disk: options.disk ?? fakeDisk(100),
     parts: {
-      engine: () => engine,
+      engine: () => rejecting(engine, options.rejects),
       updates,
       tokens: () => ({
         acquire: async () =>
@@ -392,6 +410,26 @@ test("a runner that kept no workspace says so, and one that kept some still pass
   const kept = await doctored(t, { kept: keptRecorded });
   assert.deepEqual(
     kept.findings.filter((finding) => !finding.passed),
+    [],
+  );
+});
+
+test("kept workspaces the engine could not list are warned of, and do not fail doctor", async (t) => {
+  const { findings } = await doctored(t, {
+    kept: keptRecorded,
+    rejects: keptVolumesArgv(),
+  });
+  assert.deepEqual(
+    findings.find((finding) => finding.check === "kept workspaces"),
+    {
+      check: "kept workspaces",
+      passed: true,
+      warning: true,
+      detail: "could not be listed: the engine went away",
+    },
+  );
+  assert.deepEqual(
+    findings.filter((finding) => !finding.passed),
     [],
   );
 });
