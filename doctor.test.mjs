@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
+import { keptWorkspaceKept } from "@chuggy/worker-core/keptWorkspace.mjs";
 import { poolProjectDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 
 import {
@@ -65,12 +66,12 @@ async function installedCopy(home, paths, options) {
 
 /**
  * Writes each pool file named in the pools directory, which doctor reads the
- * names `pools` may key from, each registration given as one, and gives the
- * engine each named volume.
+ * names `pools` may key from, each registration given as one, gives the
+ * engine each named volume, and records the workspaces the runner kept.
  *
  * @param {import("./runnerConfig.mjs").RunnerPaths} paths
  * @param {ReturnType<typeof fakeEngine>["state"]} state
- * @param {{poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>}} options
+ * @param {{poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, kept?: (paths: import("./runnerConfig.mjs").RunnerPaths) => Promise<unknown>}} options
  */
 async function doctoredMachine(paths, state, options) {
   for (const file of options.poolFiles ?? []) {
@@ -80,13 +81,14 @@ async function doctoredMachine(paths, state, options) {
   for (const [file, pool] of Object.entries(options.registered ?? {}))
     await poolFileWritten(join(paths.pools, file), pool);
   for (const volume of options.volumes ?? []) state.volumes.set(volume, {});
+  await options.kept?.(paths);
   for (const [volume, labels] of Object.entries(options.labelledVolumes ?? {}))
     state.volumes.set(volume, labels);
 }
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, agentVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory and the registrations among them, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` or `codex` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>, token?: unknown, uid?: number, securityOptions?: string[], podmanVersion?: string, podmanServiceRemote?: string, podmanSocket?: string, contextHost?: string, registries?: Record<string, string>, unit?: (poolFile: string, unit: string) => Promise<unknown>, poolFileName?: string, poolFiles?: string[], registered?: Record<string, Record<string, unknown>>, volumes?: string[], labelledVolumes?: Record<string, Record<string, string>>, volumesUnanswered?: boolean, path?: string, servicePath?: string, agentVersions?: Record<string, string>, runtime?: false, installed?: string, writable?: (path: string) => Promise<boolean>, disk?: import("./diskFree.mjs").DiskFreePorts, info?: Record<string, unknown>, kept?: (paths: import("./runnerConfig.mjs").RunnerPaths) => Promise<unknown>}} options podman's registries.conf and its drop-ins, by path under a directory of their own, what makes the pool file's unit, the name of a pool file in the home to ask of in place of the fixture's, those in the pools directory and the registrations among them, the named volumes the engine has, unlabelled or by their labels, doctor's own PATH and the service manager's, what each `claude` or `codex` says its version is, `runtime: false` for a session with no XDG_RUNTIME_DIR, the install `installedCopy` makes, and the disk the engine's free space is measured on and what its `info` says in place of the fixture's, and what records the workspaces the runner kept
  */
 async function doctored(t, options = {}) {
   const fixture = await runnerFixture(t, {
@@ -271,6 +273,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
       ["job network", true],
       ["volumes", true],
       ["disk floor", true],
+      ["kept workspaces", true],
       ["memory caps", true],
       ["capabilities", true],
       ["pool token", true],
@@ -309,7 +312,87 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
   assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
-    ["version", "info", "ps", "network", "info", "info"],
+    ["version", "info", "ps", "network", "info", "volume", "info"],
+  );
+});
+
+/**
+ * Records a kept volume, and a kept host job's directory holding a MiB, as
+ * their runner would.
+ *
+ * @param {import("./runnerConfig.mjs").RunnerPaths} paths
+ */
+async function keptRecorded({ logs, jobs }) {
+  const directory = join(jobs, "kept-job-7");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "work"), "x".repeat(2 ** 20));
+  const nowMs = Date.parse("2026-11-11T09:00:00Z");
+  await keptWorkspaceKept(
+    logs,
+    "chuggy-workspace-7",
+    "it exited 1",
+    { record: { ticket: 488, attempt: "attempt-a", stage: 2, safe: false } },
+    nowMs,
+  );
+  await keptWorkspaceKept(
+    logs,
+    directory,
+    "it was stopped",
+    { record: { ticket: 490, attempt: "attempt-b", safe: true } },
+    nowMs,
+  );
+  return directory;
+}
+
+test("doctor lists each workspace the runner kept, with its size and what its record names, and a host job's only where a pool here runs them", async (t) => {
+  /** @type {string | undefined} */
+  let directory;
+  /** @type {(paths: import("./runnerConfig.mjs").RunnerPaths) => Promise<void>} */
+  const kept = async (paths) => {
+    directory = await keptRecorded(paths);
+  };
+  const keptFinding = (
+    /** @type {import("./doctor.mjs").DoctorFinding[]} */ findings,
+  ) => findings.find((finding) => finding.check === "kept workspaces");
+  const volumeLine =
+    "chuggy-workspace-7  size unknown  ticket 488, attempt attempt-a, stage 2; kept 2026-11-11T09:00:00.000Z, since it exited 1";
+  const hosted = await doctored(t, {
+    pool: { ...fixturePool, host: true },
+    kept,
+  });
+  const [hint, ...lines] =
+    keptFinding(hosted.findings)?.detail.split("\n  ") ?? [];
+  assert.equal(keptFinding(hosted.findings)?.warning, true);
+  assert.match(
+    hint,
+    /holds disk until removed, a volume with `podman volume rm <volume>` and a directory with `rm -rf <directory>`, and then its record in \/.*\/chuggy-linux\/logs\/kept-workspaces$/u,
+  );
+  assert.deepEqual(lines, [
+    volumeLine,
+    `${String(directory)}  1.0 MiB  ticket 490, attempt attempt-b; kept 2026-11-11T09:00:00.000Z, since it was stopped`,
+  ]);
+  const unhosted = await doctored(t, { kept });
+  assert.deepEqual(
+    keptFinding(unhosted.findings)?.detail.split("\n  ").slice(1),
+    [volumeLine],
+  );
+  const another = await doctored(t, {
+    kept,
+    registered: { "hosted.json": { ...fixturePool, host: true } },
+  });
+  assert.equal(keptFinding(another.findings)?.detail.split("\n  ").length, 3);
+});
+
+test("a runner that kept no workspace says so, and one that kept some still passes doctor", async (t) => {
+  const none = await doctored(t);
+  assert.deepEqual(
+    none.findings.find((finding) => finding.check === "kept workspaces"),
+    { check: "kept workspaces", passed: true, detail: "none" },
+  );
+  const kept = await doctored(t, { kept: keptRecorded });
+  assert.deepEqual(
+    kept.findings.filter((finding) => !finding.passed),
+    [],
   );
 });
 
@@ -508,7 +591,7 @@ test("under docker, doctor names the endpoint its context names, and fails rootl
       detail:
         "docker at unix:///var/run/docker.sock lists 0 of this pool's containers",
     },
-    verbs: ["info", "context", "ps", "network", "info"],
+    verbs: ["info", "context", "ps", "network", "info", "volume", "system"],
   });
   const rootless = await engineFinding(["name=rootless", "name=cgroupns"]);
   assert.equal(rootless.finding?.passed, false);
@@ -795,7 +878,7 @@ test("doctor names the socket each job reaches, at the path a job finds it, and 
   });
   assert.deepEqual(
     docker.state.calls.map((call) => call.argv[0]),
-    ["info", "context", "ps", "network", "info"],
+    ["info", "context", "ps", "network", "info", "volume", "system"],
   );
   const podman = await engineSocketFound(t, "podman", (path) => ({
     podmanSocket: `unix://${path} true`,
@@ -968,7 +1051,7 @@ test("doctor finds each volume a job mounts: a directory that is there, read-onl
   );
   assert.deepEqual(
     state.calls
-      .filter(({ argv }) => argv[0] === "volume")
+      .filter(({ argv }) => argv[0] === "volume" && argv[1] === "inspect")
       .map(({ argv }) => argv),
     [
       ["volume", "inspect", "cargo"],
@@ -1090,7 +1173,7 @@ test("doctor finds a volume listed as its project's by its name for the pool's p
     );
     assert.deepEqual(
       doctor.state.calls
-        .filter(({ argv }) => argv[0] === "volume")
+        .filter(({ argv }) => argv[0] === "volume" && argv[1] === "inspect")
         .map(({ argv }) => argv),
       [["volume", "inspect", projectVolume]],
     );
@@ -1163,7 +1246,7 @@ test("doctor names a volume a personal runner lists as its project's as each job
   );
   assert.deepEqual(
     state.calls
-      .filter(({ argv }) => argv[0] === "volume")
+      .filter(({ argv }) => argv[0] === "volume" && argv[1] === "inspect")
       .map(({ argv }) => argv),
     [["volume", "inspect", "cargo"]],
   );

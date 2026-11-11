@@ -25,14 +25,17 @@ import {
 import { claudeCredentialRefusal } from "@chuggy/worker-core/claudeCredential.mjs";
 
 import {
+  containerKeptWorkspaces,
   ownerVolumeLabelsRefusal,
   ownerVolumeProjectsLine,
   ownerVolumesServed,
 } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   hostEnvironmentRefusal,
+  hostKeptWorkspaces,
   hostTimeoutSecsMax,
 } from "@chuggy/worker-core/hostBackend.mjs";
+import { keptWorkspaceDirectory } from "@chuggy/worker-core/keptWorkspace.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 
@@ -856,6 +859,62 @@ async function diskFloorFinding(engine, config, disk) {
 }
 
 /**
+ * Whether this pool or another pool file in the pools directory is registered
+ * with `--host`; a file that cannot be read is not.
+ *
+ * @param {DoctorInput} input
+ * @param {PoolCredentials} credentials
+ */
+async function hostPoolHere(input, credentials) {
+  if (credentials.host === true) return true;
+  for (const name of await readdir(input.paths.pools).catch(() => [])) {
+    const other = await poolCredentials(join(input.paths.pools, name)).catch(
+      () => undefined,
+    );
+    if (other?.host === true) return true;
+  }
+  return false;
+}
+
+/**
+ * The workspaces this runner kept, each a line as the core lists it: the
+ * volumes of its container jobs and, where a pool here runs host jobs, their
+ * directories. Kept ones pass, warned of for the disk they hold.
+ *
+ * @param {Engine} engine
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @param {DoctorInput} input
+ * @returns {Promise<DoctorFinding>}
+ */
+async function keptWorkspacesFinding(engine, credentials, config, input) {
+  const check = "kept workspaces";
+  const { logs } = input.paths;
+  let kept;
+  try {
+    kept = [
+      ...(await containerKeptWorkspaces(config.engine, engine, logs)),
+      ...((await hostPoolHere(input, credentials))
+        ? await hostKeptWorkspaces(logs)
+        : []),
+    ];
+  } catch (failure) {
+    const detail = `could not be listed: ${failureMessage(failure)}`;
+    return { check, passed: true, warning: true, detail };
+  }
+  if (kept.length === 0) return { check, passed: true, detail: "none" };
+  return {
+    check,
+    passed: true,
+    warning: true,
+    detail: [
+      `each holds disk until removed, a volume with \`${config.engine} volume rm <volume>\` and a directory with \`rm -rf <directory>\`, and then its record in ${join(logs, keptWorkspaceDirectory)}`,
+      ...kept,
+    ].join("\n  "),
+  };
+}
+
+/**
  * Whether the network every container here joins is present, or a run makes
  * it.
  *
@@ -899,6 +958,9 @@ async function engineChecks(engine, credentials, config, input, findings) {
   await jobNetworkChecked(engine, config, findings);
   findings.push(await ownerVolumesFinding(engine, credentials, config, uid));
   findings.push(await diskFloorFinding(engine, config, input.disk));
+  findings.push(
+    await keptWorkspacesFinding(engine, credentials, config, input),
+  );
   if (config.engine === "podman")
     findings.push(await podmanMemoryCapFinding(engine, input.uid));
 }
