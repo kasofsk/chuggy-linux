@@ -24,11 +24,7 @@
         },
         "authority": {
           "tools": ["claude-code", "shell"],
-          "credentials": [
-            "chuggy-github-worker",
-            "claude-code",
-            "track-record"
-          ],
+          "credentials": ["claude-code", "track-record"],
           "network": true,
           "filesystem": "WriteWorkspace",
           "mayCompleteTask": false
@@ -43,7 +39,7 @@
         },
         "authority": {
           "tools": ["shell"],
-          "credentials": ["chuggy-github-worker"],
+          "credentials": [],
           "network": true,
           "filesystem": "WriteWorkspace",
           "mayCompleteTask": false
@@ -69,11 +65,7 @@
         },
         "authority": {
           "tools": ["claude-code", "shell"],
-          "credentials": [
-            "chuggy-github-worker",
-            "claude-code",
-            "track-record"
-          ],
+          "credentials": ["claude-code", "track-record"],
           "network": true,
           "filesystem": "WriteWorkspace",
           "mayCompleteTask": false
