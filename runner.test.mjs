@@ -427,7 +427,7 @@ test("a pool's scratch left by a killed run is removed at another pool's start n
  * machine's, an agent it has no image or host to run, a capability twice, or
  * what the pool was registered with beside what its own file declares.
  */
-test("a run advertises this machine's platform, the agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
+test("a run advertises this machine's platform, Agent:Claude for its Claude credential and the other agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
   /**
    * @param {Parameters<typeof runnerFixture>[1]} documents
    * @param {string} [arch]
@@ -453,7 +453,17 @@ test("a run advertises this machine's platform, the agents its file can run, and
     { image: "registry.example/claude", capabilities: ["Agent:Claude"] },
   ];
   for (const [documents, arch, capabilities] of [
-    [{}, "x64", ["Platform:Linux:Amd64", "container"]],
+    [{}, "x64", ["Platform:Linux:Amd64", "container", "Agent:Claude"]],
+    [
+      {
+        pool: {
+          ...fixturePool,
+          capabilities: ["Platform:Linux:Amd64", "Agent:Claude", "container"],
+        },
+      },
+      "x64",
+      ["Platform:Linux:Amd64", "container", "Agent:Claude"],
+    ],
     [
       { pool: registered, runner: { images: claudeImages } },
       "arm64",
@@ -472,7 +482,7 @@ test("a run advertises this machine's platform, the agents its file can run, and
     [
       { pool: registered, runner: { capabilities: ["gpu", "Agent:Codex"] } },
       "arm64",
-      ["Platform:Linux:Arm64", "gpu", "Agent:Codex"],
+      ["Platform:Linux:Arm64", "gpu", "Agent:Codex", "Agent:Claude"],
     ],
   ])
     assert.deepEqual(
@@ -500,13 +510,13 @@ test("a run is refused on a machine no pool runs on, and where it would advertis
   assert.throws(
     () => runnerCapabilities(setup, "x64"),
     new Error(
-      `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 65 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
+      `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 66 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
     ),
   );
   const { engine } = fakeEngine();
   await assert.rejects(
     runnerParts(setup, { uid: 1000, log: () => undefined, engine }),
-    /^Error: runner configuration .*: capabilities: this runner would advertise 65 /u,
+    /^Error: runner configuration .*: capabilities: this runner would advertise 66 /u,
   );
   await runnerParts(setup, {
     uid: 1000,
@@ -525,7 +535,7 @@ test("a run is refused on a machine no pool runs on, and where it would advertis
       { ...setup, config: { ...setup.config, capabilities: ["c"] } },
       "x64",
     ).length,
-    2,
+    3,
   );
 });
 
