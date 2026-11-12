@@ -576,7 +576,7 @@ test("doctor checks a chat host's file for what its run needs, and nothing a poo
   );
   assert.equal(
     findings[1].detail,
-    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names`,
+    `${paths.config}: sessionsMax 4, sessionMemoryMib 2048, so the supervisor is capped at 8192 MiB, idleSecs none, outputBytesMax 65536, image the one chuggy names`,
   );
   assert.match(
     findings[3].detail,

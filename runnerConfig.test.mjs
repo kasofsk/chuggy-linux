@@ -11,7 +11,6 @@ import {
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   chatHostConfigured,
-  chatHostIdleSecs,
   chatHostMemoryBytes,
   chatHostSessionsMaxDefault,
   chatSessionMemoryBytesDefault,
@@ -1274,7 +1273,7 @@ test("a registries.conf the environment names is sought before the rest", () => 
   );
 });
 
-test("a chat host's settings line says each of its chat keys, the core's default where one is absent, and the supervisor's memory cap", async (t) => {
+test("a chat host's settings line says each of its chat keys, the core's default where one is absent and no idle limit where idleSecs is, and the supervisor's memory cap", async (t) => {
   const directory = await scratch(t);
   const bare = await runnerConfig(await written(directory, minimal));
   assert.equal(bare.chat, undefined);
@@ -1282,7 +1281,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   const mib = (bytes) => String(bytes / 2 ** 20);
   assert.equal(
     runnerChatSettingsLine(bare),
-    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs ${String(chatHostIdleSecs)}, outputBytesMax 65536, image the one chuggy names`,
+    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs none, outputBytesMax 65536, image the one chuggy names`,
   );
   const empty = await runnerConfig(
     await written(directory, { ...minimal, chat: {} }),
