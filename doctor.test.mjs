@@ -449,14 +449,14 @@ test("doctor names what a run advertises and where it comes from, and fails wher
     [
       {},
       new RegExp(
-        `^a run advertises Platform:Linux:Amd64, container on each poll: ${agents}, and the rest of what the pool was registered with$`,
+        `^a run advertises Platform:Linux:Amd64, container, Agent:Claude on each poll: ${agents}, and the rest of what the pool was registered with$`,
         "u",
       ),
     ],
     [
       { capabilities: ["gpu"] },
       new RegExp(
-        `^a run advertises Platform:Linux:Amd64, gpu on each poll: ${agents}, and its capabilities$`,
+        `^a run advertises Platform:Linux:Amd64, gpu, Agent:Claude on each poll: ${agents}, and its capabilities$`,
         "u",
       ),
     ],
@@ -473,7 +473,7 @@ test("doctor names what a run advertises and where it comes from, and fails wher
   assert.equal(refused?.passed, false);
   assert.match(
     refused?.detail ?? "",
-    /^runner configuration \/.*\/runner\.json: capabilities: this runner would advertise 65 capabilities, /u,
+    /^runner configuration \/.*\/runner\.json: capabilities: this runner would advertise 66 capabilities, /u,
   );
 });
 

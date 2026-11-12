@@ -982,7 +982,10 @@ test("a run advertises its capabilities on each poll, and doctor's poll advertis
     },
   });
   assert.equal(status, 3);
-  assert.deepEqual(advertised, Array(3).fill("Platform:Linux:Arm64,gpu"));
+  assert.deepEqual(
+    advertised,
+    Array(3).fill("Platform:Linux:Arm64,gpu,Agent:Claude"),
+  );
   advertised.length = 0;
   const doctor = await called(["doctor", "--pool", poolFile], {
     home,
@@ -992,7 +995,7 @@ test("a run advertises its capabilities on each poll, and doctor's poll advertis
   });
   assert.match(
     doctor.out,
-    /^ok {4}capabilities: a run advertises Platform:Linux:Amd64, gpu on each poll: this machine's platform, the agents .*\/runner\.json can run, and its capabilities$/mu,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Amd64, gpu, Agent:Claude on each poll: this machine's platform, the agents .*\/runner\.json can run, and its capabilities$/mu,
   );
   assert.deepEqual(advertised, [null]);
 });
@@ -1123,7 +1126,7 @@ test("register --personal redeems a member's personal token for their runner's f
   );
   assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
     token: "registration-token-fixture",
-    capabilities: ["Platform:Linux:Amd64"],
+    capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
   });
   assert.deepEqual(
     JSON.parse(await readFile(file, "utf8")),
@@ -1590,7 +1593,7 @@ test("register declares each --capability after this machine's platform, writes 
  * has nowhere to run, leaving one it can run undeclared, or declaring one
  * twice beside a --capability naming it, which chuggy would refuse.
  */
-test("register declares the agents runner.json can run, each an images entry declares or all with --host, once beside a --capability naming one", async (t) => {
+test("register declares Agent:Claude for its Claude credential always and each other agent runner.json holds where an images entry declares it or with --host, once beside a --capability naming one", async (t) => {
   const { home, environment, tokenFile } = await runnerFixture(t);
   const runner = join(
     environment.XDG_CONFIG_HOME,
@@ -1602,7 +1605,12 @@ test("register declares the agents runner.json can run, each an images entry dec
     [
       { images: [{ image: "x", capabilities: ["Agent:Codex"] }] },
       ["--capability", "Agent:Codex"],
-      [platform, "Agent:Codex"],
+      [platform, "Agent:Codex", "Agent:Claude"],
+    ],
+    [
+      { images: [{ image: "x", capabilities: ["Agent:Codex"] }] },
+      [],
+      [platform, "Agent:Claude", "Agent:Codex"],
     ],
     [
       {
@@ -1612,7 +1620,7 @@ test("register declares the agents runner.json can run, each an images entry dec
       [platform, "Agent:Claude", "Agent:Codex"],
     ],
     [{}, ["--host"], [platform, "Agent:Claude", "Agent:Codex"]],
-    [{}, [], [platform]],
+    [{}, [], [platform, "Agent:Claude"]],
   ]) {
     await writeFile(
       runner,
