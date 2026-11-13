@@ -1544,6 +1544,18 @@ function askedUnder(asked, assignment) {
     .map(({ url, method, body }) => [method, url, body]);
 }
 
+/**
+ * What a fixture runner's poll names beside its query, offering `roomMib` of
+ * its engine's memory.
+ *
+ * @param {number} roomMib
+ */
+const sessionPollTerms = (roomMib) => ({
+  memory: { roomMib, ceilingMib: 16 * 1024 },
+  withheld: [],
+  credentials: { Claude: ["claude"] },
+});
+
 test("a pass places a session the plane offers as a session, and its end reaches the session's plane while a job's still reaches the job's", async (t) => {
   const { runner, client, state, asked, pollsAsked } = await endingRunner(t, [
     {
@@ -1590,11 +1602,10 @@ test("a pass places a session the plane offers as a session, and its end reaches
     placed: 0,
     ended: 2,
   });
-  const memory = (roomMib) => ({ memory: { roomMib, ceilingMib: 16 * 1024 } });
   assert.deepEqual(pollsAsked, [
-    ["pool-token", [], 1, 2, { ...memory(16 * 1024), withheld: [] }],
-    ["pool-token", ["asg-1", "ses-1"], 0, 1, { ...memory(0), withheld: [] }],
-    ["pool-token", [], 1, 2, { ...memory(16 * 1024), withheld: [] }],
+    ["pool-token", [], 1, 2, sessionPollTerms(16 * 1024)],
+    ["pool-token", ["asg-1", "ses-1"], 0, 1, sessionPollTerms(0)],
+    ["pool-token", [], 1, 2, sessionPollTerms(16 * 1024)],
   ]);
   assert.deepEqual(askedUnder(asked, "ses-1"), [
     [
@@ -2367,4 +2378,72 @@ test("two jobs under RoundRobin are handed different credential files, each told
     [second, "max-2"],
     [second, "max-2"],
   ]);
+});
+
+/**
+ * Catches a run whose polls name none of its set's credentials, so chuggy
+ * holds the whole agent at one credential's threshold, or whose backend
+ * places a job on a credential an answer paused.
+ */
+test("a run's poll names each credential of its set, and under PreferOAuth a job runs on the API key while an answer pauses every OAuth credential", async (t) => {
+  const oauth = [
+    await claudeCredentialFixture(t),
+    await claudeCredentialFixture(t),
+  ];
+  const { backend, state } = await codexPlacing(
+    t,
+    {
+      claudeTokenFile: undefined,
+      claudeCredential: {
+        prefer: "PreferOAuth",
+        oauth: {
+          order: "InOrder",
+          credentials: [
+            { name: "max-1", tokenFile: oauth[0] },
+            { name: "max-2", tokenFile: oauth[1] },
+          ],
+        },
+        apiKey: {
+          order: "InOrder",
+          credentials: [
+            { name: "console", apiKeyFile: await claudeCredentialFixture(t) },
+          ],
+        },
+      },
+      images: codexImages,
+    },
+    ownUid,
+  );
+  assert.deepEqual(backend.credentialsNamed?.(), {
+    Claude: ["max-1", "max-2", "console"],
+  });
+  const pausedUntil = Math.ceil(Date.now() / 1000) + 3600;
+  /** @param {readonly string[]} paused */
+  const placedOn = async (assignment, paused) => {
+    backend.credentialPausesTaken?.(
+      paused.map((credential) => ({
+        agent: "Claude",
+        credential,
+        pausedUntil,
+      })),
+    );
+    const answer = await backend.place(
+      agentRequired(assignment, "Agent:Claude"),
+      "Job",
+    );
+    assert.equal(answer.placed, "Placed", answer.evidence);
+    await backend.settled();
+    const call = state.calls.find(
+      ({ argv }) =>
+        argv[0] === "run" &&
+        argv.includes(`io.chuggy.assignment=${assignment}`),
+    );
+    return (call?.envFile ?? "")
+      .split("\n")
+      .find((line) => line.startsWith(`${agentCredentialNameVariable}=`))
+      ?.slice(agentCredentialNameVariable.length + 1);
+  };
+  assert.equal(await placedOn("asg-1", ["max-1"]), "max-2");
+  assert.equal(await placedOn("asg-2", ["max-1", "max-2"]), "console");
+  assert.equal(await placedOn("asg-3", []), "max-1");
 });

@@ -1,6 +1,6 @@
 {
   "name": "chuggy-linux",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "description": "Runs a chuggy worker pool's jobs in containers on a Linux machine",
   "license": "MIT",
   "type": "module",
@@ -12,8 +12,8 @@
     "chuggy-linux": "cli.mjs"
   },
   "dependencies": {
-    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.77.0/chuggy-worker-contract-1.77.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#8ecbf0d90828311faabd917ac23c11085d091816",
+    "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.78.0/chuggy-worker-contract-1.78.0.tgz",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#8be30eb9bd683c3101ef61feee460b58095433d2",
     "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.6.7"
   },

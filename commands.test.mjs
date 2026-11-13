@@ -1000,6 +1000,71 @@ test("a run advertises its capabilities on each poll, and doctor's poll advertis
   assert.deepEqual(advertised, [null]);
 });
 
+/**
+ * Catches a run whose polls name none of the credentials its file names, so
+ * chuggy holds the whole agent as soon as one of them reaches its threshold.
+ */
+test("a run names on each poll the credentials its file names, a set's by their names and a single file's as claude", async (t) => {
+  /** @type {(string | null)[]} */
+  const named = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => {
+      named.push(
+        new globalThis.Headers(init.headers).get("chuggy-credentials"),
+      );
+      return globalThis.Response.json({
+        assignments: [],
+        sessions: [],
+        stop: [],
+      });
+    },
+  );
+  const directory = await mkdtemp(join(tmpdir(), "chuggy-linux-set-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const name of ["max-1", "max-2"]) {
+    await writeFile(join(directory, name), "claude-token-fixture", {
+      mode: 0o600,
+    });
+    await chmod(join(directory, name), 0o600);
+  }
+  const set = {
+    claudeTokenFile: undefined,
+    claudeCredential: {
+      prefer: "OAuthOnly",
+      oauth: {
+        order: "RoundRobin",
+        credentials: [
+          { name: "max-1", tokenFile: join(directory, "max-1") },
+          { name: "max-2", tokenFile: join(directory, "max-2") },
+        ],
+      },
+    },
+  };
+  for (const [runner, header] of [
+    [{}, "Claude:claude"],
+    [set, "Claude:max-1,Claude:max-2"],
+  ]) {
+    named.length = 0;
+    const { home, environment, poolFile } = await served(t, { runner });
+    let acquired = 0;
+    const { status } = await called(["run", "--pool", poolFile], {
+      home,
+      environment,
+      tokens: {
+        acquire: async () =>
+          (acquired += 1) <= 2
+            ? { acquired: "Token", token: "pool-token" }
+            : deniedTokens.acquire(),
+        invalidate: () => undefined,
+      },
+    });
+    assert.equal(status, 3);
+    assert.deepEqual(named, Array(3).fill(header));
+  }
+});
+
 const registerArgv = [
   "register",
   "--api",
