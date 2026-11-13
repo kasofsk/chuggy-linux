@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.50.0/chuggy-linux-0.50.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.51.0/chuggy-linux-0.51.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -145,7 +145,7 @@ Every job and session handed this file is told the kind; it is mounted read-only
 
 A job whose task requires `Agent:Codex` is handed this file in place of the Claude credential's, as that one is handed; every other job and every session is handed the Claude one. So a task Codex runs states its capabilities rather than pinning an image, since a job that pins one is handed the Claude file. On a runner that names no `codexCredential`, a job requiring `Agent:Codex` is handed the Claude one; a job requiring two agents is refused. A job copies `auth.json` into a Codex home of its own that is thrown away, so keep the file here fresh yourself. `codexCredential` needs chuggy-linux 0.25.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
 
-**A credential set** names an agent's OAuth credentials and API keys, each with a `name`, and a `prefer` policy between them: `PreferOAuth` runs on an OAuth credential while one is available and on an API key otherwise, `OAuthOnly` and `ApiKeyOnly` on that type alone. Within a type, `order` is `InOrder`, the first available, or `RoundRobin`, the next after the last one chosen. Claude's OAuth credential is a subscription's token, `tokenFile`; Codex's is a ChatGPT login's `auth.json`, `authFile`; an API key is `apiKeyFile`, one key alone. Two Claude subscriptions in turn with an API key behind them, and a ChatGPT login whose API key is never run on:
+**A credential set** names an agent's OAuth credentials and API keys, each with a `name`, and a `prefer` policy between them: `PreferOAuth` runs on an OAuth credential while one is available and on an API key otherwise, `OAuthOnly` and `ApiKeyOnly` on that type alone. A credential at its owner's usage threshold on chuggy is passed over as an unavailable one is, so under `PreferOAuth` a set whose OAuth credentials are all at their thresholds runs on its API key, and under `OAuthOnly` its jobs wait on chuggy until one is free. chuggy keeps a credential's usage by its `name` under the account of the member who registered the runner, so two of your runners give two credentials the same name only where they are the same credential. Within a type, `order` is `InOrder`, the first available, or `RoundRobin`, the next after the last one chosen. Claude's OAuth credential is a subscription's token, `tokenFile`; Codex's is a ChatGPT login's `auth.json`, `authFile`; an API key is `apiKeyFile`, one key alone. Two Claude subscriptions in turn with an API key behind them, and a ChatGPT login whose API key is never run on:
 
 ```json
 "claudeCredential": {
