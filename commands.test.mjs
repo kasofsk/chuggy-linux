@@ -50,6 +50,8 @@ import { serviceUnit, unrestartedExitStatus } from "./systemdUnit.mjs";
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"] | null} [plane] the one doctor polls, which a suite never reaches unless it sets it, and `null` for the pool's own
  * @property {import("./diskFree.mjs").DiskFreePorts} [disk] the fake engine's own with plenty free unless a suite sets it
  * @property {Readonly<Record<string, Partial<import("./systemd.mjs").SystemdAnswer>>>} [systemd] what a command answers, by its argv joined with spaces, where it does not succeed
+ * @property {boolean} [terminal] whether stderr is a terminal
+ * @property {["out" | "err" | "text", string][]} [said] where each write is recorded as it is made, in order: a line to stdout or stderr, or text to stderr as given
  */
 
 /** Where the fake engine's `info` says podman stores what it holds. */
@@ -145,8 +147,16 @@ async function called(argv, machine = {}) {
     node: copyNode,
     nodeVersion: "24.8.0",
     cli: copyCli,
-    out: (line) => out.push(line),
-    err: (line) => err.push(line),
+    out: (line) => {
+      out.push(line);
+      machine.said?.push(["out", line]);
+    },
+    err: (line) => {
+      err.push(line);
+      machine.said?.push(["err", line]);
+    },
+    errTerminal: machine.terminal ?? false,
+    errText: (text) => machine.said?.push(["text", text]),
   });
   return { status, out: out.join("\n"), err: err.join("\n"), systemd };
 }
@@ -2296,5 +2306,220 @@ test("a chat host's run is refused where its Claude credential is not this user'
   assert.equal(
     err,
     `the Claude token file ${tokenFile} is mode 640; only its owner may read or write it (chmod 600)`,
+  );
+});
+
+/** What stderr is given to clear the line naming the check under way. */
+const progressCleared = "\r\u001b[K";
+
+/**
+ * A plane answering as the chat host's does once a suite releases it, and a
+ * signal of its poll being under way.
+ */
+function heldPlane() {
+  const { plane } = chatReady();
+  /** @type {() => void} */
+  let release = () => undefined;
+  const released = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  /** @type {() => void} */
+  let reached = () => undefined;
+  const polled = new Promise((resolve) => {
+    reached = () => resolve(undefined);
+  });
+  return {
+    plane: {
+      ...plane,
+      /** @type {typeof plane.poll} */
+      poll: async () => {
+        reached();
+        await released;
+        return plane.poll();
+      },
+    },
+    polled,
+    release,
+  };
+}
+
+/**
+ * Catches a doctor that holds every finding until its last check is done, so
+ * that one known at once waits on the plane's answer before it is printed.
+ */
+test("doctor prints each finding as it is made, those before the plane's while its poll is held", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  const held = heldPlane();
+  /** @type {["out" | "err" | "text", string][]} */
+  const said = [];
+  const doctoring = called(["doctor", "--pool", poolFile], {
+    home,
+    environment,
+    ...chatReady(),
+    plane: held.plane,
+    said,
+  });
+  await held.polled;
+  const lines = said.map(([, line]) => line);
+  assert.ok(
+    lines.some((line) => /^ok {4}chat credential directory: /u.test(line)),
+    lines.join("\n"),
+  );
+  assert.ok(lines.some((line) => /^ok {4}pool token: /u.test(line)));
+  assert.ok(!lines.some((line) => /^\w+ +plane: /u.test(line)));
+  held.release();
+  const { status, out } = await doctoring;
+  assert.equal(status, 0, out);
+  assert.match(out, /^ok {4}plane: /mu);
+});
+
+/**
+ * Catches a doctor that writes a redraw where nothing can redraw it, as a
+ * service's journal or an agent's pipe, and one that says nothing before a
+ * check that can take minutes.
+ */
+test("off a terminal, doctor writes no carriage return or escape, and says the chat image's look-up in one line before its finding", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  for (const machine of [
+    { environment },
+    { environment: { ...environment, TERM: "dumb" }, terminal: true },
+  ]) {
+    /** @type {["out" | "err" | "text", string][]} */
+    const said = [];
+    const { status, err } = await called(["doctor", "--pool", poolFile], {
+      home,
+      ...chatReady(),
+      ...machine,
+      said,
+    });
+    assert.equal(status, 0, err);
+    assert.ok(!said.some(([how]) => how === "text"));
+    assert.ok(
+      !said.some(([, line]) => line.includes("\r") || line.includes("\u001b")),
+    );
+    const slow = said.findIndex(
+      ([how, line]) =>
+        how === "err" &&
+        line ===
+          "chat image: looking for registry.example/chat:1, and pulling it where it is not here, which can take minutes",
+    );
+    const found = said.findIndex(([, line]) =>
+      line.startsWith("ok    chat image: "),
+    );
+    assert.ok(slow !== -1 && slow < found, JSON.stringify(said));
+  }
+});
+
+/**
+ * Catches a line naming the check under way left on screen beside a
+ * finding, or never cleared once doctor is done.
+ */
+test("on a terminal, doctor names the check under way, and clears that line before each finding line and at its end", async (t) => {
+  const { home, environment, poolFile } = await chatMachine(t);
+  /** @type {["out" | "err" | "text", string][]} */
+  const said = [];
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    environment: { ...environment, TERM: "xterm-256color" },
+    ...chatReady(),
+    terminal: true,
+    said,
+  });
+  assert.equal(status, 0, err);
+  const drawn = said.filter(([how]) => how === "text").map(([, text]) => text);
+  for (const check of ["pool token", "plane", "chat image"])
+    assert.ok(
+      drawn.some((text) =>
+        new RegExp(`^\\r\\u001b\\[K[|/\\\\-] ${check}, \\d+s$`, "u").test(text),
+      ),
+      drawn.join("\n"),
+    );
+  /** @type {string | undefined} */
+  let last;
+  for (const [how, text] of said)
+    if (how === "text") last = text;
+    else if (last !== undefined)
+      assert.equal(last, progressCleared, `${how} ${text} beside ${last}`);
+  assert.equal(last, progressCleared);
+});
+
+/**
+ * Catches register printing a finding twice, once as it is made and again
+ * with what failed, or after its summary rather than as it is made.
+ */
+test("register prints a failed check's finding once, before its summary", async (t) => {
+  const failing = await registering(t);
+  /** @type {["out" | "err" | "text", string][]} */
+  const failed = [];
+  await failing.registered({ tokens: deniedTokens, said: failed });
+  assert.deepEqual(failed, [
+    ["err", checking(failing.file)],
+    ["err", "FAIL  pool token: the pool was revoked"],
+    [
+      "out",
+      `wrote ${failing.file}; its service is not running, since a check failed; next:`,
+    ],
+    ["out", `  chuggy-linux doctor --pool ${failing.file}`],
+    ["out", `  chuggy-linux install-service --pool ${failing.file}`],
+  ]);
+});
+
+test("register prints a warning once, as it is made, and what failed after its summary", async (t) => {
+  const { home, environment } = await runnerFixture(t);
+  const registries = join(
+    environment.XDG_CONFIG_HOME,
+    "containers",
+    "registries.conf",
+  );
+  await mkdir(dirname(registries), { recursive: true });
+  await writeFile(registries, 'credential-helpers = ["secretservice"]\n');
+  const file = join(
+    environment.XDG_CONFIG_HOME,
+    "chuggy",
+    "pools",
+    "newtenant.arbbot.shame.json",
+  );
+  /** @type {["out" | "err" | "text", string][]} */
+  const said = [];
+  await called(registerArgv, {
+    home,
+    environment,
+    fetch: answeringFetch(201, registeredFixture).fetch,
+    ...ready,
+    systemd: {
+      "systemctl --user daemon-reload": {
+        code: 1,
+        stderr: "Failed to connect to bus: No medium found\n",
+      },
+    },
+    said,
+  });
+  assert.equal(
+    said.filter(([, line]) =>
+      line.startsWith("warn  podman credential helpers: "),
+    ).length,
+    1,
+    JSON.stringify(said),
+  );
+  assert.deepEqual(
+    said.map(([how, line]) => [how, line.startsWith("warn  ") ? "warn" : line]),
+    [
+      ["err", checking(file)],
+      ["err", "warn"],
+      [
+        "out",
+        `wrote ${file}; its service is not running, since systemctl --user daemon-reload failed; next:`,
+      ],
+      [
+        "err",
+        "systemctl --user daemon-reload: Failed to connect to bus: No medium found",
+      ],
+      ["out", "  systemctl --user daemon-reload"],
+      [
+        "out",
+        "  systemctl --user enable --now chuggy-linux-newtenant.arbbot.shame.service",
+      ],
+      ["out", "  loginctl enable-linger"],
+    ],
   );
 });

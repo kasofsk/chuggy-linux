@@ -36,6 +36,8 @@ async function cliRun() {
     systemd: systemd.systemdCalled,
     out: (line) => process.stdout.write(`${line}\n`),
     err: (line) => process.stderr.write(`${line}\n`),
+    errTerminal: process.stderr.isTTY === true,
+    errText: (text) => process.stderr.write(text),
   });
 }
 

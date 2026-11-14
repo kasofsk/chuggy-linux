@@ -9,6 +9,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { clearInterval, setInterval } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
@@ -112,6 +113,8 @@ import {
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
+ * @property {boolean} [errTerminal] whether stderr is a terminal
+ * @property {(text: string) => void} [errText] writes to stderr as given, with no newline
  *
  * @typedef {{host: CliHost, poolFile: string, positionals: string[]}} CliCall
  */
@@ -380,9 +383,25 @@ async function servicePath(host, poolFile) {
  *
  * @param {CliHost} host
  * @param {string} poolFile
+ * @param {(finding: import("./doctor.mjs").DoctorFinding) => void} printed how each finding is printed, as it is made
  */
-function doctorFound(host, poolFile) {
+async function doctorFound(host, poolFile, printed) {
   const paths = runnerPaths(host.environment, host.home);
+  const progress = doctorFoundProgress(host, printed);
+  try {
+    return await doctorFoundAsked(host, poolFile, paths, progress.report);
+  } finally {
+    progress.ended();
+  }
+}
+
+/**
+ * @param {CliHost} host
+ * @param {string} poolFile
+ * @param {import("./runnerConfig.mjs").RunnerPaths} paths
+ * @param {import("./doctor.mjs").DoctorReport} report
+ */
+function doctorFoundAsked(host, poolFile, paths, report) {
   return doctorFindings({
     poolFile,
     paths,
@@ -407,7 +426,80 @@ function doctorFound(host, poolFile) {
         }),
       updates: (config) => runnerUpdates({ config, paths }, runnerCopy(host)),
     },
+    report,
   });
+}
+
+/** How often the line naming the check under way is redrawn. */
+const doctorFoundProgressFrameMs = 250;
+
+const doctorFoundProgressFrames = ["|", "/", "-", "\\"];
+
+/** A carriage return, then the erasure of the line to its end. */
+const doctorFoundProgressCleared = "\r\u001b[K";
+
+/**
+ * What stderr is told of doctor's checks as they are made. On a terminal, one
+ * line names the check under way and how long it has run, redrawn in place
+ * and cleared before each finding is printed. Elsewhere nothing is redrawn,
+ * and a check that can take minutes is said in one plain line as it begins.
+ *
+ * @param {CliHost} host
+ * @param {(finding: import("./doctor.mjs").DoctorFinding) => void} printed
+ * @returns {{report: import("./doctor.mjs").DoctorReport, ended: () => void}}
+ */
+function doctorFoundProgress(host, printed) {
+  const text = host.errText;
+  if (
+    host.errTerminal !== true ||
+    host.environment.TERM === "dumb" ||
+    text === undefined
+  )
+    return {
+      report: {
+        begun: (check, slow) => {
+          if (slow !== undefined) host.err(`${check}: ${slow}`);
+        },
+        found: printed,
+      },
+      ended: () => undefined,
+    };
+  /** @type {{check: string, sinceMs: number, frame: number, timer: NodeJS.Timeout} | undefined} */
+  let running;
+  const cleared = () => {
+    if (running === undefined) return;
+    clearInterval(running.timer);
+    running = undefined;
+    text(doctorFoundProgressCleared);
+  };
+  const drawn = () => {
+    if (running === undefined) return;
+    const secs = Math.floor((Date.now() - running.sinceMs) / 1000);
+    const frame =
+      doctorFoundProgressFrames[
+        running.frame % doctorFoundProgressFrames.length
+      ];
+    running.frame += 1;
+    text(
+      `${doctorFoundProgressCleared}${frame ?? ""} ${running.check}, ${String(secs)}s`,
+    );
+  };
+  return {
+    report: {
+      begun: (check) => {
+        cleared();
+        const timer = setInterval(drawn, doctorFoundProgressFrameMs);
+        timer.unref();
+        running = { check, sinceMs: Date.now(), frame: 0, timer };
+        drawn();
+      },
+      found: (finding) => {
+        cleared();
+        printed(finding);
+      },
+    },
+    ended: cleared,
+  };
 }
 
 /**
@@ -429,9 +521,9 @@ async function doctor(call) {
   host.out(
     `chuggy-linux ${host.version} at ${host.cli}, under Node ${host.nodeVersion} at ${host.node}`,
   );
-  const findings = await doctorFound(host, call.poolFile);
-  for (const finding of findings)
+  const findings = await doctorFound(host, call.poolFile, (finding) => {
     (doctorAside(finding) ? host.err : host.out)(findingLine(finding));
+  });
   return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 
@@ -495,7 +587,7 @@ async function installService(call) {
 /**
  * @typedef {object} RegisterServed what became of the written file's service
  * @property {string} said what the first line says of the service
- * @property {readonly string[]} why what failed, and what a check warned of
+ * @property {readonly string[]} why what failed, beside what a check found, which is printed as it is made
  * @property {string} [then] what the commands left are for, where `said` does not say
  * @property {readonly string[]} left the commands left to the operator, from the first not done
  */
@@ -568,24 +660,23 @@ async function registerLingered(host) {
  * @param {readonly (readonly string[])[]} argvs
  * @param {string} said what the first line says once every command ran
  * @param {(argv: readonly string[]) => string} since why the service is not running where `argv` failed
- * @param {readonly string[]} why what a check warned of
  * @returns {Promise<RegisterServed>}
  */
-async function registerRan(host, argvs, said, since, why) {
+async function registerRan(host, argvs, said, since) {
   for (const [index, argv] of argvs.entries()) {
     const answer = await host.systemd(argv);
     if (answer.code !== 0)
       return registerUnserved(
         since(argv),
-        [...why, registerFailureLine(argv, answer)],
+        [registerFailureLine(argv, answer)],
         [...argvs.slice(index), serviceLingerArgv].map(commandLine),
       );
   }
   const lingered = await registerLingered(host);
-  if (lingered === undefined) return { said, why, left: [] };
+  if (lingered === undefined) return { said, why: [], left: [] };
   return {
     said,
-    why: [...why, lingered],
+    why: [lingered],
     then: "it runs only while you are logged in, until you run:",
     left: [commandLine(serviceLingerArgv)],
   };
@@ -635,7 +726,6 @@ async function registerRestarted(host, file, denied, units) {
     argvs,
     `its service is running: restarted ${units.join(", ")}`,
     (argv) => since(`${commandLine(argv)} failed`),
-    [],
   );
 }
 
@@ -655,17 +745,18 @@ async function registerStarted(host, file, written) {
   host.err(
     `${written}, and the token is spent; checking this machine before starting its service`,
   );
-  const findings = await doctorFound(host, file);
-  const why = findings.filter(doctorAside).map(findingLine);
+  const findings = await doctorFound(host, file, (finding) => {
+    if (doctorAside(finding)) host.err(findingLine(finding));
+  });
   if (!findings.every((finding) => finding.passed))
-    return registerUnserved("a check failed", why, registerUnchecked(file));
+    return registerUnserved("a check failed", [], registerUnchecked(file));
   let installed;
   try {
     installed = await installServiceUnit(host, file);
   } catch (failure) {
     return registerUnserved(
       "its unit could not be written",
-      [...why, failureMessage(failure)],
+      [failureMessage(failure)],
       registerUnchecked(file).slice(1),
     );
   }
@@ -673,7 +764,7 @@ async function registerStarted(host, file, written) {
   if (legacy !== undefined)
     return registerUnserved(
       `${legacyServiceUnitName} serves this pool already`,
-      why,
+      [],
       serviceCommands(name, legacy),
     );
   return registerRan(
@@ -681,7 +772,6 @@ async function registerStarted(host, file, written) {
     serviceStartArgvs(name),
     `its service is running: started ${name}`,
     (argv) => `${commandLine(argv)} failed`,
-    why,
   );
 }
 

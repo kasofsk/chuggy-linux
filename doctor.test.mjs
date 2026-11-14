@@ -169,8 +169,8 @@ async function doctored(t, options = {}) {
         invalidate: () => undefined,
       }),
       plane: () => ({
-        poll: async (token, held, wanted, wantedSessions) => {
-          polls.push([token, held, wanted, wantedSessions]);
+        poll: async (token, held, wanted, wantedSessions, terms) => {
+          polls.push([token, held, wanted, wantedSessions, terms]);
           return { polled: "Reconciled", assignments: [], stop: [] };
         },
         settle: async () => "Settled",
@@ -327,7 +327,7 @@ test("a machine ready to run passes every check, and doctor changes nothing", as
     findings[11].detail,
     "100 GiB free at /home/runner/.local/share/containers/storage, over the floor of 20 GiB",
   );
-  assert.deepEqual(polls, [["pool-token", [], 0, 0]]);
+  assert.deepEqual(polls, [["pool-token", [], 0, 0, { waitSecs: 0 }]]);
   assert.deepEqual(
     state.calls.map((call) => call.argv[0]),
     ["version", "info", "ps", "network", "info", "volume", "info"],

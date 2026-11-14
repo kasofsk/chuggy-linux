@@ -468,6 +468,29 @@ function cgroupedEngine(cgroups) {
 }
 
 /**
+ * A plane answering a chat host's poll, naming `chatImage` where it is given,
+ * and recording each poll's terms.
+ *
+ * @param {string | undefined} chatImage
+ * @param {unknown[]} terms
+ * @returns {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["plane"]}
+ */
+function chatPlane(chatImage, terms) {
+  return {
+    poll: async (_token, _held, _wanted, _wantedSessions, asked) => {
+      terms.push(asked);
+      return {
+        polled: "Reconciled",
+        assignments: [],
+        stop: [],
+        ...(chatImage === undefined ? {} : { chatImage }),
+      };
+    },
+    settle: async () => "Settled",
+  };
+}
+
+/**
  * doctor's findings for a chat host's file, under a home of its own whose
  * Claude token is alone in its directory.
  *
@@ -508,6 +531,8 @@ async function doctoredChat(t, options = {}) {
     version: "9.8.7",
     cli: join(home, "npm", "lib", "node_modules", "chuggy-linux", "cli.mjs"),
   };
+  /** @type {unknown[]} */
+  const terms = [];
   const findings = await doctorFindings({
     poolFile,
     paths,
@@ -528,26 +553,18 @@ async function doctoredChat(t, options = {}) {
         acquire: async () => ({ acquired: "Token", token: "pool-token" }),
         invalidate: () => undefined,
       }),
-      plane: () => ({
-        poll: async () => ({
-          polled: "Reconciled",
-          assignments: [],
-          stop: [],
-          ...(options.chatImage === undefined
-            ? {}
-            : { chatImage: options.chatImage }),
-        }),
-        settle: async () => "Settled",
-      }),
+      plane: () => chatPlane(options.chatImage, terms),
     },
   });
-  return { findings, state, poolFile, paths, tokenFile };
+  return { findings, state, poolFile, paths, tokenFile, terms };
 }
 
 test("doctor checks a chat host's file for what its run needs, and nothing a pool's jobs do", async (t) => {
-  const { findings, poolFile, paths, tokenFile } = await doctoredChat(t, {
-    chatImage: sessionImage,
-  });
+  const { findings, poolFile, paths, tokenFile, terms } = await doctoredChat(
+    t,
+    { chatImage: sessionImage },
+  );
+  assert.deepEqual(terms, [{ waitSecs: 0 }]);
   assert.deepEqual(
     findings.map((finding) => [finding.check, finding.passed]),
     [

@@ -113,6 +113,15 @@ import {
  *
  * @typedef {{check: string, passed: boolean, detail: string, warning?: true}} DoctorFinding a warning passes, and is printed as one
  *
+ * @typedef {object} DoctorReport what is told of each check as it is made
+ * @property {(check: string, slow?: string) => void} begun a check under way; `slow` what it is doing, of one that can take minutes
+ * @property {(finding: DoctorFinding) => void} found a finding, once it is made
+ *
+ * @typedef {object} DoctorFound the findings made so far, each reported as it is added
+ * @property {(...found: DoctorFinding[]) => void} push
+ * @property {DoctorReport["begun"]} begun
+ * @property {readonly DoctorFinding[]} all
+ *
  * @typedef {object} DoctorParts what a run would reach, built from what was read
  * @property {(config: RunnerConfig) => Engine} engine
  * @property {(config: RunnerConfig) => WorkerPoolUpdates} updates the update a run would make of its runner
@@ -133,18 +142,20 @@ import {
  * @property {(file: string) => Promise<string | undefined>} agentVersion what an agent's command, `claude` or `codex`, says its version is
  * @property {DiskFreePorts} disk what the engine's free disk is measured by
  * @property {DoctorParts} parts
+ * @property {DoctorReport} [report] told of each check as it is made
  */
 
 /**
  * Runs one check: a probe answers what it found, or throws what is wrong.
  *
  * @template T
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  * @param {string} check
  * @param {() => Promise<[T, string]>} probe
  * @returns {Promise<T | undefined>}
  */
 async function checked(findings, check, probe) {
+  findings.begun(check);
   try {
     const [value, detail] = await probe();
     findings.push({ check, passed: true, detail });
@@ -920,7 +931,7 @@ async function keptWorkspacesFinding(engine, credentials, config, input) {
  *
  * @param {Engine} engine
  * @param {RunnerConfig} config
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  */
 async function jobNetworkChecked(engine, config, findings) {
   await checked(findings, "job network", async () => {
@@ -937,7 +948,7 @@ async function jobNetworkChecked(engine, config, findings) {
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
  * @param {DoctorInput} input
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  */
 async function engineChecks(engine, credentials, config, input, findings) {
   const { uid } = input;
@@ -1009,7 +1020,7 @@ function capabilitiesFound(input, credentials, config) {
  *
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  * @returns {Promise<{chatImage: string | undefined} | undefined>}
  */
 async function planeChecks(input, credentials, findings) {
@@ -1020,7 +1031,9 @@ async function planeChecks(input, credentials, findings) {
   });
   if (token === undefined) return undefined;
   return checked(findings, "plane", async () => {
-    const polled = await input.parts.plane(credentials).poll(token, [], 0, 0);
+    const polled = await input.parts
+      .plane(credentials)
+      .poll(token, [], 0, 0, { waitSecs: 0 });
     if (polled.polled === "Stale")
       throw new Error("the plane rejected a token the issuer had just issued");
     if (polled.polled !== "Reconciled") throw new Error(polled.evidence);
@@ -1039,7 +1052,7 @@ async function planeChecks(input, credentials, findings) {
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
  * @param {DoctorInput} input
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  * @returns {Promise<{endpoint: string | undefined} | undefined>} where the engine answered
  */
 async function chatEngineChecks(engine, credentials, config, input, findings) {
@@ -1093,7 +1106,7 @@ async function chatEngineChecks(engine, credentials, config, input, findings) {
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig | undefined} config
  * @param {boolean} runtime whether the runtime directory is known
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  */
 async function chatHostChecks(input, credentials, config, runtime, findings) {
   if (config !== undefined) {
@@ -1127,7 +1140,7 @@ async function chatHostChecks(input, credentials, config, runtime, findings) {
     !runtime ||
     (polled === undefined && config.chat?.image === undefined)
   )
-    return findings;
+    return;
   findings.push(
     await chatImageFinding(
       {
@@ -1139,12 +1152,12 @@ async function chatHostChecks(input, credentials, config, runtime, findings) {
         },
         credentials,
         tokens: input.parts.tokens(credentials),
+        begun: findings.begun,
       },
       config.chat,
       polled?.chatImage,
     ),
   );
-  return findings;
 }
 
 /** The helper that is the auth file itself, podman's default. */
@@ -1359,7 +1372,7 @@ export function findingLine(finding) {
  * leave it no work, as its run refuses them.
  *
  * @param {DoctorInput} input
- * @param {DoctorFinding[]} findings
+ * @param {DoctorFound} findings
  * @param {PoolCredentials | undefined} credentials the pool file's, where it was read: a chat host's settings are said in place of a pool's limits, and a personal runner's name no sessions
  */
 async function runnerConfigChecked(input, findings, credentials) {
@@ -1408,8 +1421,39 @@ async function runnerConfigChecked(input, findings, credentials) {
  * @returns {Promise<DoctorFinding[]>}
  */
 export async function doctorFindings(input) {
+  const findings = doctorFindingsReported(input.report);
+  await doctorFindingsChecked(input, findings);
+  return [...findings.all];
+}
+
+/**
+ * Findings that tell the report of each as it is added.
+ *
+ * @param {DoctorReport | undefined} report
+ * @returns {DoctorFound}
+ */
+function doctorFindingsReported(report) {
   /** @type {DoctorFinding[]} */
-  const findings = [];
+  const all = [];
+  return {
+    push: (...found) => {
+      for (const finding of found) {
+        all.push(finding);
+        report?.found(finding);
+      }
+    },
+    begun: (check, slow) => report?.begun(check, slow),
+    all,
+  };
+}
+
+/**
+ * Each check of the pool file, in the order a run depends on them.
+ *
+ * @param {DoctorInput} input
+ * @param {DoctorFound} findings
+ */
+async function doctorFindingsChecked(input, findings) {
   const credentials = await checked(findings, "pool file", async () => {
     const read = await poolCredentials(input.poolFile);
     return [
@@ -1423,14 +1467,16 @@ export async function doctorFindings(input) {
     true,
     runtimeDirectory(input.paths),
   ]);
-  if (chat)
-    return chatHostChecks(
+  if (chat) {
+    await chatHostChecks(
       input,
       credentials,
       config,
       runtime !== undefined,
       findings,
     );
+    return;
+  }
   const capabilities =
     credentials === undefined || config === undefined
       ? undefined
@@ -1462,7 +1508,7 @@ export async function doctorFindings(input) {
   findings.push(await serviceUnitFinding(input));
   if (config !== undefined && runtime !== undefined)
     findings.push(await updatesFinding(input.parts.updates(config)));
-  if (credentials === undefined) return findings;
+  if (credentials === undefined) return;
   if (config !== undefined)
     await engineChecks(
       input.parts.engine(config),
@@ -1473,5 +1519,4 @@ export async function doctorFindings(input) {
     );
   if (capabilities !== undefined) findings.push(capabilities.finding);
   await planeChecks(input, credentials, findings);
-  return findings;
 }
