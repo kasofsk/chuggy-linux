@@ -23,7 +23,11 @@ import {
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
 import { workerRunnerReportRoute } from "@chuggy/worker-contract/workerPool";
 import { agentCredentialNameVariable } from "@chuggy/worker-core/agentCredentialSet.mjs";
+import { claudeAgent } from "@chuggy/worker-core/claude.mjs";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
+import { codexAgent } from "@chuggy/worker-core/codex.mjs";
+import { envelopeCredentialFiles } from "@chuggy/worker-core/entrypoint.mjs";
+import { heldCredentialsUnmounted } from "@chuggy/worker-core/heldCredentials.mjs";
 import {
   jobEngineSocketVariables,
   jobProviderCredentialFile,
@@ -2309,6 +2313,86 @@ test("a pool registered with --host hands a job requiring Agent:Codex the Codex 
     (await other.backend.place(agentRequired("asg-2", "Agent:Codex"), "Job"))
       .evidence ?? "",
     new RegExp(`^the Codex auth file ${codex} is owned by uid`, "u"),
+  );
+});
+
+/**
+ * What the envelope a job is handed names as its launcher's own, read as the
+ * core reads it: the credential map it stands for, keyed by the agent's
+ * credential name.
+ *
+ * @param {string} task the job's `workerTaskVariable`
+ * @param {{credential: string}} agent
+ */
+const envelopeMounted = (task, agent) =>
+  envelopeCredentialFiles(JSON.parse(task), /** @type {any} */ (agent));
+
+/**
+ * Catches a credential this runner delivers to a job out of the core's sight,
+ * which the core would ask the plane for and, served none, end every attempt
+ * listing it: each job is handed its agent's credential as the envelope's
+ * provider file, which the core counts as mounted, and no other.
+ */
+test("a job in a container or on this machine itself is handed its agent's credential where the core counts it mounted, so the core asks the plane for it never", async (t) => {
+  const claude = await claudeCredentialFixture(t);
+  const codex = await claudeCredentialFixture(t);
+  const { backend, state } = await codexPlacing(
+    t,
+    {
+      claudeTokenFile: claude,
+      codexCredential: { authFile: codex },
+      images: codexImages,
+    },
+    ownUid,
+  );
+  for (const [assignment, agent, file] of [
+    ["asg-claude", claudeAgent, claude],
+    ["asg-codex", codexAgent, codex],
+  ]) {
+    const required = `Agent:${agent.name}`;
+    assert.equal(
+      (await backend.place(agentRequired(assignment, required), "Job")).placed,
+      "Placed",
+    );
+    await backend.settled();
+    const run = state.calls.find(
+      ({ argv }) =>
+        argv[0] === "run" &&
+        argv.includes(`io.chuggy.assignment=${assignment}`),
+    );
+    const task = (run?.envFile ?? "")
+      .split("\n")
+      .find((line) => line.startsWith(`${workerTaskVariable}=`))
+      ?.slice(workerTaskVariable.length + 1);
+    assert.ok(task !== undefined, assignment);
+    const mounted = envelopeMounted(task, agent);
+    assert.deepEqual(mounted, {
+      [agent.credential]: jobProviderCredentialFile,
+    });
+    assert.ok(
+      run?.argv.includes(
+        `type=bind,source=${file},target=${jobProviderCredentialFile},readonly`,
+      ),
+    );
+    assert.deepEqual(heldCredentialsUnmounted([agent.credential], mounted), []);
+  }
+  const { home, environment, poolFile } = await runnerFixture(t, {
+    runner: { claudeTokenFile: claude },
+    pool: {
+      ...fixturePool,
+      capabilities: ["Platform:Linux:Amd64"],
+      host: true,
+    },
+  });
+  const started = await hostStartedWith(
+    await runnerSetup(poolFile, environment, home),
+    ["Platform:Linux:Amd64", "Agent:Claude"],
+  );
+  const mounted = envelopeMounted(started[workerTaskVariable], claudeAgent);
+  assert.deepEqual(mounted, { [claudeAgent.credential]: claude });
+  assert.deepEqual(
+    heldCredentialsUnmounted([claudeAgent.credential], mounted),
+    [],
   );
 });
 
