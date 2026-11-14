@@ -61,7 +61,7 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
   "engine": "docker",
   "concurrencyMax": 1,
   "sessionsMax": 2,
-  "claudeTokenFile": "/home/you/.config/chuggy-linux/claude-token",
+  "claudeTokenFile": "/home/you/.config/chuggy-linux/claude/token",
   "timeoutSecsMax": 7200,
   "outputBytesMax": 1048576,
   "environment": {},
@@ -121,12 +121,12 @@ A session is a project's chat or lead, run on this machine's Claude credential, 
 **The Claude credential** is one file, mode 600 and yours, and the settings its kind needs, or a set of them, below. `claudeTokenFile` names a subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other:
 
 ```json
-"claudeCredential": { "kind": "Subscription", "tokenFile": "/home/you/.config/chuggy-linux/claude-token" }
-"claudeCredential": { "kind": "ApiKey", "apiKeyFile": "/home/you/.config/chuggy-linux/anthropic-api-key" }
-"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "apiKeyFile": "/home/you/.config/chuggy-linux/bedrock-api-key" }
-"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "credentialsFile": "/home/you/.config/chuggy-linux/aws-credentials", "profile": "chuggy" }
-"claudeCredential": { "kind": "Vertex", "region": "us-east5", "project": "your-project", "credentialsFile": "/home/you/.config/chuggy-linux/vertex-key.json" }
-"claudeCredential": { "kind": "Foundry", "resource": "your-resource", "apiKeyFile": "/home/you/.config/chuggy-linux/foundry-api-key" }
+"claudeCredential": { "kind": "Subscription", "tokenFile": "/home/you/.config/chuggy-linux/claude/token" }
+"claudeCredential": { "kind": "ApiKey", "apiKeyFile": "/home/you/.config/chuggy-linux/anthropic/api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "apiKeyFile": "/home/you/.config/chuggy-linux/bedrock/api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "credentialsFile": "/home/you/.config/chuggy-linux/aws/credentials", "profile": "chuggy" }
+"claudeCredential": { "kind": "Vertex", "region": "us-east5", "project": "your-project", "credentialsFile": "/home/you/.config/chuggy-linux/vertex/key.json" }
+"claudeCredential": { "kind": "Foundry", "resource": "your-resource", "apiKeyFile": "/home/you/.config/chuggy-linux/foundry/api-key" }
 ```
 
 - **Subscription**: `claude setup-token`'s output, alone. Jobs share your Claude plan's limits.
@@ -278,7 +278,7 @@ The service updates itself as a pool's does: once chuggy names a release, the ho
 chuggy-linux doctor --pool ~/.config/chuggy/pools/vteng.chuggy.shame.json
 ```
 
-Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, the Codex credential where the file names one or the pool advertises `Agent:Codex`, printing none of it, and whether a pool here advertises `Agent:Codex` for it, podman's credential helpers, whether the pool file's unit runs this copy, whether updates are on and this install can take one, the engine, whether jobs are handed its socket, the job network, each volume's source, the engine's free disk against the floor, the workspaces this runner kept, the capabilities a run advertises, a token from the pool's issuer and one poll of the plane, which advertises none, and changes nothing. The poll is a long one, so the last check can take a while.
+Its first line names the copy speaking and the Node it runs under. It checks both files, the Claude credential, printing only its kind and settings, the Codex credential where the file names one or the pool advertises `Agent:Codex`, printing none of it, and whether a pool here advertises `Agent:Codex` for it, podman's credential helpers, whether the pool file's unit runs this copy, whether updates are on and this install can take one, the engine, whether jobs are handed its socket, the job network, each volume's source, the engine's free disk against the floor, the workspaces this runner kept, the capabilities a run advertises, a token from the pool's issuer and one poll of the plane, which advertises none, and changes nothing. Each check is printed as it is made.
 
 A job keeps its workspace unless it ended clean, exiting 0 with its work safe: its volume, or on a pool registered with `--host` its directory. `doctor` lists each with the ticket, attempt and stage it holds, and its size where it can tell: a directory's, and a volume's under docker, not podman. Each holds disk until you remove it, which `doctor` warns of and passes. [chuggy-common's README](https://github.com/kasofsk/chuggy-common#a-kept-workspace) says how to look inside one, get its work out and remove it.
 

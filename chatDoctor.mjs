@@ -214,6 +214,7 @@ export async function chatEngineFinding(engine, name, endpoint, credentials) {
  * @param {PullSite} reach.site
  * @param {PoolCredentials} reach.credentials
  * @param {WorkerPoolClient["tokens"]} reach.tokens
+ * @param {import("./doctor.mjs").DoctorReport["begun"]} [reach.begun] told of the image's look-up, and its pull where it is not here
  * @param {RunnerConfig["chat"]} chat
  * @param {string | undefined} named the image the plane named, where it was polled
  * @returns {Promise<DoctorFinding>}
@@ -230,6 +231,10 @@ export async function chatImageFinding(reach, chat, named) {
         "the plane named no session image and the runner's file sets no chat.image, so no supervisor can start",
     };
   const whose = own === undefined ? "the plane's" : "the host's own";
+  reach.begun?.(
+    check,
+    `looking for ${image}, and pulling it where it is not here, which can take minutes`,
+  );
   let pulled;
   try {
     pulled = await chatImagePulled(
