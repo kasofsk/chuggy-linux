@@ -15,6 +15,7 @@ import {
   chatHostSessionsMaxDefault,
   chatSessionMemoryBytesDefault,
 } from "@chuggy/worker-core/chatHost.mjs";
+import { chatSessionDeadlineSecsMax } from "@chuggy/worker-core/chatSession.mjs";
 import { ownerVolumeTargetsRefused } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   jobEngineSocketVariables,
@@ -1273,7 +1274,7 @@ test("a registries.conf the environment names is sought before the rest", () => 
   );
 });
 
-test("a chat host's settings line says each of its chat keys, the core's default where one is absent and no idle limit where idleSecs is, and the supervisor's memory cap", async (t) => {
+test("a chat host's settings line says each of its chat keys, the core's default where one is absent, no idle limit, no deadline and the whole roster where idleSecs, deadlineSecs and sessionCapabilities are, and the supervisor's memory cap", async (t) => {
   const directory = await scratch(t);
   const bare = await runnerConfig(await written(directory, minimal));
   assert.equal(bare.chat, undefined);
@@ -1281,7 +1282,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   const mib = (bytes) => String(bytes / 2 ** 20);
   assert.equal(
     runnerChatSettingsLine(bare),
-    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs none, outputBytesMax 65536, image the one chuggy names`,
+    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs none, deadlineSecs none, sessionCapabilities every capability of the roster, outputBytesMax 65536, image the one chuggy names`,
   );
   const empty = await runnerConfig(
     await written(directory, { ...minimal, chat: {} }),
@@ -1292,6 +1293,8 @@ test("a chat host's settings line says each of its chat keys, the core's default
     sessionsMax: 3,
     sessionMemoryMib: 1024,
     idleSecs: 300,
+    deadlineSecs: 7200,
+    sessionCapabilities: ["RepositoryRead", "RunCommands"],
     outputBytesMax: 1024,
   };
   const set = await runnerConfig(
@@ -1303,7 +1306,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   });
   assert.equal(
     runnerChatSettingsLine(set),
-    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 300, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
+    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 300, deadlineSecs 7200, sessionCapabilities RepositoryRead RunCommands, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
   );
   for (const [pull, said] of [
     ["always", "before each start"],
@@ -1329,6 +1332,11 @@ test("what a chat section may not say is refused, naming where", async (t) => {
     [{ sessionsMax: 0 }, /chat\.sessionsMax /u],
     [{ sessionMemoryMib: 1 }, /chat\.sessionMemoryMib /u],
     [{ idleSecs: 1.5 }, /chat\.idleSecs /u],
+    [{ deadlineSecs: chatSessionDeadlineSecsMax + 1 }, /chat\.deadlineSecs /u],
+    [
+      { sessionCapabilities: ["RunCommands", "RunCommands"] },
+      /chat\.sessionCapabilities /u,
+    ],
     [{ outputBytesMax: "1024" }, /chat\.outputBytesMax /u],
     [{ image: "registry.example/me/chat:1" }, /chat\.image /u],
     [{ image: { image: "x", pull: "sometimes" } }, /chat\.image\.pull /u],

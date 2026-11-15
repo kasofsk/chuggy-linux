@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.52.0/chuggy-linux-0.52.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.53.0/chuggy-linux-0.53.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -258,9 +258,11 @@ It reads the same runner's file as a pool's service: its `engine`, Claude creden
 | `sessionsMax`    | Sessions run at once. Default 4.                                                                                              |
 | `sessionMemoryMib` | The memory the container is given for each of those, in MiB. Default 2048. The container is capped at `sessionsMax` times this, with no swap past it, and a session that takes more than its share takes it from the others. |
 | `idleSecs`       | How long a session may sit idle before it ends, which chuggy holds it to as set. Default none: no idle limit.                 |
+| `deadlineSecs`   | How long a session may run before it is stopped, at most what a session's timer holds. Default none: no deadline. |
+| `sessionCapabilities` | The capabilities a thread's sessions may hold, such as `["RepositoryRead", "RunCommands"]`, narrowing its roster; a session so narrowed is handed chuggy's origin and its bearer in its shell. While it is set, no session is taken from a chuggy that has not said it reads it. Default none: the whole roster. |
 | `outputBytesMax` | The most output a session may report. Default the file's `outputBytesMax`.                                                   |
 
-`chat` needs chuggy-linux 0.35.0 or later, and so does a chat host's file: an earlier copy refuses a runner.json naming `chat`, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it.
+`chat` needs chuggy-linux 0.35.0 or later, and so does a chat host's file: an earlier copy refuses a runner.json naming `chat`, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing it. `deadlineSecs` and `sessionCapabilities` need 0.53.0 or later, for the same reason.
 
 The container is chuggy's supervisor, run as root inside with every capability dropped but `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `SETUID`, `SETGID` and `SETPCAP`, and no privilege escalation. Its memory cap, as `sessionMemoryMib` says, is asked of the engine; `status` and `doctor` print it. Docker enforces it. Podman enforces it only where it holds a job to its cap, as the memory budget above says, and otherwise runs the container uncapped, warning only on its stderr; `doctor` warns of this for a chat host as for a pool, naming what changes it. It runs each session as a user of its own, a uid of the image's in a range the core fixes, which it clears once the session ends, and keeps their directories and the repositories they read in two volumes named for the host, `chuggy-chat-<digest>-sessions` and `-mirrors`, which nothing removes. It is named for the host too, `chuggy-chat-<digest>`, so a second started beside it is refused: one that has exited is removed before each start, and one still running is never killed for it, so a container the service no longer runs, left by an engine that lost track of it, refuses every start until it is removed, which `doctor` reports with the command that removes it. It joins `network`, and a session reaches whatever that reaches. Its input is the service's, so it ends with the service, and every session with it.
 
