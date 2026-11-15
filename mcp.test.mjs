@@ -115,7 +115,7 @@ function textOf(answer) {
   return answer.content.map(({ text }) => text).join("");
 }
 
-test("an agent is given the project tools and reads a ticket under a renewed sign-in", async (t) => {
+test("an agent is given the project tools and those of your own agent accounts, and reads a ticket under a renewed sign-in", async (t) => {
   const { site, grants } = await siteOf(t);
   const home = await homeOf(t);
   const file = localToolSignInFile(runnerPaths({}, home).signIns, site);
@@ -127,6 +127,14 @@ test("an agent is given the project tools and reads a ticket under a renewed sig
   assert.ok(names.includes("create_draft"));
   assert.ok(names.includes("release_draft"));
   assert.ok(!names.includes("dispatch"));
+  for (const name of [
+    "read_usage",
+    "update_usage_settings",
+    "retry_paused_agent",
+    "retire_credential",
+  ]) {
+    assert.ok(names.includes(name), name);
+  }
 
   const answer = await client.callTool({
     name: "read_ticket",
