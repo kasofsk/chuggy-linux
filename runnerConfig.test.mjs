@@ -1325,6 +1325,20 @@ test("a chat host's settings line says each of its chat keys, the core's default
     );
 });
 
+test("a chat section's ticketWakes is read and named in its settings line", async (t) => {
+  const directory = await scratch(t);
+  for (const ticketWakes of ["On", "Off"]) {
+    const config = await runnerConfig(
+      await written(directory, { ...minimal, chat: { ticketWakes } }),
+    );
+    assert.equal(config.chat?.ticketWakes, ticketWakes);
+    assert.match(
+      runnerChatSettingsLine(config),
+      new RegExp(`, ticketWakes ${ticketWakes}, `, "u"),
+    );
+  }
+});
+
 test("what a chat section may not say is refused, naming where", async (t) => {
   const directory = await scratch(t);
   const refused = [
@@ -1337,6 +1351,7 @@ test("what a chat section may not say is refused, naming where", async (t) => {
       { sessionCapabilities: ["RunCommands", "RunCommands"] },
       /chat\.sessionCapabilities /u,
     ],
+    [{ ticketWakes: "Host" }, /chat\.ticketWakes /u],
     [{ outputBytesMax: "1024" }, /chat\.outputBytesMax /u],
     [{ image: "registry.example/me/chat:1" }, /chat\.image /u],
     [{ image: { image: "x", pull: "sometimes" } }, /chat\.image\.pull /u],
