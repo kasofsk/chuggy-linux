@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.58.0/chuggy-linux-0.58.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.59.0/chuggy-linux-0.59.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -244,7 +244,7 @@ It reads the same runner's file as a pool's service: its `engine`, Claude creden
 "chat": {
   "image": { "image": "ghcr.io/you/chuggy-chat:1", "pull": "missing" },
   "sessionsMax": 4,
-  "sessionMemoryMib": 2048,
+  "sessionMemoryMib": 1024,
   "idleSecs": 600,
   "outputBytesMax": 1048576
 }
@@ -254,7 +254,7 @@ It reads the same runner's file as a pool's service: its `engine`, Claude creden
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `image`          | The image to run in place of the one chuggy names, and `pull`: `missing` (the default) pulls it where it is not here, `always` before each start, `never` not at all. Pulled as the engine's own login pulls it. Default none, which runs chuggy's. |
 | `sessionsMax`    | Sessions run at once. Default 4.                                                                                              |
-| `sessionMemoryMib` | The memory the container is given for each of those, in MiB. Default 2048. The container is capped at `sessionsMax` times this, with no swap past it, and a session that takes more than its share takes it from the others. |
+| `sessionMemoryMib` | The memory the container is given for each of those, in MiB. Default 1024. The container is capped at `sessionsMax` times this, with no swap past it, and a session that takes more than its share takes it from the others. |
 | `idleSecs`       | How long a session may sit idle before it ends, which chuggy holds it to as set. Default none: no idle limit.                 |
 | `deadlineSecs`   | How long a session may run before it is stopped, at most what a session's timer holds. Default none: no deadline. |
 | `sessionCapabilities` | The capabilities a thread's sessions may hold, such as `["RepositoryRead", "RunCommands"]`, narrowing its roster; a session so narrowed is handed chuggy's origin and its bearer in its shell, which is what lets a thread's scripts call chuggy with `chuggy`. While it is set, no session is taken from a chuggy that has not said it reads it. Default none: a thread holds its whole roster, and its shell is handed no credential. |
