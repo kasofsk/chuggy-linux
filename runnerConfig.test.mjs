@@ -341,7 +341,7 @@ test("a volume no mount can make as it is written is refused, naming the volume"
     );
 });
 
-test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+test("concurrencyMax may be 0 beside sessionsMax, which leaves a pool's service no work, and not where sessionsMax is 0 too", async (t) => {
   const directory = await scratch(t);
   for (const sessions of [{}, { sessionsMax: 1 }]) {
     const config = await runnerConfig(

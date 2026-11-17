@@ -195,9 +195,9 @@ function credentialSetSchema(setSchema) {
 export const runnerConfigSchema = z
   .strictObject({
     engine: z.enum(["docker", "podman"]).default("docker"),
-    /** The jobs held at once, none where it is 0, as on a runner kept for sessions. */
+    /** The jobs held at once; at 0 a pool's service takes no work, which the file still accepts. */
     concurrencyMax: nonnegativeSchema.default(1),
-    /** The sessions held beside the jobs, none where it is 0. */
+    /** The sessions held beside the jobs, none where it is 0; chuggy hands a pool none. */
     sessionsMax: nonnegativeSchema.default(2),
     /** Where `claude setup-token`'s output was saved, a subscription's credential. */
     claudeTokenFile: credentialFileSchema.optional(),
@@ -458,8 +458,8 @@ export function runnerPoolName(poolFile) {
 /**
  * The limits a pool's service holds: those its entry in `pools` names, and
  * the file's for the rest. A personal runner holds no sessions whatever the
- * file says, since chuggy hands sessions only to a dedicated pool or a chat
- * host, so its `sessionsMax` is ignored rather than refused.
+ * file says, since chuggy hands sessions only to a member's chat host, so
+ * its `sessionsMax` is ignored rather than refused.
  *
  * @param {RunnerConfig} config
  * @param {string} poolFile
@@ -472,10 +472,9 @@ export function runnerPoolLimits(config, poolFile, personal) {
 
 /**
  * Why a personal runner's service would take no work, or nothing: one whose
- * `concurrencyMax` is 0 was kept for sessions, which it is no longer handed.
- * The remedy names its own entry in `pools`, since the file's
- * `concurrencyMax` would hand jobs to a pool sharing the file that is kept
- * for sessions too.
+ * `concurrencyMax` is 0 takes none, since no pool is handed a session. The
+ * remedy names its own entry in `pools`, since the file's `concurrencyMax`
+ * is every pool's sharing the file that names none of its own.
  *
  * @param {RunnerConfig} config
  * @param {string} file the runner's file
