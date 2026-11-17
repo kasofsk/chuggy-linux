@@ -141,13 +141,13 @@ test("a host's settings are the core's defaults where the file names none, its o
       ...config,
       chat: {
         sessionsMax: 3,
-        sessionMemoryMib: 1024,
+        sessionMemoryMib: 3072,
         image: { image: "img:1", pull: "never" },
       },
     },
     user,
   );
-  assert.equal(chatHostMemoryBytes(own), 3 * 1024 * 2 ** 20);
+  assert.equal(chatHostMemoryBytes(own), 3 * 3072 * 2 ** 20);
   assert.deepEqual(own.image, { image: "img:1", pull: "never" });
 });
 

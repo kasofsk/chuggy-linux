@@ -1328,7 +1328,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   const chat = {
     image: { image: "registry.example/me/chat:1" },
     sessionsMax: 3,
-    sessionMemoryMib: 1024,
+    sessionMemoryMib: 3072,
     idleSecs: 300,
     deadlineSecs: 7200,
     sessionCapabilities: ["RepositoryRead", "RunCommands"],
@@ -1343,7 +1343,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   });
   assert.equal(
     runnerChatSettingsLine(set),
-    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 300, deadlineSecs 7200, sessionCapabilities RepositoryRead RunCommands, ticketWakes unset, so chuggy's default: no wakes, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
+    "sessionsMax 3, sessionMemoryMib 3072, so the supervisor is capped at 9216 MiB, idleSecs 300, deadlineSecs 7200, sessionCapabilities RepositoryRead RunCommands, ticketWakes unset, so chuggy's default: no wakes, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
   );
   for (const [pull, said] of [
     ["always", "before each start"],
