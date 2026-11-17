@@ -24,6 +24,12 @@ export const unrestartedExitStatus = 3;
  */
 export const updatedExitStatus = 75;
 
+/**
+ * How long systemd waits on a stopped unit before it kills it: its own
+ * default, `DefaultTimeoutStopSec`, which `serviceUnit` leaves as it is.
+ */
+export const serviceStopTimeoutMsDefault = 90_000;
+
 /** The one unit a machine served a pool under before each pool had its own. */
 export const legacyServiceUnitName = "chuggy-linux.service";
 

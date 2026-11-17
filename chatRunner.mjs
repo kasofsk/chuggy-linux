@@ -34,6 +34,7 @@ import {
 
 import {
   engineEndpoint,
+  ownScratchRemoved,
   poolRuntimeDirectory,
   runnerEngine,
   runnerUpdates,
@@ -44,7 +45,11 @@ import {
   runnerCredentialSets,
   runnerCredentialsHanded,
 } from "./runnerConfig.mjs";
-import { unrestartedExitStatus, updatedExitStatus } from "./systemdUnit.mjs";
+import {
+  serviceStopTimeoutMsDefault,
+  unrestartedExitStatus,
+  updatedExitStatus,
+} from "./systemdUnit.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatHostSettings} ChatHostSettings
@@ -203,11 +208,54 @@ export async function chatRunnerParts(setup, host, copy) {
   return { chat, engine, runtime };
 }
 
+/** What a signal gives the host's end: a third of systemd's stop timeout. */
+export const chatRunnerEndWaitMs = serviceStopTimeoutMsDefault / 3;
+
+/**
+ * How long after a signal a host not yet ended is ended by it anyway: two
+ * thirds of systemd's stop timeout, so the process ends before systemd
+ * kills it.
+ */
+export const chatRunnerEndExitMs = (serviceStopTimeoutMsDefault * 2) / 3;
+
+/**
+ * @typedef {object} ChatRunnerSignals what a signal is heard and raised by, as `process` does
+ * @property {(signal: NodeJS.Signals, listener: () => void) => unknown} once
+ * @property {(pid: number, signal: NodeJS.Signals) => unknown} kill
+ * @property {number} pid
+ */
+
+/**
+ * Has a SIGTERM, SIGINT or SIGHUP end the chat host within
+ * `chatRunnerEndWaitMs`, after which its run answers `Ended`. A host still
+ * running at `chatRunnerEndExitMs` has this process's own scratch removed
+ * and the process ended by that signal, as a pool's run is at once.
+ *
+ * @param {import("@chuggy/worker-core/chatHost.mjs").ChatHost} chat
+ * @param {string} runtime the host's runtime directory
+ * @param {ChatRunnerSignals} [signals]
+ */
+export function chatRunnerEndedOnSignal(chat, runtime, signals = process) {
+  for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT", "SIGHUP"]))
+    signals.once(signal, () => {
+      chat.end(chatRunnerEndWaitMs);
+      globalThis
+        .setTimeout(() => {
+          try {
+            ownScratchRemoved(runtime, signals.pid);
+          } finally {
+            signals.kill(signals.pid, signal);
+          }
+        }, chatRunnerEndExitMs)
+        .unref();
+    });
+}
+
 /**
  * The chat host until the plane denies it, which the unit does not restart,
- * or until the runner has installed a release of itself, which the unit
- * restarts it on. Either way its supervisor has ended, and every session
- * with it.
+ * until the runner has installed a release of itself, which the unit
+ * restarts it on, or until it is ended, which exits 0, a stop systemd takes
+ * as clean. Each way its supervisor has ended, and every session with it.
  *
  * @param {import("@chuggy/worker-core/chatHost.mjs").ChatHost} chat
  * @param {{log: (line: string) => void, underService: boolean, package: string}} seams
@@ -215,6 +263,7 @@ export async function chatRunnerParts(setup, host, copy) {
  */
 export async function chatRunnerLoop(chat, seams) {
   const pass = await chat.run();
+  if (pass.passed === "Ended") return 0;
   if (pass.passed === "Denied") return unrestartedExitStatus;
   const release = `${seams.package} ${pass.version}`;
   seams.log(

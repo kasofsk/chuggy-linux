@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { readdirSync } from "node:fs";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +23,7 @@ import {
   chatSupervisorNaming,
 } from "@chuggy/worker-core/chatHost.mjs";
 import { chatSupervisorRunArgv } from "@chuggy/worker-core/engineArgv.mjs";
+import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import {
   chatCredentialOwner,
@@ -20,8 +31,12 @@ import {
   chatDockerUidRefusal,
   chatHostPlaces,
   chatHostSettings,
+  chatRunnerEndExitMs,
+  chatRunnerEndWaitMs,
+  chatRunnerEndedOnSignal,
   chatRunnerLoop,
 } from "./chatRunner.mjs";
+import { serviceStopTimeoutMsDefault } from "./systemdUnit.mjs";
 
 /** A member's chat host, as its file names it. */
 const identity = /** @type {const} */ ({
@@ -283,4 +298,118 @@ test("a denied host exits for the unit not to restart it, and an updated one for
     said[1],
     "ending: start this run again to run chuggy-linux 0.36.0",
   );
+});
+
+test("an ended host exits 0, which systemd takes as a clean stop", async () => {
+  const ended = /** @type {any} */ ({ run: async () => ({ passed: "Ended" }) });
+  assert.equal(
+    await chatRunnerLoop(ended, {
+      log: () => assert.fail("an end says nothing"),
+      underService: true,
+      package: "chuggy-linux",
+    }),
+    0,
+  );
+});
+
+test("a signal's end is given less time than the process waits on it, and the process ends before systemd's stop timeout", () => {
+  assert.ok(
+    chatRunnerEndWaitMs > 0 && Number.isSafeInteger(chatRunnerEndWaitMs),
+  );
+  assert.ok(chatRunnerEndWaitMs < chatRunnerEndExitMs);
+  assert.ok(chatRunnerEndExitMs < serviceStopTimeoutMsDefault);
+});
+
+/** How long a signalled child may take to exit before its test fails. */
+const childExitWaitMs = 10_000;
+
+for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT", "SIGHUP"]))
+  test(
+    `a ${signal} to a chat run ends the host, whose run then exits 0, its own scratch removed`,
+    { timeout: childExitWaitMs },
+    async (t) => {
+      const runtime = await scratch(t);
+      await mkdir(join(runtime, "pull-1-another"));
+      const child = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { runtimeScratch } from ${JSON.stringify(import.meta.resolve("@chuggy/worker-core/runtimeScratch.mjs"))};
+import { chatRunnerEndedOnSignal, chatRunnerLoop } from ${JSON.stringify(import.meta.resolve("./chatRunner.mjs"))};
+import { ownScratchRemoved } from ${JSON.stringify(import.meta.resolve("./runner.mjs"))};
+const runtime = process.argv[1];
+mkdirSync(join(runtime, runtimeScratch("pull") + "a"));
+let ended;
+const chat = {
+  run: () => new Promise((resolve) => { ended = resolve; }),
+  end: (waitMs) => {
+    process.stdout.write("end " + String(waitMs) + "\\n");
+    ended({ passed: "Ended" });
+  },
+};
+chatRunnerEndedOnSignal(chat, runtime);
+setInterval(() => undefined, 1000);
+process.stdout.write("ready\\n");
+const status = await chatRunnerLoop(chat, { log: () => undefined, underService: true, package: "chuggy-linux" });
+ownScratchRemoved(runtime);
+process.stdout.write("exit " + String(status) + "\\n");
+process.exit(status);`,
+          runtime,
+        ],
+        { stdio: ["ignore", "pipe", "inherit"] },
+      );
+      /** @type {string[]} */
+      const said = [];
+      child.stdout.on("data", (/** @type {Buffer} */ data) =>
+        said.push(...data.toString().split("\n").filter(Boolean)),
+      );
+      await once(child.stdout, "data");
+      assert.equal((await readdir(runtime)).length, 2);
+      const exited = once(child, "exit");
+      child.kill(signal);
+      assert.deepEqual(await exited, [0, null]);
+      assert.deepEqual(said, [
+        "ready",
+        `end ${String(chatRunnerEndWaitMs)}`,
+        "exit 0",
+      ]);
+      assert.deepEqual(await readdir(runtime), ["pull-1-another"]);
+    },
+  );
+
+test("a host a signal could not end is ended by that signal once the wait on it runs out, its own scratch removed first", async (t) => {
+  const runtime = await scratch(t);
+  await mkdir(join(runtime, `${runtimeScratch("job", 12)}a`));
+  await mkdir(join(runtime, "job-1-another"));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  /** @type {Map<string, () => void>} */
+  const heard = new Map();
+  /** @type {string[]} */
+  const done = [];
+  const signals = {
+    once: (/** @type {string} */ signal, /** @type {() => void} */ listener) =>
+      heard.set(signal, listener),
+    kill: (/** @type {number} */ pid, /** @type {string} */ signal) =>
+      done.push(
+        `kill ${String(pid)} ${signal} ${readdirSync(runtime).join(" ")}`,
+      ),
+    pid: 12,
+  };
+  const chat = /** @type {any} */ ({
+    end: (/** @type {number} */ waitMs) => done.push(`end ${String(waitMs)}`),
+  });
+  chatRunnerEndedOnSignal(chat, runtime, signals);
+  assert.deepEqual([...heard.keys()], ["SIGTERM", "SIGINT", "SIGHUP"]);
+  heard.get("SIGTERM")?.();
+  assert.deepEqual(done, [`end ${String(chatRunnerEndWaitMs)}`]);
+  t.mock.timers.tick(chatRunnerEndExitMs - 1);
+  assert.equal(done.length, 1);
+  t.mock.timers.tick(1);
+  assert.deepEqual(done, [
+    `end ${String(chatRunnerEndWaitMs)}`,
+    "kill 12 SIGTERM job-1-another",
+  ]);
 });
