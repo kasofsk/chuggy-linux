@@ -354,7 +354,7 @@ test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions 
 
 test("a pool's entry in pools sets its own service's limits in place of the file's, each it names, and no other pool's", async (t) => {
   const pools = {
-    "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+    "vteng.chuggy.docs": { concurrencyMax: 0, sessionsMax: 1 },
     "vteng.chuggy.builds": { sessionsMax: 0 },
   };
   const config = await runnerConfig(
@@ -364,9 +364,9 @@ test("a pool's entry in pools sets its own service's limits in place of the file
   /** @type {[string, {concurrencyMax: number, sessionsMax: number}, string][]} */
   const cases = [
     [
-      "vteng.chuggy.lead",
+      "vteng.chuggy.docs",
       { concurrencyMax: 0, sessionsMax: 1 },
-      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.lead sets them",
+      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.docs sets them",
     ],
     [
       "vteng.chuggy.builds",
@@ -452,13 +452,13 @@ test("a personal runner holds no session whatever the file or its entry in pools
 test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
   const directory = await scratch(t);
   const refusal =
-    "pools.vteng.chuggy.lead leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
+    "pools.vteng.chuggy.docs leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
   /** @type {[Record<string, unknown>, string][]} */
   const refused = [
     [
       {
         ...minimal,
-        pools: { "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 0 } },
+        pools: { "vteng.chuggy.docs": { concurrencyMax: 0, sessionsMax: 0 } },
       },
       refusal,
     ],
@@ -466,7 +466,7 @@ test("a pool's entry is refused where it leaves that pool's service no work, whi
       {
         ...minimal,
         sessionsMax: 0,
-        pools: { "vteng.chuggy.lead": { concurrencyMax: 0 } },
+        pools: { "vteng.chuggy.docs": { concurrencyMax: 0 } },
       },
       refusal,
     ],
@@ -475,17 +475,17 @@ test("a pool's entry is refused where it leaves that pool's service no work, whi
         ...minimal,
         concurrencyMax: 0,
         sessionsMax: 1,
-        pools: { "vteng.chuggy.lead": { sessionsMax: 0 } },
+        pools: { "vteng.chuggy.docs": { sessionsMax: 0 } },
       },
       refusal,
     ],
     [
-      { ...minimal, pools: { "vteng.chuggy.lead": { timeoutSecsMax: 60 } } },
-      'pools.vteng.chuggy.lead Unrecognized key: "timeoutSecsMax"',
+      { ...minimal, pools: { "vteng.chuggy.docs": { timeoutSecsMax: 60 } } },
+      'pools.vteng.chuggy.docs Unrecognized key: "timeoutSecsMax"',
     ],
     [
-      { ...minimal, pools: { "vteng.chuggy.lead": { concurrencyMax: -1 } } },
-      "pools.vteng.chuggy.lead.concurrencyMax Too small: expected number to be >=0",
+      { ...minimal, pools: { "vteng.chuggy.docs": { concurrencyMax: -1 } } },
+      "pools.vteng.chuggy.docs.concurrencyMax Too small: expected number to be >=0",
     ],
   ];
   for (const [document, why] of refused) {
