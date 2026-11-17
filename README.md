@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.57.0/chuggy-linux-0.57.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.58.0/chuggy-linux-0.58.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -46,7 +46,7 @@ chuggy-linux register --api <chuggy's origin> --token=<token> --personal
 
 It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over and restarts its service on it; the registration it held before stays in chuggy, offline, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
-A personal runner runs jobs alone. chuggy hands sessions only to a project's pool and a member's chat host, so a personal runner's service asks for none, whatever `sessionsMax` says, and `status` and `doctor` name only its `concurrencyMax`. A runner's file that sets `sessionsMax` still serves it, but `run`, `once`, `status` and `stop` refuse a personal runner whose `concurrencyMax` is 0, since it would take no work, and `doctor` fails it. `run` then exits 3, which its service is not restarted after: give it jobs with its own entry in `pools` and start its service again, or run your chats on a [chat host](#a-chat-host) and disable it.
+A personal runner runs jobs alone. chuggy hands sessions only to a member's chat host, so a personal runner's service asks for none, whatever `sessionsMax` says, and `status` and `doctor` name only its `concurrencyMax`. A runner's file that sets `sessionsMax` still serves it, but `run`, `once`, `status` and `stop` refuse a personal runner whose `concurrencyMax` is 0, since it would take no work, and `doctor` fails it. `run` then exits 3, which its service is not restarted after: give it jobs with its own entry in `pools` and start its service again, or run your chats on a [chat host](#a-chat-host) and disable it.
 
 A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host).
 
@@ -81,8 +81,8 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | Key                | Required | Meaning                                                                                                    |
 | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `engine`           | no       | `docker` (the default) or `podman`.                                                                        |
-| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, for a runner kept for sessions, never a personal runner's. Default 1. |
-| `sessionsMax`      | no       | Sessions each pool's service runs at once besides its jobs; 0 runs none. A personal runner runs none whatever it says. Default 2. |
+| `concurrencyMax`   | no       | Jobs each pool's service runs at once; 0 (0.18.0 or later) runs none, so that service takes no work, and is never a personal runner's. Default 1. |
+| `sessionsMax`      | no       | Changes nothing a pool's service takes, since chuggy claims a pool no session; a chat host's own limit is `chat.sessionsMax`. Default 2. |
 | `claudeTokenFile`  | one of   | The file `claude setup-token`'s output was saved to, mode 600: a Claude subscription's token.              |
 | `claudeCredential` | one of   | The credential Claude Code runs on, of any kind, or a set of them, below, in place of `claudeTokenFile`.   |
 | `codexCredential`  | no       | `{ "authFile": … }`, the `auth.json` Codex runs on, or a set, below; 0.25.0 or later. Default none.       |
@@ -94,7 +94,7 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | `engineSocket`     | no       | `true` hands each job this machine's engine, below. Default `false`.                                       |
 | `images`           | no       | The images a job that pins none runs in, below. Default none.                                              |
 | `volumes`          | no       | Named volumes and directories of this machine mounted into every job, below. Default none.                 |
-| `pools`            | no       | A pool's own `concurrencyMax` and `sessionsMax`, by its pool file's name, below; 0.18.0 or later. Default none. |
+| `pools`            | no       | A pool's own `concurrencyMax`, and `sessionsMax`, which changes nothing it takes, by its pool file's name, below; 0.18.0 or later. Default none. |
 | `autoUpdate`       | no       | `false` stops the service updating itself; see [Updates](#updates). Default `true`.                        |
 | `reportMetrics`    | no       | `true` has each pool's service report its work and this machine's name, CPUs, load, memory and free disk against the floor to chuggy, whose Grafana shows them; 0.36.0 or later. Default `false`. |
 | `imageUnusedSecsMax` | no     | How long a job's image this runner pulled may go unused before it is removed; 0 keeps them until the disk is under `diskFreeGibMin`. Default a week, 604800. |
@@ -103,20 +103,18 @@ A member's chat host is registered with `--chat`: see [A chat host](#a-chat-host
 | `memoryReservedGib` | no      | The GiB of the memory budget no job may ask, kept for what always runs beside the jobs, below; 0.31.0 or later. Default 0, which lets a job ask the whole budget. |
 | `chat`             | no       | A chat host's own settings, in [A chat host](#a-chat-host); 0.35.0 or later. Default none, every setting its default. |
 
-Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs and `sessionsMax` sessions at once; a job also starts only into the room the memory budget below leaves. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has.
+Each assignment's CPU and memory are checked against the whole machine, not what already runs on it, so a pool's service may run `concurrencyMax` jobs at once; a job also starts only into the room the memory budget below leaves. A pool's service takes no session, since chuggy claims a pool none: where a project routes its threads to runners, a member's threads run on their chat host ([A chat host](#a-chat-host)). So `sessionsMax`, and a pool's `sessionsMax` in `pools`, change nothing a pool's service takes; a chat host's own limit is `chat.sessionsMax`. A pool whose `concurrencyMax` is 0 takes no work; the file still accepts one, unless it sets `sessionsMax` to 0 too. A job no runner has room for waits until one has.
 
-`pools` sets one pool's service apart from the rest. It is keyed by the pool file's name without `.json`, as `register` wrote it, and each limit it names replaces the file's for that service alone; one leaving that service 0 jobs and 0 sessions is refused. A personal runner that takes jobs beside a project's pool kept for its lead:
+`pools` sets one pool's service apart from the rest. It is keyed by the pool file's name without `.json`, as `register` wrote it, and each limit it names replaces the file's for that service alone; one leaving that service 0 jobs and 0 sessions is refused. A pool that runs one job at a time beside the rest:
 
 ```json
 "concurrencyMax": 2,
-"pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
+"pools": { "vteng.chuggy.shame": { "concurrencyMax": 1 } }
 ```
 
-The pool `vteng.chuggy.lead.json` runs one session and no job, every other pool's service runs two jobs and two sessions, and the personal runner's two jobs and no session. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
+The pool `vteng.chuggy.shame.json` runs one job at a time, and every other pool's service, a personal runner's among them, two. A pool's service reads this file when it starts, so restart the service after an edit: `status` and `doctor` print the limits the file now gives the pool they are given, not those its running service holds. `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`, where `register` writes each pool file.
 
 A `concurrencyMax` of 0 and `pools` need chuggy-linux 0.18.0 or later: an earlier copy refuses the file, and its service fails before it reaches the update that would read it, so check `chuggy-linux --version` before writing either.
-
-A session is a project's chat or lead, run on this machine's Claude credential, and comes only from a project whose administrator routes Chat or Lead to Runners. It is run as a job is, with the same credential, environment and network, but is not held to `timeoutSecsMax`: it ends once idle, and is killed at its assignment's own deadline.
 
 **The Claude credential** is one file, mode 600 and yours, and the settings its kind needs, or a set of them, below. `claudeTokenFile` names a subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other:
 

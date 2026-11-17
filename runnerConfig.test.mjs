@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { URL } from "node:url";
 
 import {
   claudeCredentialDescribed,
@@ -393,6 +401,35 @@ test("a pool's entry in pools sets its own service's limits in place of the file
     const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
     assert.deepEqual(runnerPoolLimits(config, poolFile, false), limits, name);
     assert.equal(runnerConfigLimits(config, poolFile, false), line, name);
+  }
+});
+
+test("README's pools example runs its pool one job at a time and every other pool's service, a personal runner's among them, two", async (t) => {
+  const readme = await readFile(new URL("README.md", import.meta.url), "utf8");
+  const example =
+    /one job at a time beside the rest:\n\n```json\n(.*?)\n```/su.exec(
+      readme,
+    )?.[1];
+  assert.ok(example, "README carries the pools example");
+  const config = await runnerConfig(
+    await written(await scratch(t), {
+      ...minimal,
+      ...JSON.parse(`{${example}}`),
+    }),
+  );
+  /** @type {[string, boolean, number][]} */
+  const cases = [
+    ["vteng.chuggy.shame", false, 1],
+    ["vteng.chuggy.builds", false, 2],
+    ["vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2fmember", true, 2],
+  ];
+  for (const [name, personal, concurrencyMax] of cases) {
+    const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
+    assert.equal(
+      runnerPoolLimits(config, poolFile, personal).concurrencyMax,
+      concurrencyMax,
+      name,
+    );
   }
 });
 
