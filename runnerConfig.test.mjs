@@ -1282,7 +1282,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   const mib = (bytes) => String(bytes / 2 ** 20);
   assert.equal(
     runnerChatSettingsLine(bare),
-    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs none, deadlineSecs none, sessionCapabilities every capability of the roster, outputBytesMax 65536, image the one chuggy names`,
+    `sessionsMax ${String(chatHostSessionsMaxDefault)}, sessionMemoryMib ${mib(chatSessionMemoryBytesDefault)}, so the supervisor is capped at ${mib(chatHostMemoryBytes(defaults))} MiB, idleSecs none, deadlineSecs none, sessionCapabilities every capability of the roster, ticketWakes unset, so chuggy's default: no wakes, outputBytesMax 65536, image the one chuggy names`,
   );
   const empty = await runnerConfig(
     await written(directory, { ...minimal, chat: {} }),
@@ -1306,7 +1306,7 @@ test("a chat host's settings line says each of its chat keys, the core's default
   });
   assert.equal(
     runnerChatSettingsLine(set),
-    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 300, deadlineSecs 7200, sessionCapabilities RepositoryRead RunCommands, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
+    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 300, deadlineSecs 7200, sessionCapabilities RepositoryRead RunCommands, ticketWakes unset, so chuggy's default: no wakes, outputBytesMax 1024, image registry.example/me/chat:1, pulled where it is missing",
   );
   for (const [pull, said] of [
     ["always", "before each start"],

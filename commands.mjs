@@ -35,7 +35,11 @@ import {
   chatHostStatusAsked,
   chatHostStatusLines,
 } from "@chuggy/worker-core/chatHost.mjs";
-import { chatRunnerLoop, chatRunnerParts } from "./chatRunner.mjs";
+import {
+  chatRunnerEndedOnSignal,
+  chatRunnerLoop,
+  chatRunnerParts,
+} from "./chatRunner.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { diskFloorSaid, diskFreePorts } from "./diskFree.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
@@ -57,6 +61,7 @@ import {
 } from "@chuggy/worker-core/register.mjs";
 import {
   jobNetwork,
+  ownScratchRemoved,
   poolRuntimeDirectory,
   runnerDirectories,
   runnerEngine,
@@ -943,7 +948,8 @@ async function mcp(host, values, positionals) {
 /**
  * A chat host's service: its door claimed before what a killed run left is
  * removed, as a pool's run claims its own, then the host until the plane
- * denies it or the runner updated itself.
+ * denies it, the runner updated itself or a signal ended it, and then this
+ * process's own scratch removed.
  *
  * @param {CliCall} call
  */
@@ -970,7 +976,7 @@ async function chatRun(call) {
   );
   try {
     await runnerLeftoversRemoved(runtime);
-    scratchRemovedOnSignal(runtime);
+    chatRunnerEndedOnSignal(chat, runtime);
     if ((await jobNetwork(engine, setup.config.network)) === "Created")
       call.host.out(`made the job network ${setup.config.network}`);
     return await chatRunnerLoop(chat, {
@@ -980,6 +986,7 @@ async function chatRun(call) {
     });
   } finally {
     server.close();
+    ownScratchRemoved(runtime);
   }
 }
 
