@@ -1150,12 +1150,12 @@ test("doctor names the limits a pool's entry in pools sets its service, and warn
   const { findings } = await doctored(t, {
     runner: {
       pools: {
-        "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
-        "vteng.chuggy.leed": { concurrencyMax: 0, sessionsMax: 1 },
-        "vteng.chuggy.lead.json": { concurrencyMax: 0, sessionsMax: 1 },
+        "vteng.chuggy.docs": { concurrencyMax: 0, sessionsMax: 1 },
+        "vteng.chuggy.dosc": { concurrencyMax: 0, sessionsMax: 1 },
+        "vteng.chuggy.docs.json": { concurrencyMax: 0, sessionsMax: 1 },
       },
     },
-    poolFiles: ["vteng.chuggy.lead.json"],
+    poolFiles: ["vteng.chuggy.docs.json"],
   });
   const found = findings.find(
     (finding) => finding.check === "runner configuration",
@@ -1169,8 +1169,8 @@ test("doctor names the limits a pool's entry in pools sets its service, and warn
       line.replace(/ in \S+\/chuggy\/pools,/u, " in pools,"),
     ),
     [
-      "pools.vteng.chuggy.leed names no pool file in pools, so it limits no service",
-      "pools.vteng.chuggy.lead.json names no pool file in pools, so it limits no service",
+      "pools.vteng.chuggy.dosc names no pool file in pools, so it limits no service",
+      "pools.vteng.chuggy.docs.json names no pool file in pools, so it limits no service",
     ],
   );
 });

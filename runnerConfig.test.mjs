@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { URL } from "node:url";
 
 import {
   claudeCredentialDescribed,
@@ -333,7 +341,7 @@ test("a volume no mount can make as it is written is refused, naming the volume"
     );
 });
 
-test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+test("concurrencyMax may be 0 beside sessionsMax, which leaves a pool's service no work, and not where sessionsMax is 0 too", async (t) => {
   const directory = await scratch(t);
   for (const sessions of [{}, { sessionsMax: 1 }]) {
     const config = await runnerConfig(
@@ -354,7 +362,7 @@ test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions 
 
 test("a pool's entry in pools sets its own service's limits in place of the file's, each it names, and no other pool's", async (t) => {
   const pools = {
-    "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+    "vteng.chuggy.docs": { concurrencyMax: 0, sessionsMax: 1 },
     "vteng.chuggy.builds": { sessionsMax: 0 },
   };
   const config = await runnerConfig(
@@ -364,9 +372,9 @@ test("a pool's entry in pools sets its own service's limits in place of the file
   /** @type {[string, {concurrencyMax: number, sessionsMax: number}, string][]} */
   const cases = [
     [
-      "vteng.chuggy.lead",
+      "vteng.chuggy.docs",
       { concurrencyMax: 0, sessionsMax: 1 },
-      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.lead sets them",
+      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.docs sets them",
     ],
     [
       "vteng.chuggy.builds",
@@ -393,6 +401,35 @@ test("a pool's entry in pools sets its own service's limits in place of the file
     const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
     assert.deepEqual(runnerPoolLimits(config, poolFile, false), limits, name);
     assert.equal(runnerConfigLimits(config, poolFile, false), line, name);
+  }
+});
+
+test("README's pools example runs its pool one job at a time and every other pool's service, a personal runner's among them, two", async (t) => {
+  const readme = await readFile(new URL("README.md", import.meta.url), "utf8");
+  const example =
+    /one job at a time beside the rest:\n\n```json\n(.*?)\n```/su.exec(
+      readme,
+    )?.[1];
+  assert.ok(example, "README carries the pools example");
+  const config = await runnerConfig(
+    await written(await scratch(t), {
+      ...minimal,
+      ...JSON.parse(`{${example}}`),
+    }),
+  );
+  /** @type {[string, boolean, number][]} */
+  const cases = [
+    ["vteng.chuggy.shame", false, 1],
+    ["vteng.chuggy.builds", false, 2],
+    ["vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2fmember", true, 2],
+  ];
+  for (const [name, personal, concurrencyMax] of cases) {
+    const poolFile = `/home/you/.config/chuggy/pools/${name}.json`;
+    assert.equal(
+      runnerPoolLimits(config, poolFile, personal).concurrencyMax,
+      concurrencyMax,
+      name,
+    );
   }
 });
 
@@ -452,13 +489,13 @@ test("a personal runner holds no session whatever the file or its entry in pools
 test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
   const directory = await scratch(t);
   const refusal =
-    "pools.vteng.chuggy.lead leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
+    "pools.vteng.chuggy.docs leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
   /** @type {[Record<string, unknown>, string][]} */
   const refused = [
     [
       {
         ...minimal,
-        pools: { "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 0 } },
+        pools: { "vteng.chuggy.docs": { concurrencyMax: 0, sessionsMax: 0 } },
       },
       refusal,
     ],
@@ -466,7 +503,7 @@ test("a pool's entry is refused where it leaves that pool's service no work, whi
       {
         ...minimal,
         sessionsMax: 0,
-        pools: { "vteng.chuggy.lead": { concurrencyMax: 0 } },
+        pools: { "vteng.chuggy.docs": { concurrencyMax: 0 } },
       },
       refusal,
     ],
@@ -475,17 +512,17 @@ test("a pool's entry is refused where it leaves that pool's service no work, whi
         ...minimal,
         concurrencyMax: 0,
         sessionsMax: 1,
-        pools: { "vteng.chuggy.lead": { sessionsMax: 0 } },
+        pools: { "vteng.chuggy.docs": { sessionsMax: 0 } },
       },
       refusal,
     ],
     [
-      { ...minimal, pools: { "vteng.chuggy.lead": { timeoutSecsMax: 60 } } },
-      'pools.vteng.chuggy.lead Unrecognized key: "timeoutSecsMax"',
+      { ...minimal, pools: { "vteng.chuggy.docs": { timeoutSecsMax: 60 } } },
+      'pools.vteng.chuggy.docs Unrecognized key: "timeoutSecsMax"',
     ],
     [
-      { ...minimal, pools: { "vteng.chuggy.lead": { concurrencyMax: -1 } } },
-      "pools.vteng.chuggy.lead.concurrencyMax Too small: expected number to be >=0",
+      { ...minimal, pools: { "vteng.chuggy.docs": { concurrencyMax: -1 } } },
+      "pools.vteng.chuggy.docs.concurrencyMax Too small: expected number to be >=0",
     ],
   ];
   for (const [document, why] of refused) {
