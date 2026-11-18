@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath, URL, URLSearchParams } from "node:url";
 
@@ -33,8 +34,12 @@ function bodyOf(request) {
   });
 }
 
-/** A site whose issuer is itself, issuing `access-N` and `renewal-N` for the Nth grant. */
-async function siteOf(t) {
+/**
+ * A site whose issuer is itself, issuing `access-N` and `renewal-N` for the
+ * Nth grant once `answering` settles, or refusing it where that answers a
+ * refusal.
+ */
+async function siteOf(t, answering = async () => undefined) {
   const grants = [];
   const server = createServer(async (request, response) => {
     const origin = `http://127.0.0.1:${String(server.address().port)}`;
@@ -59,6 +64,8 @@ async function siteOf(t) {
         Object.fromEntries(new URLSearchParams(await bodyOf(request))),
       );
       const n = String(grants.length);
+      const refusal = await answering();
+      if (refusal !== undefined) return json(400, refusal);
       return json(200, {
         access_token: `access-${n}`,
         refresh_token: `renewal-${n}`,
@@ -76,28 +83,31 @@ async function siteOf(t) {
   return { site: `http://127.0.0.1:${String(server.address().port)}`, grants };
 }
 
+/** `mcp` started for the suite's project as a coding agent starts it. */
+function transportOf(home, site) {
+  return new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      cli,
+      "mcp",
+      "--site",
+      site,
+      "--workspace",
+      "vteng",
+      "--project",
+      "chuggy",
+    ],
+    env: { HOME: home, PATH: process.env.PATH ?? "" },
+    stderr: "pipe",
+  });
+}
+
 /** A client that fails its test on any line on stdout that is not the protocol's. */
 async function clientOf(t, home, site) {
   const client = new Client({ name: "suite", version: "1" });
   const strays = [];
   client.onerror = (failure) => strays.push(failure);
-  await client.connect(
-    new StdioClientTransport({
-      command: process.execPath,
-      args: [
-        cli,
-        "mcp",
-        "--site",
-        site,
-        "--workspace",
-        "vteng",
-        "--project",
-        "chuggy",
-      ],
-      env: { HOME: home, PATH: process.env.PATH ?? "" },
-      stderr: "pipe",
-    }),
-  );
+  await client.connect(transportOf(home, site));
   t.after(async () => {
     await client.close();
     assert.deepEqual(strays, []);
@@ -111,16 +121,22 @@ async function homeOf(t) {
   return home;
 }
 
+/** A home whose sign-in to `site` holds the renewal token `renewal-0`, and that token's file. */
+async function signedInOf(t, site) {
+  const home = await homeOf(t);
+  const file = localToolSignInFile(runnerPaths({}, home).signIns, site);
+  await mkdir(runnerPaths({}, home).signIns, { recursive: true });
+  await writeFile(file, "renewal-0\n", { mode: 0o600 });
+  return { home, file };
+}
+
 function textOf(answer) {
   return answer.content.map(({ text }) => text).join("");
 }
 
 test("an agent is given the project tools, those of your own agent accounts and the merge of your ticket's pull request, and reads a ticket under a renewed sign-in", async (t) => {
   const { site, grants } = await siteOf(t);
-  const home = await homeOf(t);
-  const file = localToolSignInFile(runnerPaths({}, home).signIns, site);
-  await mkdir(runnerPaths({}, home).signIns, { recursive: true });
-  await writeFile(file, "renewal-0\n", { mode: 0o600 });
+  const { home, file } = await signedInOf(t, site);
 
   const client = await clientOf(t, home, site);
   const names = (await client.listTools()).tools.map(({ name }) => name);
@@ -215,4 +231,75 @@ test("every other command refuses mcp's options", async () => {
     2,
   );
   assert.equal(await cliMain(["run", ...site, "--pool", "x"], host), 2);
+});
+
+test("every mcp on a machine uses the one stored access token, renewing once for its life", async (t) => {
+  const { site, grants } = await siteOf(t);
+  const { home } = await signedInOf(t, site);
+
+  for (const started of ["first", "second"]) {
+    const client = await clientOf(t, home, site);
+    const read = await client.callTool({
+      name: "read_ticket",
+      arguments: { ticket: 7 },
+    });
+    assert.match(textOf(read), /^HTTP 200\n/, started);
+    await client.close();
+  }
+  assert.equal(grants.length, 1);
+});
+
+test("a renewal sent before mcp is sent SIGTERM is stored before it exits", async (t) => {
+  let arrived;
+  const arriving = new Promise((resolve) => (arrived = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const { site } = await siteOf(t, () => {
+    arrived();
+    return released;
+  });
+  const { home, file } = await signedInOf(t, site);
+  const client = new Client({ name: "suite", version: "1" });
+  const transport = transportOf(home, site);
+  await client.connect(transport);
+  const exited = new Promise((resolve) => (client.onclose = resolve));
+  t.after(() => client.close());
+
+  const calling = client
+    .callTool({ name: "read_ticket", arguments: { ticket: 7 } })
+    .catch(() => undefined);
+  await arriving;
+  process.kill(transport.pid, "SIGTERM");
+  const exitWindowMs = 500;
+  const early = await Promise.race([
+    exited.then(() => "exited"),
+    wait(exitWindowMs, "held"),
+  ]);
+  assert.equal(early, "held");
+  release();
+  await exited;
+  await calling;
+  assert.equal((await readFile(file, "utf8")).trim(), "renewal-1");
+});
+
+test("after the issuer refuses a renewal, a later mcp's call says when and why", async (t) => {
+  const { site } = await siteOf(t, async () => ({
+    error: "invalid_grant",
+    error_description: "the renewal token was already spent",
+  }));
+  const { home } = await signedInOf(t, site);
+  const refused = await clientOf(t, home, site);
+  await refused.callTool({ name: "read_ticket", arguments: { ticket: 7 } });
+  await refused.close();
+
+  const later = await clientOf(t, home, site);
+  const answer = await later.callTool({
+    name: "read_ticket",
+    arguments: { ticket: 7 },
+  });
+  assert.equal(answer.isError, true);
+  assert.match(
+    textOf(answer),
+    /The issuer ended this sign-in at \S+ and said why: "invalid_grant: the renewal token was already spent"/,
+  );
 });
