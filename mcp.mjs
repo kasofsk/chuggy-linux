@@ -11,7 +11,8 @@ import { localToolServed } from "@chuggy/worker-core/localTools.mjs";
 import * as z from "zod";
 
 /**
- * Serves until the agent closes stdio.
+ * Serves until the agent closes stdio or signals it to end, and any renewal
+ * already sent is stored.
  *
  * @param {{fetch: typeof globalThis.fetch, version: string}} host
  * @param {string} signIns
