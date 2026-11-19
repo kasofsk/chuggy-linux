@@ -1,7 +1,8 @@
 /**
  * `chuggy-linux mcp`: the `chuggy` tools served on stdio to a coding agent on
- * this machine, for one project, under its owner's own sign-in. Stdout is the
- * protocol's, so nothing here writes to it. The MCP SDK is this package's to
+ * this machine, for one project, under its owner's own sign-in, or the access
+ * token `CHUGGY_TOKEN` holds in its environment. Stdout is the protocol's, so
+ * nothing here writes to it. The MCP SDK is this package's to
  * bundle; the server is the worker core's.
  */
 
