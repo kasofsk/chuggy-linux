@@ -5,7 +5,14 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +30,7 @@ import { runnerPaths } from "./runnerConfig.mjs";
 
 const cli = fileURLToPath(new URL("./cli.mjs", import.meta.url));
 const ticketPath = "/api/v1/tenants/vteng/projects/chuggy/tickets/7";
+const accessToken = `chgp_${"a".repeat(43)}`;
 
 function bodyOf(request) {
   return new Promise((resolve) => {
@@ -41,6 +49,7 @@ function bodyOf(request) {
  */
 async function siteOf(t, answering = async () => undefined) {
   const grants = [];
+  const bearers = [];
   const server = createServer(async (request, response) => {
     const origin = `http://127.0.0.1:${String(server.address().port)}`;
     const json = (status, body) => {
@@ -72,19 +81,25 @@ async function siteOf(t, answering = async () => undefined) {
         expires_in: 3_600,
       });
     }
+    if (path === ticketPath) bearers.push(request.headers.authorization);
     if (path === ticketPath)
-      return request.headers.authorization?.startsWith("Bearer access-")
+      return request.headers.authorization?.startsWith("Bearer access-") ||
+        request.headers.authorization === `Bearer ${accessToken}`
         ? json(200, { ticket: 7, phase: "Draft" })
         : json(401, { error: "Unauthenticated" });
     return json(404, {});
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
-  return { site: `http://127.0.0.1:${String(server.address().port)}`, grants };
+  return {
+    site: `http://127.0.0.1:${String(server.address().port)}`,
+    grants,
+    bearers,
+  };
 }
 
-/** `mcp` started for the suite's project as a coding agent starts it. */
-function transportOf(home, site) {
+/** `mcp` started for the suite's project as a coding agent starts it, with `environment` beside its home. */
+function transportOf(home, site, environment = {}) {
   return new StdioClientTransport({
     command: process.execPath,
     args: [
@@ -97,17 +112,17 @@ function transportOf(home, site) {
       "--project",
       "chuggy",
     ],
-    env: { HOME: home, PATH: process.env.PATH ?? "" },
+    env: { ...environment, HOME: home, PATH: process.env.PATH ?? "" },
     stderr: "pipe",
   });
 }
 
 /** A client that fails its test on any line on stdout that is not the protocol's. */
-async function clientOf(t, home, site) {
+async function clientOf(t, home, site, environment) {
   const client = new Client({ name: "suite", version: "1" });
   const strays = [];
   client.onerror = (failure) => strays.push(failure);
-  await client.connect(transportOf(home, site));
+  await client.connect(transportOf(home, site, environment));
   t.after(async () => {
     await client.close();
     assert.deepEqual(strays, []);
@@ -302,4 +317,47 @@ test("after the issuer refuses a renewal, a later mcp's call says when and why",
     textOf(answer),
     /The issuer ended this sign-in at \S+ and said why: "invalid_grant: the renewal token was already spent"/,
   );
+});
+
+test("where CHUGGY_TOKEN holds an access token, every call presents it and the sign-in store is never reached", async (t) => {
+  const { site, grants, bearers } = await siteOf(t);
+  const home = await homeOf(t);
+  const client = await clientOf(t, home, site, { CHUGGY_TOKEN: accessToken });
+
+  const read = await client.callTool({
+    name: "read_ticket",
+    arguments: { ticket: 7 },
+  });
+  assert.match(textOf(read), /^HTTP 200\n/);
+  assert.deepEqual(bearers, [`Bearer ${accessToken}`]);
+  assert.equal(grants.length, 0);
+  assert.deepEqual(await readdir(home), []);
+});
+
+test("where CHUGGY_TOKEN holds something other than an access token, nothing is sent and the call says so", async (t) => {
+  const { site, bearers } = await siteOf(t);
+  const { home } = await signedInOf(t, site);
+  const client = await clientOf(t, home, site, { CHUGGY_TOKEN: "not-one" });
+
+  const refused = await client.callTool({
+    name: "read_ticket",
+    arguments: { ticket: 7 },
+  });
+  assert.equal(refused.isError, true);
+  assert.match(textOf(refused), /CHUGGY_TOKEN does not hold/);
+  assert.deepEqual(bearers, []);
+});
+
+test("an empty CHUGGY_TOKEN leaves the sign-in", async (t) => {
+  const { site, grants, bearers } = await siteOf(t);
+  const { home } = await signedInOf(t, site);
+  const client = await clientOf(t, home, site, { CHUGGY_TOKEN: "" });
+
+  const read = await client.callTool({
+    name: "read_ticket",
+    arguments: { ticket: 7 },
+  });
+  assert.match(textOf(read), /^HTTP 200\n/);
+  assert.equal(grants.length, 1);
+  assert.deepEqual(bearers, ["Bearer access-1"]);
 });
