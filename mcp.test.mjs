@@ -178,6 +178,18 @@ test("an agent is given the project tools, those of your own agent accounts and 
   assert.equal((await readFile(file, "utf8")).trim(), "renewal-1");
 });
 
+test("an agent listing repositories is told what pipelinesRunnable says", async (t) => {
+  const { site } = await siteOf(t);
+  const client = await clientOf(t, await homeOf(t), site);
+  const listing = (await client.listTools()).tools.find(
+    ({ name }) => name === "list_repositories",
+  );
+  assert.match(
+    listing.description,
+    /`pipelinesRunnable` whether they may be issued `chuggy\.github-workflow-runs`/u,
+  );
+});
+
 test("with no sign-in, a call answers a page whose answer signs the next call in", async (t) => {
   const { site } = await siteOf(t);
   const home = await homeOf(t);
