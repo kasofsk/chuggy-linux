@@ -7,7 +7,7 @@ It needs Linux with a systemd user session, Node 24 or later, and rootful docker
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.60.0/chuggy-linux-0.60.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-linux/releases/download/v0.61.0/chuggy-linux-0.61.0.tgz
 ```
 
 The tarball carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout. Install it as the user it will run as, under a prefix that user can write, such as nvm's, so that it can [update itself](#updates).
@@ -311,7 +311,7 @@ To turn updates off, set `"autoUpdate": false` in the runner's file and restart 
 claude mcp add chuggy -- chuggy-linux mcp --site <origin> --workspace <workspace> --project <project>
 ```
 
-`mcp` serves a coding agent on this machine the `chuggy` tools a session pod has, for one project: it reads, drafts and releases tickets under your own sign-in, and decides nothing. It also reads and changes your own agent accounts: `read_usage`, `update_usage_settings`, `retry_paused_agent` and `retire_credential`. With `merge_pull_request` it merges a ticket's pull request on your word. It takes no pool file. The first call with no sign-in answers with the site's sign-in address for the agent to hand you; the sign-in returns to a page `mcp` holds on `127.0.0.1`, so it is opened in a browser on this machine. Once you sign in, calls go through, and the token is renewed ahead of its expiry. The renewal token is kept in `$XDG_CONFIG_HOME/chuggy/sign-ins` (`~/.config/chuggy/sign-ins` by default), in a file only you can read, one per site, shared by every chat on the machine, and the newest access token is kept beside it, so every process on the machine uses that one and renews only as it nears expiry. A renewal already sent finishes and is stored before `mcp` exits. Where the issuer refuses a renewal, every later answer asking you to sign in says when and why, until you sign in again.
+`mcp` serves a coding agent on this machine the `chuggy` tools a session pod has, for one project: it reads, drafts and releases tickets under your own sign-in, and decides nothing. Where `CHUGGY_TOKEN` holds an access token made in the project's Settings → Access tokens, `mcp` acts on it in place of the sign-in, for a script no one attends, such as a cron line or a systemd unit's (`EnvironmentFile=`); unset or empty, the sign-in is used as before. It also reads and changes your own agent accounts: `read_usage`, `update_usage_settings`, `retry_paused_agent` and `retire_credential`. With `merge_pull_request` it merges a ticket's pull request on your word. It takes no pool file. The first call with no sign-in answers with the site's sign-in address for the agent to hand you; the sign-in returns to a page `mcp` holds on `127.0.0.1`, so it is opened in a browser on this machine. Once you sign in, calls go through, and the token is renewed ahead of its expiry. The renewal token is kept in `$XDG_CONFIG_HOME/chuggy/sign-ins` (`~/.config/chuggy/sign-ins` by default), in a file only you can read, one per site, shared by every chat on the machine, and the newest access token is kept beside it, so every process on the machine uses that one and renews only as it nears expiry. A renewal already sent finishes and is stored before `mcp` exits. Where the issuer refuses a renewal, every later answer asking you to sign in says when and why, until you sign in again.
 
 ## Commands
 
